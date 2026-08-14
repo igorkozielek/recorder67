@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QComboBox, QProgressBar, QListWidget,
     QListWidgetItem, QFileDialog, QGroupBox, QMessageBox, QFrame,
-    QSlider, QLineEdit, QTextEdit
+    QSlider, QLineEdit, QTextEdit, QScrollArea
 )
 
 # Ładowanie Silero VAD z obsługą strumienia pamięci (BytesIO)
@@ -385,8 +385,8 @@ class SmartDictaphoneWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Inteligentny Dyktafon AI - Wykrywanie Mowy (VAD)")
-        self.resize(640, 750)
-        self.setMinimumSize(540, 660)
+        self.resize(750, 900)
+        self.setMinimumSize(600, 700)
 
         self.recordings_dir = os.path.join(os.getcwd(), "recordings")
         os.makedirs(self.recordings_dir, exist_ok=True)
@@ -408,8 +408,14 @@ class SmartDictaphoneWindow(QMainWindow):
         self._refresh_recordings_list()
 
     def _init_ui(self):
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.setCentralWidget(scroll_area)
+
         main_widget = QWidget()
-        self.setCentralWidget(main_widget)
+        scroll_area.setWidget(main_widget)
+
         main_layout = QVBoxLayout(main_widget)
         main_layout.setSpacing(16)
         main_layout.setContentsMargins(22, 22, 22, 22)
@@ -455,9 +461,10 @@ class SmartDictaphoneWindow(QMainWindow):
         display_layout.addWidget(self.lbl_status_badge, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.lbl_timer = QLabel("00:00:00")
-        self.lbl_timer.setFont(QFont("Consolas", 38, QFont.Weight.Bold))
+        self.lbl_timer.setFont(QFont("Consolas", 36, QFont.Weight.Bold))
         self.lbl_timer.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_timer.setStyleSheet("color: #edf2f4; margin: 6px 0;")
+        self.lbl_timer.setMinimumHeight(50)
+        self.lbl_timer.setStyleSheet("color: #edf2f4; margin: 4px 0;")
         display_layout.addWidget(self.lbl_timer)
 
         silence_header_layout = QHBoxLayout()
@@ -566,6 +573,7 @@ class SmartDictaphoneWindow(QMainWindow):
         recordings_layout.addLayout(path_layout)
 
         self.list_recordings = QListWidget()
+        self.list_recordings.setFixedHeight(100)
         self.list_recordings.itemDoubleClicked.connect(self._on_recording_double_clicked)
         recordings_layout.addWidget(self.list_recordings)
 
@@ -606,10 +614,11 @@ class SmartDictaphoneWindow(QMainWindow):
 
         self.text_transcript = QTextEdit()
         self.text_transcript.setReadOnly(True)
+        self.text_transcript.setMinimumHeight(220)
         self.text_transcript.setPlaceholderText("Tutaj pojawi się transkrypcja z podziałem na role po zakończeniu nagrywania. Pamiętaj, że proces ten rozpoczyna się automatycznie po kliknięciu 'Stop i Zapisz' (jeśli podano token).")
         transcription_layout.addWidget(self.text_transcript)
 
-        main_layout.addWidget(transcription_box, stretch=2)
+        main_layout.addWidget(transcription_box)
 
     def _apply_theme(self):
         qss = """
