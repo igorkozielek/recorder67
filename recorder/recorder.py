@@ -78,10 +78,14 @@ class TranscriptionWorker(QThread):
 
             self.progress_signal.emit(50, "Ładowanie modelu PyAnnote (Diaryzacja)...")
             
-            # Łatka na błąd zgodności między nowym torchaudio a starszym pyannote (brak funkcji list_audio_backends)
+            # Łatka na błędy zgodności między najnowszym torchaudio a starszym pyannote
             import torchaudio
             if not hasattr(torchaudio, 'list_audio_backends'):
                 torchaudio.list_audio_backends = lambda: ["soundfile", "sox"]
+            if not hasattr(torchaudio, 'AudioMetaData'):
+                class DummyAudioMetaData:
+                    pass
+                torchaudio.AudioMetaData = DummyAudioMetaData
 
             from pyannote.audio import Pipeline
             

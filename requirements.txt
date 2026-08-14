@@ -5,4 +5,5 @@ torch
 silero-vad
 faster-whisper
 soundfile
+huggingface_hub<0.23.0
 pyannote.audio<4.0
