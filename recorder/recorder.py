@@ -100,6 +100,21 @@ class TranscriptionWorker(QThread):
                     pass
                 torchaudio.AudioMetaData = DummyAudioMetaData
 
+            # Łatka na torchaudio.load (omijanie torchcodec i FFmpeg za pomocą soundfile)
+            import soundfile as sf
+            def _patched_torchaudio_load(filepath, frame_offset=0, num_frames=-1, **kwargs):
+                start = frame_offset if frame_offset > 0 else 0
+                stop = (start + num_frames) if num_frames > 0 else None
+                wav, sr = sf.read(filepath, start=start, stop=stop, dtype='float32')
+                wav_tensor = torch.from_numpy(wav)
+                if wav_tensor.dim() == 1:
+                    wav_tensor = wav_tensor.unsqueeze(0)
+                else:
+                    wav_tensor = wav_tensor.t()
+                return wav_tensor, sr
+
+            torchaudio.load = _patched_torchaudio_load
+
             # Łatka na PyTorch 2.6+ (wymuszenie weights_only=False niezależnie od przekazanych parametrów)
             import torch
             import torch.serialization
