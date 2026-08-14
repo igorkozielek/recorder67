@@ -2,6 +2,8 @@ import os
 import sys
 import time
 import wave
+import queue
+import collections
 import numpy as np
 from datetime import datetime
 
@@ -12,7 +14,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QComboBox, QProgressBar, QListWidget,
     QListWidgetItem, QFileDialog, QGroupBox, QMessageBox, QFrame,
-    QSlider
+    QSlider, QLineEdit, QTextEdit, QScrollArea
 )
 
 # Ładowanie Silero VAD z obsługą strumienia pamięci (BytesIO)
@@ -44,6 +46,247 @@ class SmartRecordState:
     RECORDING_SILENCE_COUNTDOWN = 2
     AUTO_PAUSED = 3
     MANUAL_PAUSED = 4
+
+class TranscriptionWorker(QThread):
+    progress_signal = pyqtSignal(int, str)
+    finished_signal = pyqtSignal(str, str)
+    error_signal = pyqtSignal(str)
+
+    def __init__(self, audio_path, hf_token):
+        super().__init__()
+        self.audio_path = audio_path
+        self.hf_token = hf_token
+
+    def run(self):
+        try:
+            # 1. Zabezpieczenie zmiennych środowiskowych dla HuggingFace
+            if self.hf_token:
+                os.environ["HF_TOKEN"] = self.hf_token
+                os.environ["HUGGING_FACE_HUB_TOKEN"] = self.hf_token
+
+            self.progress_signal.emit(5, "Ładowanie modelu Whisper (Transkrypcja)...")
+            from faster_whisper import WhisperModel
+            import torch
+
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            compute_type = "float16" if device == "cuda" else "default"
+
+            model = WhisperModel("small", device=device, compute_type=compute_type)
+
+            self.progress_signal.emit(20, "Trwa transkrypcja audio...")
+            segments, info = model.transcribe(self.audio_path, word_timestamps=True, language="pl")
+
+            transcript_words = []
+            for segment in segments:
+                if segment.words:
+                    for word in segment.words:
+                        if word.word and word.start is not None and word.end is not None:
+                            transcript_words.append({
+                                "word": word.word,
+                                "start": word.start,
+                                "end": word.end
+                            })
+
+            if not transcript_words:
+                self.finished_signal.emit("Brak wykrytej mowy w nagraniu.")
+                return
+
+            self.progress_signal.emit(50, "Ładowanie modelu PyAnnote (Diaryzacja)...")
+
+            # 2. Kompleksowe łatki dla torchaudio i PyTorch 2.6+
+            import torchaudio
+            if not hasattr(torchaudio, 'list_audio_backends'):
+                torchaudio.list_audio_backends = lambda: ["soundfile", "sox"]
+            if not hasattr(torchaudio, 'AudioMetaData'):
+                class DummyAudioMetaData:
+                    pass
+                torchaudio.AudioMetaData = DummyAudioMetaData
+
+            # Łatka na torchaudio.load (omijanie torchcodec i FFmpeg za pomocą soundfile)
+            import soundfile as sf
+            def _patched_torchaudio_load(filepath, frame_offset=0, num_frames=-1, **kwargs):
+                start = frame_offset if frame_offset > 0 else 0
+                stop = (start + num_frames) if num_frames > 0 else None
+                wav, sr = sf.read(filepath, start=start, stop=stop, dtype='float32')
+                wav_tensor = torch.from_numpy(wav)
+                if wav_tensor.dim() == 1:
+                    wav_tensor = wav_tensor.unsqueeze(0)
+                else:
+                    wav_tensor = wav_tensor.t()
+                return wav_tensor, sr
+
+            torchaudio.load = _patched_torchaudio_load
+
+            # Łatka na torchaudio.info (pobieranie metadanych pliku przez soundfile)
+            def _patched_torchaudio_info(filepath, **kwargs):
+                sf_info = sf.info(filepath)
+                class AudioInfo:
+                    def __init__(self, s_info):
+                        self.sample_rate = s_info.samplerate
+                        self.num_frames = s_info.frames
+                        self.num_channels = s_info.channels
+                        self.bits_per_sample = 16
+                        self.encoding = "PCM_S"
+                return AudioInfo(sf_info)
+
+            torchaudio.info = _patched_torchaudio_info
+
+            # Łatka na PyTorch 2.6+ (wymuszenie weights_only=False niezależnie od przekazanych parametrów)
+            import torch
+            import torch.serialization
+            _orig_load = torch.load
+            def _patched_load(*args, **kwargs):
+                kwargs['weights_only'] = False
+                return _orig_load(*args, **kwargs)
+            
+            torch.load = _patched_load
+            torch.serialization.load = _patched_load
+
+            from pyannote.audio import Pipeline
+
+            # Fallback dla różnych wersji PyAnnote / huggingface_hub
+            pipeline = None
+            try:
+                pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=self.hf_token)
+            except TypeError:
+                try:
+                    pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=self.hf_token)
+                except TypeError:
+                    pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
+
+            if pipeline is None:
+                raise ValueError("Nie udało się załadować modelu PyAnnote. Sprawdź poprawność tokenu HuggingFace.")
+
+            if torch.cuda.is_available():
+                pipeline.to(torch.device("cuda"))
+
+            self.progress_signal.emit(60, "Analiza głosów mówców (to potrwa chwilę)...")
+            diarization = pipeline(self.audio_path)
+
+            self.progress_signal.emit(90, "Scalanie tekstu i mówców...")
+
+            final_html = ""
+            final_plain = ""
+            for turn, _, speaker in diarization.itertracks(yield_label=True):
+                # Dopasowanie słów po punkcie środkowym (znacznie odporniejsze)
+                words_in_turn = []
+                for w in transcript_words:
+                    mid_point = (w["start"] + w["end"]) / 2.0
+                    if turn.start <= mid_point <= turn.end:
+                        words_in_turn.append(w["word"])
+
+                if words_in_turn:
+                    sentence = "".join(words_in_turn).strip()
+                    final_html += f"<b>[{turn.start:.1f}s - {turn.end:.1f}s] {speaker}:</b> {sentence}<br><br>"
+                    final_plain += f"[{turn.start:.1f}s - {turn.end:.1f}s] {speaker}: {sentence}\n\n"
+
+            if not final_html:
+                final_html = "Transkrypcja zakończona, ale nie udało się zmapować głosów do słów."
+                final_plain = "Transkrypcja zakończona, ale nie udało się zmapować głosów do słów."
+
+            self.progress_signal.emit(100, "Gotowe!")
+            self.finished_signal.emit(final_html, final_plain)
+
+        except Exception as e:
+            self.error_signal.emit(str(e))
+
+
+def resample_to_16k(audio_arr, orig_sr):
+    if orig_sr == 16000 or len(audio_arr) == 0:
+        return audio_arr
+    num_target = int(len(audio_arr) * 16000 / orig_sr)
+    x_old = np.linspace(0, 1, len(audio_arr), endpoint=False)
+    x_new = np.linspace(0, 1, num_target, endpoint=False)
+    return np.interp(x_new, x_old, audio_arr).astype(np.float32)
+
+
+class LiveTranscriptionWorker(QThread):
+    """
+    Wątek przetwarzający frazy audio w czasie rzeczywistym przy użyciu faster-whisper.
+    """
+    phrase_transcribed_signal = pyqtSignal(str, str)  # (time_str, phrase_text)
+    status_signal = pyqtSignal(str)
+    error_signal = pyqtSignal(str)
+
+    def __init__(self, model_size="small"):
+        super().__init__()
+        self.model_size = model_size
+        self.audio_queue = queue.Queue()
+        self._is_running = False
+        self.model = None
+
+    def add_phrase_chunk(self, audio_data, samplerate):
+        if self._is_running:
+            self.audio_queue.put((audio_data, samplerate))
+
+    def stop(self):
+        self._is_running = False
+        self.audio_queue.put(None)
+
+    def run(self):
+        self._is_running = True
+        try:
+            self.status_signal.emit("Ładowanie modelu Whisper (Transkrypcja na Żywo)...")
+            from faster_whisper import WhisperModel
+            import torch
+
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            compute_type = "float16" if device == "cuda" else "default"
+
+            self.model = WhisperModel(self.model_size, device=device, compute_type=compute_type)
+            self.status_signal.emit("Whisper Na Żywo: GOTOWY")
+
+            while self._is_running:
+                try:
+                    item = self.audio_queue.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+
+                if item is None:
+                    break
+
+                audio_data, samplerate = item
+                if audio_data is None or len(audio_data) == 0:
+                    self.audio_queue.task_done()
+                    continue
+
+                # 1. Konwersja do float32 [-1.0, 1.0]
+                if audio_data.dtype == np.int16:
+                    audio_float = audio_data.astype(np.float32) / 32768.0
+                else:
+                    audio_float = audio_data.astype(np.float32)
+
+                # 2. Bezpieczny resampling do 16kHz
+                if samplerate != 16000:
+                    audio_float = resample_to_16k(audio_float, samplerate)
+
+                # 3. Odfiltrowanie bardzo cichego szumu tła (RMS)
+                rms = np.sqrt(np.mean(audio_float ** 2)) if len(audio_float) > 0 else 0.0
+                if rms < 0.003:
+                    self.audio_queue.task_done()
+                    continue
+
+                # 4. Transkrypcja frazy przez Whisper (16kHz mono)
+                segments, info = self.model.transcribe(
+                    audio_float,
+                    language="pl",
+                    beam_size=5,
+                    vad_filter=True,
+                    vad_parameters=dict(min_silence_duration_ms=250),
+                    initial_prompt="Poniżej znajduje się polska wypowiedź dyktowana do notatek biurowych."
+                )
+
+                phrase_text = "".join([segment.text for segment in segments]).strip()
+                # Odrzucanie pustych krotek lub powszechnych zniekształceń
+                if phrase_text and phrase_text not in [".", "...", ",", "Dziękuję.", "Śpiewa", "Napisy:", "Subtitles"]:
+                    time_str = datetime.now().strftime("%H:%M:%S")
+                    self.phrase_transcribed_signal.emit(time_str, phrase_text)
+
+                self.audio_queue.task_done()
+
+        except Exception as e:
+            self.error_signal.emit(f"Błąd transkrypcji na żywo: {e}")
+
 
 def get_working_input_devices():
     """
@@ -82,11 +325,12 @@ class SmartAudioWorker(QThread):
     audio_level_signal = pyqtSignal(float)             # Poziom RMS (0 - 100)
     vad_info_signal = pyqtSignal(bool, float, float)    # (is_speech, speech_prob, silence_sec)
     state_changed_signal = pyqtSignal(int)             # SmartRecordState
+    phrase_signal = pyqtSignal(np.ndarray, int)        # Frazy audio dla transkrypcji na żywo
     error_signal = pyqtSignal(str)
 
     def __init__(self, samplerate=16000, channels=1, device_index=None, auto_pause_sec=5.0):
         super().__init__()
-        self.samplerate = samplerate
+        self.samplerate = 16000  # Zawsze 16000 Hz dla Silero VAD i Whisper
         self.channels = channels
         self.device_index = device_index
         self.auto_pause_sec = auto_pause_sec
@@ -97,6 +341,12 @@ class SmartAudioWorker(QThread):
         self._is_running = False
         self.speech_threshold = 0.45
 
+        # Buforowanie fraz mowy z pre-bufferingiem (0.2s pre-padding)
+        self.current_phrase_chunks = []
+        self.pre_speech_buffer = collections.deque(maxlen=6)  # ~0.2s próbek przed wyznaczonym mową
+        self.silence_in_phrase_samples = 0
+        self.phrase_speech_detected = False
+
     def set_auto_pause_sec(self, seconds):
         self.auto_pause_sec = float(seconds)
 
@@ -104,6 +354,10 @@ class SmartAudioWorker(QThread):
         self.device_index = device_index
         self.frames = []
         self.silence_samples_count = 0
+        self.current_phrase_chunks = []
+        self.pre_speech_buffer.clear()
+        self.silence_in_phrase_samples = 0
+        self.phrase_speech_detected = False
         self.state = SmartRecordState.RECORDING_SPEECH
         self._is_running = True
         self.state_changed_signal.emit(self.state)
@@ -121,6 +375,12 @@ class SmartAudioWorker(QThread):
     def stop_recording(self):
         self.state = SmartRecordState.STOPPED
         self._is_running = False
+        if self.phrase_speech_detected and self.current_phrase_chunks:
+            phrase_arr = np.concatenate(self.current_phrase_chunks)
+            if len(phrase_arr) >= int(0.3 * self.samplerate):
+                self.phrase_signal.emit(phrase_arr, self.samplerate)
+            self.current_phrase_chunks = []
+            self.phrase_speech_detected = False
         self.state_changed_signal.emit(self.state)
 
     def run(self):
@@ -137,7 +397,7 @@ class SmartAudioWorker(QThread):
             level = min(100.0, float(rms * 6.0))
             self.audio_level_signal.emit(level)
 
-            # 2. VAD AI (Silero VAD)
+            # 2. VAD AI (Silero VAD na próbkach 16kHz)
             is_speech = False
             speech_prob = 0.0
 
@@ -184,7 +444,7 @@ class SmartAudioWorker(QThread):
             current_silence_sec = self.silence_samples_count / self.samplerate
             self.vad_info_signal.emit(is_speech, speech_prob, current_silence_sec)
 
-            # 4. Zapis próbek
+            # 4. Zapis próbek oraz buforowanie fraz mowy na żywo (z 0.2s pre-bufferingiem)
             if self.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:
                 if indata.dtype != np.int16:
                     audio_int16 = (indata * 32767).clip(-32768, 32767).astype(np.int16)
@@ -192,19 +452,40 @@ class SmartAudioWorker(QThread):
                 else:
                     self.frames.append(indata.tobytes())
 
-        try:
-            # Ustalenie próbkowania zgodnego z wybranym urządzeniem
-            target_sr = self.samplerate
-            if self.device_index is not None:
-                try:
-                    dev_info = sd.query_devices(self.device_index)
-                    native_sr = int(dev_info.get('default_samplerate', 16000))
-                    if native_sr > 0:
-                        target_sr = native_sr
-                except Exception:
-                    pass
+                chunk_flat = indata.copy().flatten()
+                if is_speech:
+                    if not self.phrase_speech_detected:
+                        # Dołącz początkowy pre-buffer (poprzednie 0.2s), aby nie ucinać pierwszych sylab
+                        self.current_phrase_chunks.extend(list(self.pre_speech_buffer))
+                        self.phrase_speech_detected = True
 
-            self.samplerate = target_sr
+                    self.current_phrase_chunks.append(chunk_flat)
+                    self.silence_in_phrase_samples = 0
+
+                    # Jeśli ciągła mowa trwa ponad 3.0 sekundy, wyślij wyciętą frazę
+                    total_samples = sum(len(c) for c in self.current_phrase_chunks)
+                    if total_samples >= int(3.0 * self.samplerate):
+                        phrase_arr = np.concatenate(self.current_phrase_chunks)
+                        self.phrase_signal.emit(phrase_arr, self.samplerate)
+                        self.current_phrase_chunks = []
+                        self.phrase_speech_detected = False
+                else:
+                    self.pre_speech_buffer.append(chunk_flat)
+
+                    if self.phrase_speech_detected and self.current_phrase_chunks:
+                        self.silence_in_phrase_samples += len(indata)
+                        silence_dur = self.silence_in_phrase_samples / self.samplerate
+                        if silence_dur >= 0.4:  # 0.4s ciszy po wypowiedzi = koniec frazy
+                            phrase_arr = np.concatenate(self.current_phrase_chunks)
+                            if len(phrase_arr) >= int(0.3 * self.samplerate):
+                                self.phrase_signal.emit(phrase_arr, self.samplerate)
+                            self.current_phrase_chunks = []
+                            self.phrase_speech_detected = False
+                            self.silence_in_phrase_samples = 0
+
+        try:
+            # Wymuszenie próbkowania 16000 Hz w PortAudio dla zapewnienia pełnej zgodności z Silero i Whisper
+            self.samplerate = 16000
 
             with sd.InputStream(
                 samplerate=self.samplerate,
@@ -212,7 +493,7 @@ class SmartAudioWorker(QThread):
                 dtype='float32',
                 device=self.device_index,
                 callback=audio_callback,
-                blocksize=512 if self.samplerate == 16000 else 1024
+                blocksize=512
             ):
                 while self._is_running:
                     self.msleep(40)
@@ -244,16 +525,23 @@ class SmartDictaphoneWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Inteligentny Dyktafon AI - Wykrywanie Mowy (VAD)")
-        self.resize(640, 750)
-        self.setMinimumSize(540, 660)
+        self.resize(750, 900)
+        self.setMinimumSize(600, 700)
 
         self.recordings_dir = os.path.join(os.getcwd(), "recordings")
         os.makedirs(self.recordings_dir, exist_ok=True)
 
+        self.transcriptions_dir = os.path.join(os.getcwd(), "transcriptions")
+        os.makedirs(self.transcriptions_dir, exist_ok=True)
+
+        self.last_audio_save_path = None
         self.recorded_seconds = 0
         self.timer = QTimer(self)
         self.timer.setInterval(1000)
         self.timer.timeout.connect(self._on_timer_tick)
+
+        self.live_transcription_worker = None
+        self.live_plain_text_lines = []
 
         self.worker = SmartAudioWorker(samplerate=16000, auto_pause_sec=5.0)
         self.worker.audio_level_signal.connect(self._update_audio_level)
@@ -265,10 +553,17 @@ class SmartDictaphoneWindow(QMainWindow):
         self._apply_theme()
         self._refresh_audio_devices()
         self._refresh_recordings_list()
+        self._refresh_transcriptions_list()
 
     def _init_ui(self):
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.setCentralWidget(scroll_area)
+
         main_widget = QWidget()
-        self.setCentralWidget(main_widget)
+        scroll_area.setWidget(main_widget)
+
         main_layout = QVBoxLayout(main_widget)
         main_layout.setSpacing(16)
         main_layout.setContentsMargins(22, 22, 22, 22)
@@ -314,9 +609,10 @@ class SmartDictaphoneWindow(QMainWindow):
         display_layout.addWidget(self.lbl_status_badge, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.lbl_timer = QLabel("00:00:00")
-        self.lbl_timer.setFont(QFont("Consolas", 38, QFont.Weight.Bold))
+        self.lbl_timer.setFont(QFont("Consolas", 36, QFont.Weight.Bold))
         self.lbl_timer.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_timer.setStyleSheet("color: #edf2f4; margin: 6px 0;")
+        self.lbl_timer.setMinimumHeight(50)
+        self.lbl_timer.setStyleSheet("color: #edf2f4; margin: 4px 0;")
         display_layout.addWidget(self.lbl_timer)
 
         silence_header_layout = QHBoxLayout()
@@ -409,30 +705,86 @@ class SmartDictaphoneWindow(QMainWindow):
         controls_layout.addWidget(self.btn_stop)
         main_layout.addLayout(controls_layout)
 
-        # LISTA NAGRAŃ
-        recordings_box = QGroupBox("Historia Zapisanych Nagrań")
-        recordings_layout = QVBoxLayout(recordings_box)
+        # WYGENEROWANE WYJŚCIA (Master GroupBox)
+        outputs_box = QGroupBox("Wygenerowane Wyjścia i Transkrypcje")
+        outputs_main_layout = QVBoxLayout(outputs_box)
 
-        path_layout = QHBoxLayout()
-        self.lbl_path = QLabel(f"Folder: {self.recordings_dir}")
-        self.lbl_path.setStyleSheet("color: #8d99ae; font-size: 11px;")
-        btn_change_dir = QPushButton("Zmień folder")
-        btn_change_dir.setFont(QFont("Segoe UI", 8))
-        btn_change_dir.clicked.connect(self._on_change_dir_clicked)
+        # Token + Pasek Postępu AI na górze sekcji wyjść
+        token_layout = QHBoxLayout()
+        lbl_token = QLabel("HuggingFace Token:")
+        self.input_token = QLineEdit()
+        self.input_token.setEchoMode(QLineEdit.EchoMode.Password)
+        self.input_token.setPlaceholderText("Wklej tutaj token wygenerowany na HuggingFace (hf_...)")
+        
+        env_path = os.path.join(os.getcwd(), ".env")
+        if os.path.exists(env_path):
+            with open(env_path, 'r') as f:
+                for line in f:
+                    if line.startswith("HF_TOKEN="):
+                        self.input_token.setText(line.strip().split("=")[1])
 
-        path_layout.addWidget(self.lbl_path, stretch=1)
-        path_layout.addWidget(btn_change_dir)
-        recordings_layout.addLayout(path_layout)
+        token_layout.addWidget(lbl_token)
+        token_layout.addWidget(self.input_token)
+        outputs_main_layout.addLayout(token_layout)
+
+        self.progress_transcription = QProgressBar()
+        self.progress_transcription.setRange(0, 100)
+        self.progress_transcription.setValue(0)
+        self.progress_transcription.setTextVisible(True)
+        self.progress_transcription.setFormat("Oczekuje na nagranie...")
+        outputs_main_layout.addWidget(self.progress_transcription)
+
+        # UKŁAD DWUKOLUMNOWY: LEWA = NAGRANIA AUDIO, PRAWA = TRANSKRYPCJE TEKSTOWE
+        columns_layout = QHBoxLayout()
+
+        # LEWA KOLUMNA: NAGRANIA AUDIO (.wav)
+        left_box = QGroupBox("🎵 Nagrania Audio (.wav)")
+        left_layout = QVBoxLayout(left_box)
+
+        self.lbl_path_audio = QLabel(f"Folder: {self.recordings_dir}")
+        self.lbl_path_audio.setStyleSheet("color: #8d99ae; font-size: 11px;")
+        left_layout.addWidget(self.lbl_path_audio)
 
         self.list_recordings = QListWidget()
+        self.list_recordings.setFixedHeight(110)
         self.list_recordings.itemDoubleClicked.connect(self._on_recording_double_clicked)
-        recordings_layout.addWidget(self.list_recordings)
+        left_layout.addWidget(self.list_recordings)
 
-        btn_open_folder = QPushButton("📁 Otwórz folder nagrań w eksploratorze")
-        btn_open_folder.clicked.connect(self._on_open_folder_clicked)
-        recordings_layout.addWidget(btn_open_folder)
+        btn_open_audio_folder = QPushButton("📁 Otwórz folder nagrań")
+        btn_open_audio_folder.clicked.connect(self._on_open_folder_clicked)
+        left_layout.addWidget(btn_open_audio_folder)
 
-        main_layout.addWidget(recordings_box, stretch=1)
+        columns_layout.addWidget(left_box, stretch=1)
+
+        # PRAWA KOLUMNA: TRANSKRYPCJE TEKSTOWE (.txt)
+        right_box = QGroupBox("📄 Transkrypcje Tekstowe (.txt)")
+        right_layout = QVBoxLayout(right_box)
+
+        self.lbl_path_txt = QLabel(f"Folder: {self.transcriptions_dir}")
+        self.lbl_path_txt.setStyleSheet("color: #8d99ae; font-size: 11px;")
+        right_layout.addWidget(self.lbl_path_txt)
+
+        self.list_transcriptions = QListWidget()
+        self.list_transcriptions.setFixedHeight(110)
+        self.list_transcriptions.itemDoubleClicked.connect(self._on_transcription_double_clicked)
+        right_layout.addWidget(self.list_transcriptions)
+
+        btn_open_txt_folder = QPushButton("📁 Otwórz folder transkrypcji")
+        btn_open_txt_folder.clicked.connect(self._on_open_txt_folder_clicked)
+        right_layout.addWidget(btn_open_txt_folder)
+
+        columns_layout.addWidget(right_box, stretch=1)
+
+        outputs_main_layout.addLayout(columns_layout)
+
+        # PODGLĄD AKTYWNEJ TRANSKRYPCJI
+        self.text_transcript = QTextEdit()
+        self.text_transcript.setReadOnly(True)
+        self.text_transcript.setMinimumHeight(220)
+        self.text_transcript.setPlaceholderText("Tutaj pojawi się transkrypcja z podziałem na role po zakończeniu nagrywania (lub po dwukrotnym kliknięciu na plik .txt powyżej)...")
+        outputs_main_layout.addWidget(self.text_transcript)
+
+        main_layout.addWidget(outputs_box)
 
     def _apply_theme(self):
         qss = """
@@ -579,6 +931,22 @@ class SmartDictaphoneWindow(QMainWindow):
             margin-bottom: -4px;
             border-radius: 7px;
         }
+        QLineEdit {
+            background-color: #222533;
+            border: 1px solid #33374c;
+            border-radius: 6px;
+            padding: 6px 10px;
+            color: #edf2f4;
+        }
+        QTextEdit {
+            background-color: #111216;
+            border: 1px solid #272a38;
+            border-radius: 6px;
+            padding: 8px;
+            color: #edf2f4;
+            font-size: 13px;
+            line-height: 1.5;
+        }
         """
         self.setStyleSheet(qss)
 
@@ -634,6 +1002,21 @@ class SmartDictaphoneWindow(QMainWindow):
         self.recorded_seconds = 0
         self.lbl_timer.setText("00:00:00")
 
+        self.live_plain_text_lines = []
+        self.text_transcript.clear()
+        self.text_transcript.setPlaceholderText("Transkrypcja na żywo: Wypowiedzi będą pojawiać się tutaj automatycznie...")
+        self.progress_transcription.setValue(0)
+        self.progress_transcription.setFormat("Inicjalizacja transkrypcji na żywo...")
+
+        # Uruchomienie wątku transkrypcji na żywo
+        self.live_transcription_worker = LiveTranscriptionWorker(model_size="small")
+        self.live_transcription_worker.phrase_transcribed_signal.connect(self._on_live_phrase_received)
+        self.live_transcription_worker.status_signal.connect(self._on_live_status_changed)
+        self.live_transcription_worker.error_signal.connect(self._on_live_error)
+        self.live_transcription_worker.start()
+
+        self.worker.phrase_signal.connect(self.live_transcription_worker.add_phrase_chunk)
+
         threshold_sec = self.slider_silence.value()
         self.worker.set_auto_pause_sec(threshold_sec)
         self.worker.start_recording(device_index=selected_index)
@@ -646,12 +1029,39 @@ class SmartDictaphoneWindow(QMainWindow):
         self.combo_devices.setEnabled(False)
         self.slider_silence.setEnabled(False)
 
+    def _on_live_phrase_received(self, time_str, text_phrase):
+        html_line = f"<b>[{time_str}]:</b> {text_phrase}<br>"
+        plain_line = f"[{time_str}]: {text_phrase}"
+        self.live_plain_text_lines.append(plain_line)
+        
+        self.text_transcript.append(html_line)
+        sb = self.text_transcript.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def _on_live_status_changed(self, text):
+        self.progress_transcription.setFormat(f"Transkrypcja na Żywo: {text}")
+        self.progress_transcription.setValue(100)
+
+    def _on_live_error(self, err_msg):
+        self.progress_transcription.setFormat("Błąd transkrypcji na żywo!")
+        if sys.stderr:
+            print(f"Błąd transkrypcji na żywo: {err_msg}", file=sys.stderr)
+
     def _on_pause_clicked(self):
         self.worker.toggle_manual_pause()
 
     def _on_stop_clicked(self):
         self.timer.stop()
         self.worker.stop_recording()
+
+        if self.live_transcription_worker is not None:
+            try:
+                self.worker.phrase_signal.disconnect(self.live_transcription_worker.add_phrase_chunk)
+            except Exception:
+                pass
+            self.live_transcription_worker.stop()
+            self.live_transcription_worker.wait(2000)
+            self.live_transcription_worker = None
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"inteligentne_nagranie_{timestamp}.wav"
@@ -672,10 +1082,101 @@ class SmartDictaphoneWindow(QMainWindow):
         self.slider_silence.setEnabled(True)
 
         if saved:
+            self.last_audio_save_path = save_path
             self._refresh_recordings_list()
-            QMessageBox.information(self, "Zapisano Nagranie", f"Pomyślnie zapisano plik audio:\n{filename}")
+
+            # Natychmiastowy zapis transkrypcji na żywo do pliku TXT
+            txt_filename = f"transkrypcja_{timestamp}.txt"
+            txt_path = os.path.join(self.transcriptions_dir, txt_filename)
+            live_text_content = "\n\n".join(self.live_plain_text_lines) if self.live_plain_text_lines else "Brak zarejestrowanej mowy."
+            try:
+                with open(txt_path, 'w', encoding='utf-8') as f:
+                    f.write(live_text_content)
+                self._refresh_transcriptions_list()
+            except Exception as e:
+                if sys.stderr:
+                    print(f"Błąd zapisu pliku TXT na żywo: {e}", file=sys.stderr)
+
+            QMessageBox.information(self, "Zapisano Nagranie", f"Pomyślnie zapisano plik audio:\n{filename}\noraz notatki z transkrypcji na żywo!")
+            
+            token = self.input_token.text().strip()
+            if token:
+                self.progress_transcription.setValue(0)
+                self.progress_transcription.setFormat("Trwa analiza głosów i diaryzacja w tle...")
+                
+                self.transcription_thread = TranscriptionWorker(save_path, token)
+                self.transcription_thread.progress_signal.connect(self._on_transcription_progress)
+                self.transcription_thread.finished_signal.connect(self._on_transcription_finished)
+                self.transcription_thread.error_signal.connect(self._on_transcription_error)
+                self.transcription_thread.start()
         else:
             QMessageBox.warning(self, "Brak Nagrania", "Nie zarejestrowano mowy do zapisu.")
+
+    def _on_transcription_progress(self, value, text):
+        self.progress_transcription.setValue(value)
+        self.progress_transcription.setFormat(f"{value}% - {text}")
+
+    def _on_transcription_finished(self, html_text, plain_text):
+        self.progress_transcription.setValue(100)
+        self.progress_transcription.setFormat("Transkrypcja zakończona!")
+        self.text_transcript.setHtml(html_text)
+        self.btn_start.setEnabled(True)
+
+        # Zapis czystego tekstu do pliku .txt w folderze transcriptions
+        if self.last_audio_save_path:
+            base_name = os.path.basename(self.last_audio_save_path)
+            file_stem = os.path.splitext(base_name)[0]
+            txt_filename = f"transkrypcja_{file_stem.replace('inteligentne_nagranie_', '')}.txt"
+        else:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            txt_filename = f"transkrypcja_{timestamp}.txt"
+
+        txt_path = os.path.join(self.transcriptions_dir, txt_filename)
+        try:
+            with open(txt_path, 'w', encoding='utf-8') as f:
+                f.write(plain_text)
+            self._refresh_transcriptions_list()
+        except Exception as e:
+            if sys.stderr:
+                print(f"Błąd zapisu pliku TXT: {e}", file=sys.stderr)
+
+    def _refresh_transcriptions_list(self):
+        self.list_transcriptions.clear()
+        if not os.path.exists(self.transcriptions_dir):
+            return
+
+        files = [f for f in os.listdir(self.transcriptions_dir) if f.endswith(".txt")]
+        files.sort(reverse=True)
+
+        for filename in files:
+            full_path = os.path.join(self.transcriptions_dir, filename)
+            size_kb = os.path.getsize(full_path) / 1024
+            mtime = datetime.fromtimestamp(os.path.getmtime(full_path)).strftime("%Y-%m-%d %H:%M:%S")
+
+            item = QListWidgetItem(f"📄 {filename}  ({size_kb:.1f} KB, {mtime})")
+            item.setData(Qt.ItemDataRole.UserRole, full_path)
+            self.list_transcriptions.addItem(item)
+
+    def _on_transcription_double_clicked(self, item):
+        file_path = item.data(Qt.ItemDataRole.UserRole)
+        if file_path and os.path.exists(file_path):
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                html_content = content.replace("\n", "<br>")
+                self.text_transcript.setHtml(html_content)
+            except Exception as e:
+                QMessageBox.warning(self, "Błąd Odczytu", f"Nie udało się otworzyć pliku:\n{e}")
+
+    def _on_open_txt_folder_clicked(self):
+        if os.path.exists(self.transcriptions_dir):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(self.transcriptions_dir))
+
+    def _on_transcription_error(self, err_msg):
+        self.progress_transcription.setValue(0)
+        self.progress_transcription.setFormat("Błąd transkrypcji!")
+        QMessageBox.critical(self, "Błąd AI", f"Wystąpił błąd podczas przetwarzania:\n{err_msg}")
+        self.btn_start.setEnabled(True)
 
     def _on_timer_tick(self):
         if self.worker.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:

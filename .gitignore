@@ -27,10 +27,15 @@ x86/
 
 # Audio Recordings & Output Files (Pliki nagrań audio)
 recordings/
+transcriptions/
 *.wav
 *.mp3
 *.m4a
+*.txt
 
 # Model Cache & Temp Data
 .cache/
 *.jit
+
+# Zmienne środowiskowe i sekrety (nie publikować na GitHubie!)
+.env
