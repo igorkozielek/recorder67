@@ -1,0 +1,13 @@
+# Local Virtual Environments
+env/
+venv/
+.venv/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+
+# Audio Recordings
+recordings/
+*.wav
+*.mp3
