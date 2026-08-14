@@ -47,7 +47,7 @@ class SmartRecordState:
 
 class TranscriptionWorker(QThread):
     progress_signal = pyqtSignal(int, str)
-    finished_signal = pyqtSignal(str)
+    finished_signal = pyqtSignal(str, str)
     error_signal = pyqtSignal(str)
 
     def __init__(self, audio_path, hf_token):
@@ -163,7 +163,8 @@ class TranscriptionWorker(QThread):
 
             self.progress_signal.emit(90, "Scalanie tekstu i mówców...")
 
-            final_text = ""
+            final_html = ""
+            final_plain = ""
             for turn, _, speaker in diarization.itertracks(yield_label=True):
                 # Dopasowanie słów po punkcie środkowym (znacznie odporniejsze)
                 words_in_turn = []
@@ -174,13 +175,15 @@ class TranscriptionWorker(QThread):
 
                 if words_in_turn:
                     sentence = "".join(words_in_turn).strip()
-                    final_text += f"<b>[{turn.start:.1f}s - {turn.end:.1f}s] {speaker}:</b> {sentence}<br><br>"
+                    final_html += f"<b>[{turn.start:.1f}s - {turn.end:.1f}s] {speaker}:</b> {sentence}<br><br>"
+                    final_plain += f"[{turn.start:.1f}s - {turn.end:.1f}s] {speaker}: {sentence}\n\n"
 
-            if not final_text:
-                final_text = "Transkrypcja zakończona, ale nie udało się zmapować głosów do słów."
+            if not final_html:
+                final_html = "Transkrypcja zakończona, ale nie udało się zmapować głosów do słów."
+                final_plain = "Transkrypcja zakończona, ale nie udało się zmapować głosów do słów."
 
             self.progress_signal.emit(100, "Gotowe!")
-            self.finished_signal.emit(final_text)
+            self.finished_signal.emit(final_html, final_plain)
 
         except Exception as e:
             self.error_signal.emit(str(e))
@@ -391,6 +394,10 @@ class SmartDictaphoneWindow(QMainWindow):
         self.recordings_dir = os.path.join(os.getcwd(), "recordings")
         os.makedirs(self.recordings_dir, exist_ok=True)
 
+        self.transcriptions_dir = os.path.join(os.getcwd(), "transcriptions")
+        os.makedirs(self.transcriptions_dir, exist_ok=True)
+
+        self.last_audio_save_path = None
         self.recorded_seconds = 0
         self.timer = QTimer(self)
         self.timer.setInterval(1000)
@@ -406,6 +413,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self._apply_theme()
         self._refresh_audio_devices()
         self._refresh_recordings_list()
+        self._refresh_transcriptions_list()
 
     def _init_ui(self):
         scroll_area = QScrollArea()
@@ -557,43 +565,17 @@ class SmartDictaphoneWindow(QMainWindow):
         controls_layout.addWidget(self.btn_stop)
         main_layout.addLayout(controls_layout)
 
-        # LISTA NAGRAŃ
-        recordings_box = QGroupBox("Historia Zapisanych Nagrań")
-        recordings_layout = QVBoxLayout(recordings_box)
+        # WYGENEROWANE WYJŚCIA (Master GroupBox)
+        outputs_box = QGroupBox("Wygenerowane Wyjścia i Transkrypcje")
+        outputs_main_layout = QVBoxLayout(outputs_box)
 
-        path_layout = QHBoxLayout()
-        self.lbl_path = QLabel(f"Folder: {self.recordings_dir}")
-        self.lbl_path.setStyleSheet("color: #8d99ae; font-size: 11px;")
-        btn_change_dir = QPushButton("Zmień folder")
-        btn_change_dir.setFont(QFont("Segoe UI", 8))
-        btn_change_dir.clicked.connect(self._on_change_dir_clicked)
-
-        path_layout.addWidget(self.lbl_path, stretch=1)
-        path_layout.addWidget(btn_change_dir)
-        recordings_layout.addLayout(path_layout)
-
-        self.list_recordings = QListWidget()
-        self.list_recordings.setFixedHeight(100)
-        self.list_recordings.itemDoubleClicked.connect(self._on_recording_double_clicked)
-        recordings_layout.addWidget(self.list_recordings)
-
-        btn_open_folder = QPushButton("📁 Otwórz folder nagrań w eksploratorze")
-        btn_open_folder.clicked.connect(self._on_open_folder_clicked)
-        recordings_layout.addWidget(btn_open_folder)
-
-        main_layout.addWidget(recordings_box, stretch=1)
-
-        # TRANSKRYPCJA I DIARYZACJA
-        transcription_box = QGroupBox("AI Transkrypcja i Rozpoznawanie Głosów (Offline)")
-        transcription_layout = QVBoxLayout(transcription_box)
-
+        # Token + Pasek Postępu AI na górze sekcji wyjść
         token_layout = QHBoxLayout()
         lbl_token = QLabel("HuggingFace Token:")
         self.input_token = QLineEdit()
         self.input_token.setEchoMode(QLineEdit.EchoMode.Password)
         self.input_token.setPlaceholderText("Wklej tutaj token wygenerowany na HuggingFace (hf_...)")
         
-        # Opcjonalne ładowanie tokenu z ukrytego pliku .env (żeby nie wklejać ręcznie)
         env_path = os.path.join(os.getcwd(), ".env")
         if os.path.exists(env_path):
             with open(env_path, 'r') as f:
@@ -603,22 +585,66 @@ class SmartDictaphoneWindow(QMainWindow):
 
         token_layout.addWidget(lbl_token)
         token_layout.addWidget(self.input_token)
-        transcription_layout.addLayout(token_layout)
+        outputs_main_layout.addLayout(token_layout)
 
         self.progress_transcription = QProgressBar()
         self.progress_transcription.setRange(0, 100)
         self.progress_transcription.setValue(0)
         self.progress_transcription.setTextVisible(True)
-        self.progress_transcription.setFormat("Oczekuje na start (wpisz token powyżej)...")
-        transcription_layout.addWidget(self.progress_transcription)
+        self.progress_transcription.setFormat("Oczekuje na nagranie...")
+        outputs_main_layout.addWidget(self.progress_transcription)
 
+        # UKŁAD DWUKOLUMNOWY: LEWA = NAGRANIA AUDIO, PRAWA = TRANSKRYPCJE TEKSTOWE
+        columns_layout = QHBoxLayout()
+
+        # LEWA KOLUMNA: NAGRANIA AUDIO (.wav)
+        left_box = QGroupBox("🎵 Nagrania Audio (.wav)")
+        left_layout = QVBoxLayout(left_box)
+
+        self.lbl_path_audio = QLabel(f"Folder: {self.recordings_dir}")
+        self.lbl_path_audio.setStyleSheet("color: #8d99ae; font-size: 11px;")
+        left_layout.addWidget(self.lbl_path_audio)
+
+        self.list_recordings = QListWidget()
+        self.list_recordings.setFixedHeight(110)
+        self.list_recordings.itemDoubleClicked.connect(self._on_recording_double_clicked)
+        left_layout.addWidget(self.list_recordings)
+
+        btn_open_audio_folder = QPushButton("📁 Otwórz folder nagrań")
+        btn_open_audio_folder.clicked.connect(self._on_open_folder_clicked)
+        left_layout.addWidget(btn_open_audio_folder)
+
+        columns_layout.addWidget(left_box, stretch=1)
+
+        # PRAWA KOLUMNA: TRANSKRYPCJE TEKSTOWE (.txt)
+        right_box = QGroupBox("📄 Transkrypcje Tekstowe (.txt)")
+        right_layout = QVBoxLayout(right_box)
+
+        self.lbl_path_txt = QLabel(f"Folder: {self.transcriptions_dir}")
+        self.lbl_path_txt.setStyleSheet("color: #8d99ae; font-size: 11px;")
+        right_layout.addWidget(self.lbl_path_txt)
+
+        self.list_transcriptions = QListWidget()
+        self.list_transcriptions.setFixedHeight(110)
+        self.list_transcriptions.itemDoubleClicked.connect(self._on_transcription_double_clicked)
+        right_layout.addWidget(self.list_transcriptions)
+
+        btn_open_txt_folder = QPushButton("📁 Otwórz folder transkrypcji")
+        btn_open_txt_folder.clicked.connect(self._on_open_txt_folder_clicked)
+        right_layout.addWidget(btn_open_txt_folder)
+
+        columns_layout.addWidget(right_box, stretch=1)
+
+        outputs_main_layout.addLayout(columns_layout)
+
+        # PODGLĄD AKTYWNEJ TRANSKRYPCJI
         self.text_transcript = QTextEdit()
         self.text_transcript.setReadOnly(True)
         self.text_transcript.setMinimumHeight(220)
-        self.text_transcript.setPlaceholderText("Tutaj pojawi się transkrypcja z podziałem na role po zakończeniu nagrywania. Pamiętaj, że proces ten rozpoczyna się automatycznie po kliknięciu 'Stop i Zapisz' (jeśli podano token).")
-        transcription_layout.addWidget(self.text_transcript)
+        self.text_transcript.setPlaceholderText("Tutaj pojawi się transkrypcja z podziałem na role po zakończeniu nagrywania (lub po dwukrotnym kliknięciu na plik .txt powyżej)...")
+        outputs_main_layout.addWidget(self.text_transcript)
 
-        main_layout.addWidget(transcription_box)
+        main_layout.addWidget(outputs_box)
 
     def _apply_theme(self):
         qss = """
@@ -874,6 +900,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.slider_silence.setEnabled(True)
 
         if saved:
+            self.last_audio_save_path = save_path
             self._refresh_recordings_list()
             QMessageBox.information(self, "Zapisano Nagranie", f"Pomyślnie zapisano plik audio:\n{filename}")
             
@@ -898,11 +925,61 @@ class SmartDictaphoneWindow(QMainWindow):
         self.progress_transcription.setValue(value)
         self.progress_transcription.setFormat(f"{value}% - {text}")
 
-    def _on_transcription_finished(self, text):
+    def _on_transcription_finished(self, html_text, plain_text):
         self.progress_transcription.setValue(100)
         self.progress_transcription.setFormat("Transkrypcja zakończona!")
-        self.text_transcript.setHtml(text)
+        self.text_transcript.setHtml(html_text)
         self.btn_start.setEnabled(True)
+
+        # Zapis czystego tekstu do pliku .txt w folderze transcriptions
+        if self.last_audio_save_path:
+            base_name = os.path.basename(self.last_audio_save_path)
+            file_stem = os.path.splitext(base_name)[0]
+            txt_filename = f"transkrypcja_{file_stem.replace('inteligentne_nagranie_', '')}.txt"
+        else:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            txt_filename = f"transkrypcja_{timestamp}.txt"
+
+        txt_path = os.path.join(self.transcriptions_dir, txt_filename)
+        try:
+            with open(txt_path, 'w', encoding='utf-8') as f:
+                f.write(plain_text)
+            self._refresh_transcriptions_list()
+        except Exception as e:
+            if sys.stderr:
+                print(f"Błąd zapisu pliku TXT: {e}", file=sys.stderr)
+
+    def _refresh_transcriptions_list(self):
+        self.list_transcriptions.clear()
+        if not os.path.exists(self.transcriptions_dir):
+            return
+
+        files = [f for f in os.listdir(self.transcriptions_dir) if f.endswith(".txt")]
+        files.sort(reverse=True)
+
+        for filename in files:
+            full_path = os.path.join(self.transcriptions_dir, filename)
+            size_kb = os.path.getsize(full_path) / 1024
+            mtime = datetime.fromtimestamp(os.path.getmtime(full_path)).strftime("%Y-%m-%d %H:%M:%S")
+
+            item = QListWidgetItem(f"📄 {filename}  ({size_kb:.1f} KB, {mtime})")
+            item.setData(Qt.ItemDataRole.UserRole, full_path)
+            self.list_transcriptions.addItem(item)
+
+    def _on_transcription_double_clicked(self, item):
+        file_path = item.data(Qt.ItemDataRole.UserRole)
+        if file_path and os.path.exists(file_path):
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                html_content = content.replace("\n", "<br>")
+                self.text_transcript.setHtml(html_content)
+            except Exception as e:
+                QMessageBox.warning(self, "Błąd Odczytu", f"Nie udało się otworzyć pliku:\n{e}")
+
+    def _on_open_txt_folder_clicked(self):
+        if os.path.exists(self.transcriptions_dir):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(self.transcriptions_dir))
 
     def _on_transcription_error(self, err_msg):
         self.progress_transcription.setValue(0)
