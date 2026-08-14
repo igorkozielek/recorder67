@@ -3,6 +3,7 @@ import sys
 import time
 import wave
 import queue
+import collections
 import numpy as np
 from datetime import datetime
 
@@ -190,6 +191,15 @@ class TranscriptionWorker(QThread):
             self.error_signal.emit(str(e))
 
 
+def resample_to_16k(audio_arr, orig_sr):
+    if orig_sr == 16000 or len(audio_arr) == 0:
+        return audio_arr
+    num_target = int(len(audio_arr) * 16000 / orig_sr)
+    x_old = np.linspace(0, 1, len(audio_arr), endpoint=False)
+    x_new = np.linspace(0, 1, num_target, endpoint=False)
+    return np.interp(x_new, x_old, audio_arr).astype(np.float32)
+
+
 class LiveTranscriptionWorker(QThread):
     """
     Wątek przetwarzający frazy audio w czasie rzeczywistym przy użyciu faster-whisper.
@@ -240,21 +250,35 @@ class LiveTranscriptionWorker(QThread):
                     self.audio_queue.task_done()
                     continue
 
-                # Konwersja float32 [-1.0, 1.0]
+                # 1. Konwersja do float32 [-1.0, 1.0]
                 if audio_data.dtype == np.int16:
                     audio_float = audio_data.astype(np.float32) / 32768.0
                 else:
                     audio_float = audio_data.astype(np.float32)
 
+                # 2. Bezpieczny resampling do 16kHz
+                if samplerate != 16000:
+                    audio_float = resample_to_16k(audio_float, samplerate)
+
+                # 3. Odfiltrowanie bardzo cichego szumu tła (RMS)
+                rms = np.sqrt(np.mean(audio_float ** 2)) if len(audio_float) > 0 else 0.0
+                if rms < 0.003:
+                    self.audio_queue.task_done()
+                    continue
+
+                # 4. Transkrypcja frazy przez Whisper (16kHz mono)
                 segments, info = self.model.transcribe(
                     audio_float,
                     language="pl",
                     beam_size=5,
-                    vad_filter=False
+                    vad_filter=True,
+                    vad_parameters=dict(min_silence_duration_ms=250),
+                    initial_prompt="Poniżej znajduje się polska wypowiedź dyktowana do notatek biurowych."
                 )
 
                 phrase_text = "".join([segment.text for segment in segments]).strip()
-                if phrase_text:
+                # Odrzucanie pustych krotek lub powszechnych zniekształceń
+                if phrase_text and phrase_text not in [".", "...", ",", "Dziękuję.", "Śpiewa", "Napisy:", "Subtitles"]:
                     time_str = datetime.now().strftime("%H:%M:%S")
                     self.phrase_transcribed_signal.emit(time_str, phrase_text)
 
@@ -306,7 +330,7 @@ class SmartAudioWorker(QThread):
 
     def __init__(self, samplerate=16000, channels=1, device_index=None, auto_pause_sec=5.0):
         super().__init__()
-        self.samplerate = samplerate
+        self.samplerate = 16000  # Zawsze 16000 Hz dla Silero VAD i Whisper
         self.channels = channels
         self.device_index = device_index
         self.auto_pause_sec = auto_pause_sec
@@ -317,8 +341,9 @@ class SmartAudioWorker(QThread):
         self._is_running = False
         self.speech_threshold = 0.45
 
-        # Buforowanie fraz mowy dla transkrypcji na żywo
+        # Buforowanie fraz mowy z pre-bufferingiem (0.2s pre-padding)
         self.current_phrase_chunks = []
+        self.pre_speech_buffer = collections.deque(maxlen=6)  # ~0.2s próbek przed wyznaczonym mową
         self.silence_in_phrase_samples = 0
         self.phrase_speech_detected = False
 
@@ -330,6 +355,7 @@ class SmartAudioWorker(QThread):
         self.frames = []
         self.silence_samples_count = 0
         self.current_phrase_chunks = []
+        self.pre_speech_buffer.clear()
         self.silence_in_phrase_samples = 0
         self.phrase_speech_detected = False
         self.state = SmartRecordState.RECORDING_SPEECH
@@ -371,7 +397,7 @@ class SmartAudioWorker(QThread):
             level = min(100.0, float(rms * 6.0))
             self.audio_level_signal.emit(level)
 
-            # 2. VAD AI (Silero VAD)
+            # 2. VAD AI (Silero VAD na próbkach 16kHz)
             is_speech = False
             speech_prob = 0.0
 
@@ -418,7 +444,7 @@ class SmartAudioWorker(QThread):
             current_silence_sec = self.silence_samples_count / self.samplerate
             self.vad_info_signal.emit(is_speech, speech_prob, current_silence_sec)
 
-            # 4. Zapis próbek oraz buforowanie fraz mowy na żywo
+            # 4. Zapis próbek oraz buforowanie fraz mowy na żywo (z 0.2s pre-bufferingiem)
             if self.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:
                 if indata.dtype != np.int16:
                     audio_int16 = (indata * 32767).clip(-32768, 32767).astype(np.int16)
@@ -426,44 +452,40 @@ class SmartAudioWorker(QThread):
                 else:
                     self.frames.append(indata.tobytes())
 
-                # Zbieranie frazy mowy dla transkrypcji na żywo
+                chunk_flat = indata.copy().flatten()
                 if is_speech:
-                    self.current_phrase_chunks.append(indata.copy().flatten())
-                    self.phrase_speech_detected = True
+                    if not self.phrase_speech_detected:
+                        # Dołącz początkowy pre-buffer (poprzednie 0.2s), aby nie ucinać pierwszych sylab
+                        self.current_phrase_chunks.extend(list(self.pre_speech_buffer))
+                        self.phrase_speech_detected = True
+
+                    self.current_phrase_chunks.append(chunk_flat)
                     self.silence_in_phrase_samples = 0
 
-                    # Jeśli ciągła mowa trwa ponad 3.5 sekundy, wyślij wyciętą frazę
+                    # Jeśli ciągła mowa trwa ponad 3.0 sekundy, wyślij wyciętą frazę
                     total_samples = sum(len(c) for c in self.current_phrase_chunks)
-                    if total_samples >= int(3.5 * self.samplerate):
+                    if total_samples >= int(3.0 * self.samplerate):
                         phrase_arr = np.concatenate(self.current_phrase_chunks)
                         self.phrase_signal.emit(phrase_arr, self.samplerate)
                         self.current_phrase_chunks = []
                         self.phrase_speech_detected = False
                 else:
+                    self.pre_speech_buffer.append(chunk_flat)
+
                     if self.phrase_speech_detected and self.current_phrase_chunks:
                         self.silence_in_phrase_samples += len(indata)
                         silence_dur = self.silence_in_phrase_samples / self.samplerate
                         if silence_dur >= 0.4:  # 0.4s ciszy po wypowiedzi = koniec frazy
                             phrase_arr = np.concatenate(self.current_phrase_chunks)
-                            if len(phrase_arr) >= int(0.4 * self.samplerate):
+                            if len(phrase_arr) >= int(0.3 * self.samplerate):
                                 self.phrase_signal.emit(phrase_arr, self.samplerate)
                             self.current_phrase_chunks = []
                             self.phrase_speech_detected = False
                             self.silence_in_phrase_samples = 0
 
         try:
-            # Ustalenie próbkowania zgodnego z wybranym urządzeniem
-            target_sr = self.samplerate
-            if self.device_index is not None:
-                try:
-                    dev_info = sd.query_devices(self.device_index)
-                    native_sr = int(dev_info.get('default_samplerate', 16000))
-                    if native_sr > 0:
-                        target_sr = native_sr
-                except Exception:
-                    pass
-
-            self.samplerate = target_sr
+            # Wymuszenie próbkowania 16000 Hz w PortAudio dla zapewnienia pełnej zgodności z Silero i Whisper
+            self.samplerate = 16000
 
             with sd.InputStream(
                 samplerate=self.samplerate,
@@ -471,7 +493,7 @@ class SmartAudioWorker(QThread):
                 dtype='float32',
                 device=self.device_index,
                 callback=audio_callback,
-                blocksize=512 if self.samplerate == 16000 else 1024
+                blocksize=512
             ):
                 while self._is_running:
                     self.msleep(40)
@@ -1038,6 +1060,7 @@ class SmartDictaphoneWindow(QMainWindow):
             except Exception:
                 pass
             self.live_transcription_worker.stop()
+            self.live_transcription_worker.wait(2000)
             self.live_transcription_worker = None
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
