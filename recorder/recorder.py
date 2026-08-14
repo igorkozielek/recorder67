@@ -100,21 +100,16 @@ class TranscriptionWorker(QThread):
                     pass
                 torchaudio.AudioMetaData = DummyAudioMetaData
 
-            if hasattr(torch.serialization, 'add_safe_globals'):
-                try:
-                    import torch.torch_version
-                    torch.serialization.add_safe_globals([torch.torch_version.TorchVersion])
-                except Exception:
-                    pass
-
-            if getattr(torch.load, '__name__', '') != '_patched_load':
-                _orig_load = torch.load
-                def _patched_load(*args, **kwargs):
-                    if 'weights_only' not in kwargs:
-                        kwargs['weights_only'] = False
-                    return _orig_load(*args, **kwargs)
-                _patched_load.__name__ = '_patched_load'
-                torch.load = _patched_load
+            # Łatka na PyTorch 2.6+ (wymuszenie weights_only=False niezależnie od przekazanych parametrów)
+            import torch
+            import torch.serialization
+            _orig_load = torch.load
+            def _patched_load(*args, **kwargs):
+                kwargs['weights_only'] = False
+                return _orig_load(*args, **kwargs)
+            
+            torch.load = _patched_load
+            torch.serialization.load = _patched_load
 
             from pyannote.audio import Pipeline
 
