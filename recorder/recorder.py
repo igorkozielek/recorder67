@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import wave
+import queue
 import numpy as np
 from datetime import datetime
 
@@ -189,6 +190,80 @@ class TranscriptionWorker(QThread):
             self.error_signal.emit(str(e))
 
 
+class LiveTranscriptionWorker(QThread):
+    """
+    Wątek przetwarzający frazy audio w czasie rzeczywistym przy użyciu faster-whisper.
+    """
+    phrase_transcribed_signal = pyqtSignal(str, str)  # (time_str, phrase_text)
+    status_signal = pyqtSignal(str)
+    error_signal = pyqtSignal(str)
+
+    def __init__(self, model_size="small"):
+        super().__init__()
+        self.model_size = model_size
+        self.audio_queue = queue.Queue()
+        self._is_running = False
+        self.model = None
+
+    def add_phrase_chunk(self, audio_data, samplerate):
+        if self._is_running:
+            self.audio_queue.put((audio_data, samplerate))
+
+    def stop(self):
+        self._is_running = False
+        self.audio_queue.put(None)
+
+    def run(self):
+        self._is_running = True
+        try:
+            self.status_signal.emit("Ładowanie modelu Whisper (Transkrypcja na Żywo)...")
+            from faster_whisper import WhisperModel
+            import torch
+
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            compute_type = "float16" if device == "cuda" else "default"
+
+            self.model = WhisperModel(self.model_size, device=device, compute_type=compute_type)
+            self.status_signal.emit("Whisper Na Żywo: GOTOWY")
+
+            while self._is_running:
+                try:
+                    item = self.audio_queue.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+
+                if item is None:
+                    break
+
+                audio_data, samplerate = item
+                if audio_data is None or len(audio_data) == 0:
+                    self.audio_queue.task_done()
+                    continue
+
+                # Konwersja float32 [-1.0, 1.0]
+                if audio_data.dtype == np.int16:
+                    audio_float = audio_data.astype(np.float32) / 32768.0
+                else:
+                    audio_float = audio_data.astype(np.float32)
+
+                segments, info = self.model.transcribe(
+                    audio_float,
+                    language="pl",
+                    beam_size=5,
+                    vad_filter=False
+                )
+
+                phrase_text = "".join([segment.text for segment in segments]).strip()
+                if phrase_text:
+                    time_str = datetime.now().strftime("%H:%M:%S")
+                    self.phrase_transcribed_signal.emit(time_str, phrase_text)
+
+                self.audio_queue.task_done()
+
+        except Exception as e:
+            self.error_signal.emit(f"Błąd transkrypcji na żywo: {e}")
+
+
 def get_working_input_devices():
     """
     Pobiera listę pracujących urządzeń wejściowych, ignorując surowe WDM-KS
@@ -226,6 +301,7 @@ class SmartAudioWorker(QThread):
     audio_level_signal = pyqtSignal(float)             # Poziom RMS (0 - 100)
     vad_info_signal = pyqtSignal(bool, float, float)    # (is_speech, speech_prob, silence_sec)
     state_changed_signal = pyqtSignal(int)             # SmartRecordState
+    phrase_signal = pyqtSignal(np.ndarray, int)        # Frazy audio dla transkrypcji na żywo
     error_signal = pyqtSignal(str)
 
     def __init__(self, samplerate=16000, channels=1, device_index=None, auto_pause_sec=5.0):
@@ -241,6 +317,11 @@ class SmartAudioWorker(QThread):
         self._is_running = False
         self.speech_threshold = 0.45
 
+        # Buforowanie fraz mowy dla transkrypcji na żywo
+        self.current_phrase_chunks = []
+        self.silence_in_phrase_samples = 0
+        self.phrase_speech_detected = False
+
     def set_auto_pause_sec(self, seconds):
         self.auto_pause_sec = float(seconds)
 
@@ -248,6 +329,9 @@ class SmartAudioWorker(QThread):
         self.device_index = device_index
         self.frames = []
         self.silence_samples_count = 0
+        self.current_phrase_chunks = []
+        self.silence_in_phrase_samples = 0
+        self.phrase_speech_detected = False
         self.state = SmartRecordState.RECORDING_SPEECH
         self._is_running = True
         self.state_changed_signal.emit(self.state)
@@ -265,6 +349,12 @@ class SmartAudioWorker(QThread):
     def stop_recording(self):
         self.state = SmartRecordState.STOPPED
         self._is_running = False
+        if self.phrase_speech_detected and self.current_phrase_chunks:
+            phrase_arr = np.concatenate(self.current_phrase_chunks)
+            if len(phrase_arr) >= int(0.3 * self.samplerate):
+                self.phrase_signal.emit(phrase_arr, self.samplerate)
+            self.current_phrase_chunks = []
+            self.phrase_speech_detected = False
         self.state_changed_signal.emit(self.state)
 
     def run(self):
@@ -328,13 +418,38 @@ class SmartAudioWorker(QThread):
             current_silence_sec = self.silence_samples_count / self.samplerate
             self.vad_info_signal.emit(is_speech, speech_prob, current_silence_sec)
 
-            # 4. Zapis próbek
+            # 4. Zapis próbek oraz buforowanie fraz mowy na żywo
             if self.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:
                 if indata.dtype != np.int16:
                     audio_int16 = (indata * 32767).clip(-32768, 32767).astype(np.int16)
                     self.frames.append(audio_int16.tobytes())
                 else:
                     self.frames.append(indata.tobytes())
+
+                # Zbieranie frazy mowy dla transkrypcji na żywo
+                if is_speech:
+                    self.current_phrase_chunks.append(indata.copy().flatten())
+                    self.phrase_speech_detected = True
+                    self.silence_in_phrase_samples = 0
+
+                    # Jeśli ciągła mowa trwa ponad 3.5 sekundy, wyślij wyciętą frazę
+                    total_samples = sum(len(c) for c in self.current_phrase_chunks)
+                    if total_samples >= int(3.5 * self.samplerate):
+                        phrase_arr = np.concatenate(self.current_phrase_chunks)
+                        self.phrase_signal.emit(phrase_arr, self.samplerate)
+                        self.current_phrase_chunks = []
+                        self.phrase_speech_detected = False
+                else:
+                    if self.phrase_speech_detected and self.current_phrase_chunks:
+                        self.silence_in_phrase_samples += len(indata)
+                        silence_dur = self.silence_in_phrase_samples / self.samplerate
+                        if silence_dur >= 0.4:  # 0.4s ciszy po wypowiedzi = koniec frazy
+                            phrase_arr = np.concatenate(self.current_phrase_chunks)
+                            if len(phrase_arr) >= int(0.4 * self.samplerate):
+                                self.phrase_signal.emit(phrase_arr, self.samplerate)
+                            self.current_phrase_chunks = []
+                            self.phrase_speech_detected = False
+                            self.silence_in_phrase_samples = 0
 
         try:
             # Ustalenie próbkowania zgodnego z wybranym urządzeniem
@@ -402,6 +517,9 @@ class SmartDictaphoneWindow(QMainWindow):
         self.timer = QTimer(self)
         self.timer.setInterval(1000)
         self.timer.timeout.connect(self._on_timer_tick)
+
+        self.live_transcription_worker = None
+        self.live_plain_text_lines = []
 
         self.worker = SmartAudioWorker(samplerate=16000, auto_pause_sec=5.0)
         self.worker.audio_level_signal.connect(self._update_audio_level)
@@ -862,6 +980,21 @@ class SmartDictaphoneWindow(QMainWindow):
         self.recorded_seconds = 0
         self.lbl_timer.setText("00:00:00")
 
+        self.live_plain_text_lines = []
+        self.text_transcript.clear()
+        self.text_transcript.setPlaceholderText("Transkrypcja na żywo: Wypowiedzi będą pojawiać się tutaj automatycznie...")
+        self.progress_transcription.setValue(0)
+        self.progress_transcription.setFormat("Inicjalizacja transkrypcji na żywo...")
+
+        # Uruchomienie wątku transkrypcji na żywo
+        self.live_transcription_worker = LiveTranscriptionWorker(model_size="small")
+        self.live_transcription_worker.phrase_transcribed_signal.connect(self._on_live_phrase_received)
+        self.live_transcription_worker.status_signal.connect(self._on_live_status_changed)
+        self.live_transcription_worker.error_signal.connect(self._on_live_error)
+        self.live_transcription_worker.start()
+
+        self.worker.phrase_signal.connect(self.live_transcription_worker.add_phrase_chunk)
+
         threshold_sec = self.slider_silence.value()
         self.worker.set_auto_pause_sec(threshold_sec)
         self.worker.start_recording(device_index=selected_index)
@@ -874,12 +1007,38 @@ class SmartDictaphoneWindow(QMainWindow):
         self.combo_devices.setEnabled(False)
         self.slider_silence.setEnabled(False)
 
+    def _on_live_phrase_received(self, time_str, text_phrase):
+        html_line = f"<b>[{time_str}]:</b> {text_phrase}<br>"
+        plain_line = f"[{time_str}]: {text_phrase}"
+        self.live_plain_text_lines.append(plain_line)
+        
+        self.text_transcript.append(html_line)
+        sb = self.text_transcript.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def _on_live_status_changed(self, text):
+        self.progress_transcription.setFormat(f"Transkrypcja na Żywo: {text}")
+        self.progress_transcription.setValue(100)
+
+    def _on_live_error(self, err_msg):
+        self.progress_transcription.setFormat("Błąd transkrypcji na żywo!")
+        if sys.stderr:
+            print(f"Błąd transkrypcji na żywo: {err_msg}", file=sys.stderr)
+
     def _on_pause_clicked(self):
         self.worker.toggle_manual_pause()
 
     def _on_stop_clicked(self):
         self.timer.stop()
         self.worker.stop_recording()
+
+        if self.live_transcription_worker is not None:
+            try:
+                self.worker.phrase_signal.disconnect(self.live_transcription_worker.add_phrase_chunk)
+            except Exception:
+                pass
+            self.live_transcription_worker.stop()
+            self.live_transcription_worker = None
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"inteligentne_nagranie_{timestamp}.wav"
@@ -902,22 +1061,31 @@ class SmartDictaphoneWindow(QMainWindow):
         if saved:
             self.last_audio_save_path = save_path
             self._refresh_recordings_list()
-            QMessageBox.information(self, "Zapisano Nagranie", f"Pomyślnie zapisano plik audio:\n{filename}")
+
+            # Natychmiastowy zapis transkrypcji na żywo do pliku TXT
+            txt_filename = f"transkrypcja_{timestamp}.txt"
+            txt_path = os.path.join(self.transcriptions_dir, txt_filename)
+            live_text_content = "\n\n".join(self.live_plain_text_lines) if self.live_plain_text_lines else "Brak zarejestrowanej mowy."
+            try:
+                with open(txt_path, 'w', encoding='utf-8') as f:
+                    f.write(live_text_content)
+                self._refresh_transcriptions_list()
+            except Exception as e:
+                if sys.stderr:
+                    print(f"Błąd zapisu pliku TXT na żywo: {e}", file=sys.stderr)
+
+            QMessageBox.information(self, "Zapisano Nagranie", f"Pomyślnie zapisano plik audio:\n{filename}\noraz notatki z transkrypcji na żywo!")
             
             token = self.input_token.text().strip()
             if token:
-                self.btn_start.setEnabled(False)
                 self.progress_transcription.setValue(0)
-                self.progress_transcription.setFormat("Inicjalizacja sztucznej inteligencji...")
-                self.text_transcript.clear()
+                self.progress_transcription.setFormat("Trwa analiza głosów i diaryzacja w tle...")
                 
                 self.transcription_thread = TranscriptionWorker(save_path, token)
                 self.transcription_thread.progress_signal.connect(self._on_transcription_progress)
                 self.transcription_thread.finished_signal.connect(self._on_transcription_finished)
                 self.transcription_thread.error_signal.connect(self._on_transcription_error)
                 self.transcription_thread.start()
-            else:
-                self.text_transcript.setText("Transkrypcja pominięta - brak podanego tokenu HuggingFace.")
         else:
             QMessageBox.warning(self, "Brak Nagrania", "Nie zarejestrowano mowy do zapisu.")
 
