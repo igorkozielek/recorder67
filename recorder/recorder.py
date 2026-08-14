@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QComboBox, QProgressBar, QListWidget,
     QListWidgetItem, QFileDialog, QGroupBox, QMessageBox, QFrame,
-    QSlider
+    QSlider, QLineEdit, QTextEdit
 )
 
 # Ładowanie Silero VAD z obsługą strumienia pamięci (BytesIO)
@@ -44,6 +44,70 @@ class SmartRecordState:
     RECORDING_SILENCE_COUNTDOWN = 2
     AUTO_PAUSED = 3
     MANUAL_PAUSED = 4
+
+class TranscriptionWorker(QThread):
+    progress_signal = pyqtSignal(int, str)
+    finished_signal = pyqtSignal(str)
+    error_signal = pyqtSignal(str)
+
+    def __init__(self, audio_path, hf_token):
+        super().__init__()
+        self.audio_path = audio_path
+        self.hf_token = hf_token
+
+    def run(self):
+        try:
+            self.progress_signal.emit(5, "Ładowanie modelu Whisper (Transkrypcja)...")
+            from faster_whisper import WhisperModel
+            import torch
+            
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            model = WhisperModel("small", device=device, compute_type="int8")
+            
+            self.progress_signal.emit(20, "Trwa transkrypcja audio...")
+            segments, info = model.transcribe(self.audio_path, word_timestamps=True, language="pl")
+            
+            transcript_words = []
+            for segment in segments:
+                for word in segment.words:
+                    transcript_words.append({"word": word.word, "start": word.start, "end": word.end})
+            
+            if not transcript_words:
+                self.finished_signal.emit("Brak wykrytej mowy w nagraniu.")
+                return
+
+            self.progress_signal.emit(50, "Ładowanie modelu PyAnnote (Diaryzacja)...")
+            from pyannote.audio import Pipeline
+            
+            pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=self.hf_token)
+            
+            if pipeline is None:
+                raise ValueError("Nieprawidłowy token HuggingFace lub brak akceptacji warunków na stronie modelu.")
+                
+            if torch.cuda.is_available():
+                pipeline.to(torch.device("cuda"))
+                
+            self.progress_signal.emit(60, "Analiza głosów mówców (to potrwa dłuższą chwilę)...")
+            diarization = pipeline(self.audio_path)
+            
+            self.progress_signal.emit(90, "Scalanie tekstu i mówców...")
+            
+            final_text = ""
+            for turn, _, speaker in diarization.itertracks(yield_label=True):
+                words_in_turn = [w["word"] for w in transcript_words if w["start"] >= turn.start and w["end"] <= turn.end]
+                if words_in_turn:
+                    sentence = "".join(words_in_turn).strip()
+                    final_text += f"<b>[{turn.start:.1f}s - {turn.end:.1f}s] {speaker}:</b> {sentence}<br><br>"
+            
+            if not final_text:
+                final_text = "Transkrypcja zakończona, ale nie udało się zmapować głosów do słów."
+
+            self.progress_signal.emit(100, "Gotowe!")
+            self.finished_signal.emit(final_text)
+
+        except Exception as e:
+            self.error_signal.emit(str(e))
+
 
 def get_working_input_devices():
     """
@@ -434,6 +498,42 @@ class SmartDictaphoneWindow(QMainWindow):
 
         main_layout.addWidget(recordings_box, stretch=1)
 
+        # TRANSKRYPCJA I DIARYZACJA
+        transcription_box = QGroupBox("AI Transkrypcja i Rozpoznawanie Głosów (Offline)")
+        transcription_layout = QVBoxLayout(transcription_box)
+
+        token_layout = QHBoxLayout()
+        lbl_token = QLabel("HuggingFace Token:")
+        self.input_token = QLineEdit()
+        self.input_token.setEchoMode(QLineEdit.EchoMode.Password)
+        self.input_token.setPlaceholderText("Wklej tutaj token wygenerowany na HuggingFace (hf_...)")
+        
+        # Opcjonalne ładowanie tokenu z ukrytego pliku .env (żeby nie wklejać ręcznie)
+        env_path = os.path.join(os.getcwd(), ".env")
+        if os.path.exists(env_path):
+            with open(env_path, 'r') as f:
+                for line in f:
+                    if line.startswith("HF_TOKEN="):
+                        self.input_token.setText(line.strip().split("=")[1])
+
+        token_layout.addWidget(lbl_token)
+        token_layout.addWidget(self.input_token)
+        transcription_layout.addLayout(token_layout)
+
+        self.progress_transcription = QProgressBar()
+        self.progress_transcription.setRange(0, 100)
+        self.progress_transcription.setValue(0)
+        self.progress_transcription.setTextVisible(True)
+        self.progress_transcription.setFormat("Oczekuje na start (wpisz token powyżej)...")
+        transcription_layout.addWidget(self.progress_transcription)
+
+        self.text_transcript = QTextEdit()
+        self.text_transcript.setReadOnly(True)
+        self.text_transcript.setPlaceholderText("Tutaj pojawi się transkrypcja z podziałem na role po zakończeniu nagrywania. Pamiętaj, że proces ten rozpoczyna się automatycznie po kliknięciu 'Stop i Zapisz' (jeśli podano token).")
+        transcription_layout.addWidget(self.text_transcript)
+
+        main_layout.addWidget(transcription_box, stretch=2)
+
     def _apply_theme(self):
         qss = """
         QMainWindow {
@@ -579,6 +679,22 @@ class SmartDictaphoneWindow(QMainWindow):
             margin-bottom: -4px;
             border-radius: 7px;
         }
+        QLineEdit {
+            background-color: #222533;
+            border: 1px solid #33374c;
+            border-radius: 6px;
+            padding: 6px 10px;
+            color: #edf2f4;
+        }
+        QTextEdit {
+            background-color: #111216;
+            border: 1px solid #272a38;
+            border-radius: 6px;
+            padding: 8px;
+            color: #edf2f4;
+            font-size: 13px;
+            line-height: 1.5;
+        }
         """
         self.setStyleSheet(qss)
 
@@ -674,8 +790,39 @@ class SmartDictaphoneWindow(QMainWindow):
         if saved:
             self._refresh_recordings_list()
             QMessageBox.information(self, "Zapisano Nagranie", f"Pomyślnie zapisano plik audio:\n{filename}")
+            
+            token = self.input_token.text().strip()
+            if token:
+                self.btn_start.setEnabled(False)
+                self.progress_transcription.setValue(0)
+                self.progress_transcription.setFormat("Inicjalizacja sztucznej inteligencji...")
+                self.text_transcript.clear()
+                
+                self.transcription_thread = TranscriptionWorker(save_path, token)
+                self.transcription_thread.progress_signal.connect(self._on_transcription_progress)
+                self.transcription_thread.finished_signal.connect(self._on_transcription_finished)
+                self.transcription_thread.error_signal.connect(self._on_transcription_error)
+                self.transcription_thread.start()
+            else:
+                self.text_transcript.setText("Transkrypcja pominięta - brak podanego tokenu HuggingFace.")
         else:
             QMessageBox.warning(self, "Brak Nagrania", "Nie zarejestrowano mowy do zapisu.")
+
+    def _on_transcription_progress(self, value, text):
+        self.progress_transcription.setValue(value)
+        self.progress_transcription.setFormat(f"{value}% - {text}")
+
+    def _on_transcription_finished(self, text):
+        self.progress_transcription.setValue(100)
+        self.progress_transcription.setFormat("Transkrypcja zakończona!")
+        self.text_transcript.setHtml(text)
+        self.btn_start.setEnabled(True)
+
+    def _on_transcription_error(self, err_msg):
+        self.progress_transcription.setValue(0)
+        self.progress_transcription.setFormat("Błąd transkrypcji!")
+        QMessageBox.critical(self, "Błąd AI", f"Wystąpił błąd podczas przetwarzania:\n{err_msg}")
+        self.btn_start.setEnabled(True)
 
     def _on_timer_tick(self):
         if self.worker.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:

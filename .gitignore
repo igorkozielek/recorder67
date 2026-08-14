@@ -34,3 +34,6 @@ recordings/
 # Model Cache & Temp Data
 .cache/
 *.jit
+
+# Zmienne środowiskowe i sekrety (nie publikować na GitHubie!)
+.env
