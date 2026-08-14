@@ -77,6 +77,12 @@ class TranscriptionWorker(QThread):
                 return
 
             self.progress_signal.emit(50, "Ładowanie modelu PyAnnote (Diaryzacja)...")
+            
+            # Łatka na błąd zgodności między nowym torchaudio a starszym pyannote (brak funkcji list_audio_backends)
+            import torchaudio
+            if not hasattr(torchaudio, 'list_audio_backends'):
+                torchaudio.list_audio_backends = lambda: ["soundfile", "sox"]
+
             from pyannote.audio import Pipeline
             
             pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=self.hf_token)

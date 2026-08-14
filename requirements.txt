@@ -1,0 +1,8 @@
+PyQt6
+sounddevice
+numpy
+torch
+silero-vad
+faster-whisper
+soundfile
+pyannote.audio<4.0
