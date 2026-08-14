@@ -115,6 +115,20 @@ class TranscriptionWorker(QThread):
 
             torchaudio.load = _patched_torchaudio_load
 
+            # Łatka na torchaudio.info (pobieranie metadanych pliku przez soundfile)
+            def _patched_torchaudio_info(filepath, **kwargs):
+                sf_info = sf.info(filepath)
+                class AudioInfo:
+                    def __init__(self, s_info):
+                        self.sample_rate = s_info.samplerate
+                        self.num_frames = s_info.frames
+                        self.num_channels = s_info.channels
+                        self.bits_per_sample = 16
+                        self.encoding = "PCM_S"
+                return AudioInfo(sf_info)
+
+            torchaudio.info = _patched_torchaudio_info
+
             # Łatka na PyTorch 2.6+ (wymuszenie weights_only=False niezależnie od przekazanych parametrów)
             import torch
             import torch.serialization
