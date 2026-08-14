@@ -57,28 +57,41 @@ class TranscriptionWorker(QThread):
 
     def run(self):
         try:
+            # 1. Zabezpieczenie zmiennych środowiskowych dla HuggingFace
+            if self.hf_token:
+                os.environ["HF_TOKEN"] = self.hf_token
+                os.environ["HUGGING_FACE_HUB_TOKEN"] = self.hf_token
+
             self.progress_signal.emit(5, "Ładowanie modelu Whisper (Transkrypcja)...")
             from faster_whisper import WhisperModel
             import torch
-            
+
             device = "cuda" if torch.cuda.is_available() else "cpu"
-            model = WhisperModel("small", device=device, compute_type="int8")
-            
+            compute_type = "float16" if device == "cuda" else "default"
+
+            model = WhisperModel("small", device=device, compute_type=compute_type)
+
             self.progress_signal.emit(20, "Trwa transkrypcja audio...")
             segments, info = model.transcribe(self.audio_path, word_timestamps=True, language="pl")
-            
+
             transcript_words = []
             for segment in segments:
-                for word in segment.words:
-                    transcript_words.append({"word": word.word, "start": word.start, "end": word.end})
-            
+                if segment.words:
+                    for word in segment.words:
+                        if word.word and word.start is not None and word.end is not None:
+                            transcript_words.append({
+                                "word": word.word,
+                                "start": word.start,
+                                "end": word.end
+                            })
+
             if not transcript_words:
                 self.finished_signal.emit("Brak wykrytej mowy w nagraniu.")
                 return
 
             self.progress_signal.emit(50, "Ładowanie modelu PyAnnote (Diaryzacja)...")
-            
-            # Łatka na błędy zgodności między najnowszym torchaudio a starszym pyannote
+
+            # 2. Kompleksowe łatki dla torchaudio i PyTorch 2.6+
             import torchaudio
             if not hasattr(torchaudio, 'list_audio_backends'):
                 torchaudio.list_audio_backends = lambda: ["soundfile", "sox"]
@@ -87,28 +100,58 @@ class TranscriptionWorker(QThread):
                     pass
                 torchaudio.AudioMetaData = DummyAudioMetaData
 
+            if hasattr(torch.serialization, 'add_safe_globals'):
+                try:
+                    import torch.torch_version
+                    torch.serialization.add_safe_globals([torch.torch_version.TorchVersion])
+                except Exception:
+                    pass
+
+            if getattr(torch.load, '__name__', '') != '_patched_load':
+                _orig_load = torch.load
+                def _patched_load(*args, **kwargs):
+                    if 'weights_only' not in kwargs:
+                        kwargs['weights_only'] = False
+                    return _orig_load(*args, **kwargs)
+                _patched_load.__name__ = '_patched_load'
+                torch.load = _patched_load
+
             from pyannote.audio import Pipeline
-            
-            pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=self.hf_token)
-            
+
+            # Fallback dla różnych wersji PyAnnote / huggingface_hub
+            pipeline = None
+            try:
+                pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=self.hf_token)
+            except TypeError:
+                try:
+                    pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=self.hf_token)
+                except TypeError:
+                    pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
+
             if pipeline is None:
-                raise ValueError("Nieprawidłowy token HuggingFace lub brak akceptacji warunków na stronie modelu.")
-                
+                raise ValueError("Nie udało się załadować modelu PyAnnote. Sprawdź poprawność tokenu HuggingFace.")
+
             if torch.cuda.is_available():
                 pipeline.to(torch.device("cuda"))
-                
-            self.progress_signal.emit(60, "Analiza głosów mówców (to potrwa dłuższą chwilę)...")
+
+            self.progress_signal.emit(60, "Analiza głosów mówców (to potrwa chwilę)...")
             diarization = pipeline(self.audio_path)
-            
+
             self.progress_signal.emit(90, "Scalanie tekstu i mówców...")
-            
+
             final_text = ""
             for turn, _, speaker in diarization.itertracks(yield_label=True):
-                words_in_turn = [w["word"] for w in transcript_words if w["start"] >= turn.start and w["end"] <= turn.end]
+                # Dopasowanie słów po punkcie środkowym (znacznie odporniejsze)
+                words_in_turn = []
+                for w in transcript_words:
+                    mid_point = (w["start"] + w["end"]) / 2.0
+                    if turn.start <= mid_point <= turn.end:
+                        words_in_turn.append(w["word"])
+
                 if words_in_turn:
                     sentence = "".join(words_in_turn).strip()
                     final_text += f"<b>[{turn.start:.1f}s - {turn.end:.1f}s] {speaker}:</b> {sentence}<br><br>"
-            
+
             if not final_text:
                 final_text = "Transkrypcja zakończona, ale nie udało się zmapować głosów do słów."
 
