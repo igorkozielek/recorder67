@@ -81,6 +81,7 @@ class DiarizationEngine:
         import torch
         from pyannote.audio import Pipeline
 
+        print("👥 [PYANNOTE] Ładowanie modelu 'pyannote/speaker-diarization-3.1'...")
         pipeline = None
         try:
             pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=self.hf_token)
@@ -93,9 +94,11 @@ class DiarizationEngine:
         if pipeline is None:
             raise ValueError("Nie udało się załadować modelu PyAnnote. Sprawdź poprawność tokenu HuggingFace.")
 
+        device_name = "CUDA (GPU)" if torch.cuda.is_available() else "CPU"
         if torch.cuda.is_available():
             pipeline.to(torch.device("cuda"))
 
+        print(f"✅ [PYANNOTE] Model załadowany pomyślnie na: {device_name}!")
         self._pipeline = pipeline
         return self._pipeline
 
@@ -107,17 +110,18 @@ class DiarizationEngine:
         """
         pipeline = self.load_pipeline()
 
-        # Wywołanie pipeline z batch_size dla optymalizacji pamięci RAM / GPU
+        print(f"⏳ [PYANNOTE] Rozpoczęto analizę głosów (batch_size={batch_size}) dla pliku: {os.path.basename(audio_path)}...")
         try:
             diarization = pipeline(audio_path, batch_size=batch_size)
         except TypeError:
-            # Fallback dla starszych wersji pyannote nie przyjmujących batch_size bezpośrednio
             diarization = pipeline(audio_path)
 
         final_html = ""
         final_plain = ""
+        speakers_detected = set()
 
         for turn, _, speaker in diarization.itertracks(yield_label=True):
+            speakers_detected.add(speaker)
             # Dopasowanie słów po punkcie środkowym (odporniejsze na przesunięcia czasowe)
             words_in_turn = []
             for w in transcript_words:
@@ -129,6 +133,8 @@ class DiarizationEngine:
                 sentence = "".join(words_in_turn).strip()
                 final_html += f"<b>[{turn.start:.1f}s - {turn.end:.1f}s] {speaker}:</b> {sentence}<br><br>"
                 final_plain += f"[{turn.start:.1f}s - {turn.end:.1f}s] {speaker}: {sentence}\n\n"
+
+        print(f"✅ [PYANNOTE] Diaryzacja zakończona! Wykryto mówców: {', '.join(sorted(speakers_detected)) if speakers_detected else 'Brak'}")
 
         # Zwolnienie pamięci podręcznej PyTorch i Garbage Collector
         try:

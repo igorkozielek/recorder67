@@ -308,10 +308,10 @@ class TranscriptionWorker(QThread):
 
 class FileProcessingWorker(QThread):
     """
-    Wątek asynchroniczny przetwarzający wgrany z dysku plik audio:
-    1. Normalizacja do formatu WAV 16kHz mono bez zewnętrznego FFmpeg
-    2. Transkrypcja Faster-Whisper
-    3. Diaryzacja mówców PyAnnote (z batch_size=32 dla długich plików)
+    Wątek asynchroniczny przetwarzający wgrany z dysku plik audio lub wideo (np. .mp4 ze spotkania):
+    1. Normalizacja do formatu WAV 16kHz mono (za pomocą wbudowanego imageio-ffmpeg)
+    2. Transkrypcja Faster-Whisper ze wskaźnikiem postępu w locie
+    3. Diaryzacja mówców PyAnnote (z batch_size=32 dla długich plików 1-2h)
     """
     progress_signal = pyqtSignal(int, str)
     finished_signal = pyqtSignal(str, str, str)  # (html_text, plain_text, prepared_wav_path)
@@ -325,34 +325,55 @@ class FileProcessingWorker(QThread):
 
     def run(self):
         try:
+            print("\n" + "="*70)
+            print(f"📂 [PLIK] Rozpoczęto przetwarzanie pliku: {self.input_file_path}")
+            print("="*70)
+
             # ETAP 1: Konwersja i normalizacja formatu audio
-            self.progress_signal.emit(5, "Etap 1/3: Konwersja i normalizacja audio do 16kHz...")
+            self.progress_signal.emit(5, "Etap 1/3: Ekstrakcja i normalizacja dźwięku do 16kHz WAV...")
             prepared_wav_path, duration_sec = prepare_audio_file(self.input_file_path, self.recordings_dir)
 
             mins = int(duration_sec // 60)
             secs = int(duration_sec % 60)
-            self.progress_signal.emit(15, f"Etap 1/3: Gotowe (Długość: {mins}m {secs}s). Ładowanie Whisper...")
+            print(f"🎵 [PLIK] Audio przygotowane: {prepared_wav_path} (Długość: {mins}m {secs}s)")
+            self.progress_signal.emit(15, f"Etap 1/3: Audio gotowe ({mins}m {secs}s). Ładowanie Whisper...")
 
-            # ETAP 2: Transkrypcja Faster-Whisper
-            self.progress_signal.emit(25, "Etap 2/3: Transkrypcja nagrania przez Whisper...")
+            # ETAP 2: Transkrypcja Faster-Whisper z raportowaniem postępu
             transcriber = TranscriberEngine(model_size="small")
-            transcript_words = transcriber.transcribe_file_with_words(prepared_wav_path, language="pl")
+
+            def on_whisper_progress(ratio: float, cur_time_sec: float):
+                pct = int(20 + ratio * 40)
+                cur_mins = int(cur_time_sec // 60)
+                cur_secs = int(cur_time_sec % 60)
+                self.progress_signal.emit(
+                    pct,
+                    f"Etap 2/3: Transkrypcja Whisper ({cur_mins}m {cur_secs}s / {mins}m {secs}s - {int(ratio * 100)}%)..."
+                )
+
+            self.progress_signal.emit(20, "Etap 2/3: Rozpoczynanie transkrypcji mowy...")
+            transcript_words = transcriber.transcribe_file_with_words(
+                prepared_wav_path,
+                language="pl",
+                progress_callback=on_whisper_progress,
+                duration_sec=duration_sec
+            )
 
             if not transcript_words:
                 msg = "Nie wykryto zrozumiałej mowy w przesłanym pliku audio."
+                print("⚠️ [PLIK] Nie wykryto słów w pliku audio.")
                 self.finished_signal.emit(msg, msg, prepared_wav_path)
                 return
 
             # ETAP 3: Diaryzacja PyAnnote lub czysta transkrypcja Whisper
             if self.hf_token and self.hf_token.strip():
-                self.progress_signal.emit(60, "Etap 3/3: Ładowanie modelu PyAnnote (Diaryzacja)...")
+                self.progress_signal.emit(65, "Etap 3/3: Ładowanie modelu PyAnnote (Diaryzacja)...")
                 diarizer = DiarizationEngine(hf_token=self.hf_token.strip())
 
-                self.progress_signal.emit(70, "Etap 3/3: Rozpoznawanie osób i łączenie z tekstem...")
+                self.progress_signal.emit(75, "Etap 3/3: Rozpoznawanie osób i łączenie z tekstem (batch_size=32)...")
                 final_html, final_plain = diarizer.process(prepared_wav_path, transcript_words, batch_size=32)
             else:
                 self.progress_signal.emit(85, "Formatowanie transkrypcji (brak tokenu HF dla diaryzacji)...")
-                # Złożenie tekstu bez diaryzacji
+                print("ℹ️ [PLIK] Brak tokenu HuggingFace - pominięto diaryzację mówców.")
                 full_text = "".join(w["word"] for w in transcript_words).strip()
                 final_html = (
                     f"<i><font color='#f59e0b'>Wskazówka: Aby rozpoznać poszczególnych mówców, "
@@ -361,8 +382,13 @@ class FileProcessingWorker(QThread):
                 )
                 final_plain = f"[{duration_sec:.1f}s] Transkrypcja:\n{full_text}"
 
+            print("="*70)
+            print(f"🎉 [PLIK] Sukces! Przetwarzanie zakończone: {os.path.basename(prepared_wav_path)}")
+            print("="*70 + "\n")
+
             self.progress_signal.emit(100, "Przetwarzanie zakończone pomyślnie!")
             self.finished_signal.emit(final_html, final_plain, prepared_wav_path)
 
         except Exception as e:
+            print(f"❌ [BŁĄD PRZETWARZANIA]: {e}", file=sys.stderr)
             self.error_signal.emit(str(e))
