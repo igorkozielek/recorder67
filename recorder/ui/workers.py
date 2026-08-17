@@ -17,13 +17,15 @@ from recorder.config import (
     DEFAULT_AUTO_PAUSE_SEC,
     VAD_SPEECH_THRESHOLD,
     PRE_SPEECH_BUFFER_CHUNKS,
-    RMS_SILENCE_THRESHOLD
+    RMS_SILENCE_THRESHOLD,
+    DEFAULT_WHISPER_MODEL
 )
 from recorder.audio.capture import save_wav_file
 from recorder.audio.converter import resample_to_16k
 from recorder.core.vad import SileroVADDetector, is_silero_available
 from recorder.core.transcriber import TranscriberEngine
-from recorder.core.diarizer import DiarizationEngine
+from recorder.core.diarizer import DiarizationEngine, format_transcript_without_diarization
+
 
 
 class SmartAudioWorker(QThread):
@@ -203,7 +205,7 @@ class LiveTranscriptionWorker(QThread):
     status_signal = pyqtSignal(str)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, model_size="small"):
+    def __init__(self, model_size=DEFAULT_WHISPER_MODEL):
         super().__init__()
         self.model_size = model_size
         self.audio_queue = queue.Queue()
@@ -221,9 +223,9 @@ class LiveTranscriptionWorker(QThread):
     def run(self):
         self._is_running = True
         try:
-            self.status_signal.emit("Ładowanie modelu Whisper (Transkrypcja na Żywo)...")
+            self.status_signal.emit(f"Ładowanie modelu Whisper ({self.model_size})...")
             self.transcriber.load_model()
-            self.status_signal.emit("Whisper Na Żywo: GOTOWY")
+            self.status_signal.emit(f"Whisper Na Żywo [{self.model_size}]: GOTOWY")
 
             while self._is_running:
                 try:
@@ -269,37 +271,62 @@ class LiveTranscriptionWorker(QThread):
 
 class TranscriptionWorker(QThread):
     """
-    Wątek wykonujący pełną transkrypcję z modelowaniem słów oraz diaryzację mówców (PyAnnote).
+    Wątek wykonujący pełną transkrypcję z opcjonalną diaryzacją mówców (PyAnnote).
     """
     progress_signal = pyqtSignal(int, str)
     finished_signal = pyqtSignal(str, str)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, audio_path: str, hf_token: str):
+    def __init__(
+        self,
+        audio_path: str,
+        hf_token: str,
+        model_size: str = DEFAULT_WHISPER_MODEL,
+        enable_diarization: bool = True,
+        num_speakers: int = None
+    ):
         super().__init__()
         self.audio_path = audio_path
         self.hf_token = hf_token
+        self.model_size = model_size
+        self.enable_diarization = enable_diarization
+        self.num_speakers = num_speakers
 
     def run(self):
         try:
-            self.progress_signal.emit(5, "Ładowanie modelu Whisper (Transkrypcja)...")
-            transcriber = TranscriberEngine(model_size="small")
+            self.progress_signal.emit(10, f"Ładowanie modelu Whisper ({self.model_size})...")
+            transcriber = TranscriberEngine(model_size=self.model_size)
             
-            self.progress_signal.emit(20, "Trwa transkrypcja audio...")
+            self.progress_signal.emit(30, "Trwa transkrypcja audio...")
             transcript_words = transcriber.transcribe_file_with_words(self.audio_path, language="pl")
 
             if not transcript_words:
                 self.finished_signal.emit("Brak wykrytej mowy w nagraniu.", "Brak wykrytej mowy w nagraniu.")
                 return
 
-            self.progress_signal.emit(50, "Ładowanie modelu PyAnnote (Diaryzacja)...")
+            # Jeśli wyłączono diaryzację lub brak tokena HuggingFace
+            if not self.enable_diarization or not self.hf_token:
+                self.progress_signal.emit(90, "Formatowanie transkrypcji...")
+                final_html, final_plain = format_transcript_without_diarization(transcript_words)
+                self.progress_signal.emit(100, "Gotowe!")
+                self.finished_signal.emit(final_html, final_plain)
+                return
+
+            # Pełna diaryzacja mówców (PyAnnote)
+            speaker_info = f" ({self.num_speakers} os.)" if self.num_speakers else ""
+            self.progress_signal.emit(60, f"Ładowanie modelu PyAnnote{speaker_info}...")
             diarizer = DiarizationEngine(hf_token=self.hf_token)
 
-            self.progress_signal.emit(60, "Analiza głosów mówców (to potrwa chwilę)...")
-            final_html, final_plain = diarizer.process(self.audio_path, transcript_words)
+            self.progress_signal.emit(75, f"Analiza głosów mówców{speaker_info}...")
+            final_html, final_plain = diarizer.process(
+                self.audio_path,
+                transcript_words,
+                num_speakers=self.num_speakers
+            )
 
             self.progress_signal.emit(100, "Gotowe!")
             self.finished_signal.emit(final_html, final_plain)
 
         except Exception as e:
             self.error_signal.emit(str(e))
+
