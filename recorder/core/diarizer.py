@@ -80,6 +80,13 @@ class DiarizationEngine:
 
         import torch
         from pyannote.audio import Pipeline
+        from recorder.config import get_hardware_acceleration_info
+
+        hw_info = get_hardware_acceleration_info()
+        if not hw_info.get("is_cuda", False):
+            safe_threads = hw_info.get("cpu_threads", 5)
+            torch.set_num_threads(safe_threads)
+            print(f"👥 [PYANNOTE] Ustawiono {safe_threads} wątków roboczych PyTorch na CPU.")
 
         print("👥 [PYANNOTE] Ładowanie modelu 'pyannote/speaker-diarization-3.1'...")
         pipeline = None
@@ -106,58 +113,133 @@ class DiarizationEngine:
         self,
         audio_path: str,
         transcript_words: List[Dict[str, Any]],
-        batch_size: int = 32,
+        batch_size: int = None,
         num_speakers: int = None,
         min_speakers: int = None,
         max_speakers: int = None
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         """
         Wykonuje analizę mówców i łączy wypowiedzi z transkrypcją słów.
-        Optymalizacja: wykorzystanie batch_size=32 dla efektywnego przetwarzania długich plików (1-2h).
+        Gwarantuje, że żadne słowo z transkrypcji nie zostanie utracone (pełne dopasowanie słowo-mówca).
         Zwraca (final_html, final_plain, turns).
         """
+        if not transcript_words:
+            return "Brak zarejestrowanej mowy.", "Brak zarejestrowanej mowy.", []
+
         pipeline = self.load_pipeline()
 
-        print(f"⏳ [PYANNOTE] Rozpoczęto analizę głosów (batch_size={batch_size}) dla pliku: {os.path.basename(audio_path)}...")
         diarize_kwargs = {}
-        if batch_size is not None and batch_size > 0:
-            diarize_kwargs["batch_size"] = int(batch_size)
-        if num_speakers is not None and num_speakers > 0:
+        if num_speakers is not None and int(num_speakers) > 0:
             diarize_kwargs["num_speakers"] = int(num_speakers)
-        if min_speakers is not None:
-            diarize_kwargs["min_speakers"] = int(min_speakers)
-        if max_speakers is not None:
-            diarize_kwargs["max_speakers"] = int(max_speakers)
+            diarize_kwargs["min_speakers"] = int(num_speakers)
+            diarize_kwargs["max_speakers"] = int(num_speakers)
+        else:
+            if min_speakers is not None and int(min_speakers) > 0:
+                diarize_kwargs["min_speakers"] = int(min_speakers)
+            if max_speakers is not None and int(max_speakers) > 0:
+                diarize_kwargs["max_speakers"] = int(max_speakers)
+
+        print(f"⏳ [PYANNOTE] Rozpoczęto analizę głosów (parametry: {diarize_kwargs or 'auto'}) dla pliku: {os.path.basename(audio_path)}...")
 
         try:
             diarization = pipeline(audio_path, **diarize_kwargs)
-        except TypeError:
-            diarization = pipeline(audio_path)
+        except Exception as err:
+            print(f"⚠️ [PYANNOTE] Błąd wywołania z parametrami ({err}), ponawianie domyślne...")
+            try:
+                diarization = pipeline(audio_path)
+            except Exception as pipe_err:
+                print(f"❌ [PYANNOTE] Błąd diaryzacji: {pipe_err}")
+                diarization = None
+
+        # Jeśli diaryzacja nie powiodła się, natychmiastowy bezpieczny fallback do pełnego tekstu
+        if diarization is None:
+            return format_transcript_without_diarization(transcript_words)
+
+        # Pobieramy wszystkie przedziały czasowe mówców z PyAnnote
+        diar_segments = []
+        speakers_detected = set()
+        try:
+            for turn, _, speaker in diarization.itertracks(yield_label=True):
+                speakers_detected.add(speaker)
+                diar_segments.append((turn.start, turn.end, speaker))
+        except Exception:
+            pass
+
+        if not diar_segments:
+            print("⚠️ [PYANNOTE] Nie wykryto segmentów mówców. Powrót do transkrypcji ciągłej.")
+            return format_transcript_without_diarization(transcript_words)
+
+        # Dopasowanie KAŻDEGO słowa do najbardziej prawdopodobnego mówcy (brak utraty słów!)
+        word_speaker_tags = []
+        for w in transcript_words:
+            w_start = w.get("start", 0.0)
+            w_end = w.get("end", w_start + 0.1)
+            mid = (w_start + w_end) / 2.0
+
+            best_speaker = None
+            best_dist = 999999.0
+
+            # 1. Sprawdzenie czy słowo leży bezpośrednio wewnątrz segmentu
+            for seg_start, seg_end, seg_spk in diar_segments:
+                if seg_start <= mid <= seg_end:
+                    best_speaker = seg_spk
+                    break
+                else:
+                    # Obliczenie odległości do najbliższego segmentu
+                    dist = min(abs(mid - seg_start), abs(mid - seg_end))
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_speaker = seg_spk
+
+            # Jeśli brak dopasowania wewnątrz, przypisz najbliższego mówcę
+            assigned_spk = best_speaker or "SPEAKER_00"
+            word_speaker_tags.append((w.get("word", ""), w_start, w_end, assigned_spk))
+
+        # Grupowanie kolejnych słów tego samego mówcy w spójne wypowiedzi (turns)
+        turns = []
+        if word_speaker_tags:
+            cur_spk = word_speaker_tags[0][3]
+            cur_start = word_speaker_tags[0][1]
+            cur_end = word_speaker_tags[0][2]
+            cur_words = []
+
+            for w_text, w_s, w_e, w_spk in word_speaker_tags:
+                # Rozdzielamy turę jeśli zmienił się mówca LUB wystąpiła bardzo długa przerwa (> 3.0s)
+                if w_spk != cur_spk or (w_s - cur_end) > 3.0:
+                    sentence = "".join(cur_words).strip()
+                    if sentence:
+                        turns.append({
+                            "start": cur_start,
+                            "end": cur_end,
+                            "speaker": cur_spk,
+                            "text": sentence
+                        })
+                    cur_spk = w_spk
+                    cur_start = w_s
+                    cur_words = []
+
+                cur_words.append(w_text)
+                cur_end = w_e
+
+            if cur_words:
+                sentence = "".join(cur_words).strip()
+                if sentence:
+                    turns.append({
+                        "start": cur_start,
+                        "end": cur_end,
+                        "speaker": cur_spk,
+                        "text": sentence
+                    })
 
         final_html = ""
         final_plain = ""
-        turns = []
-        speakers_detected = set()
-
-        for turn, _, speaker in diarization.itertracks(yield_label=True):
-            speakers_detected.add(speaker)
-            # Dopasowanie słów po punkcie środkowym (odporniejsze na przesunięcia czasowe)
-            words_in_turn = []
-            for w in transcript_words:
-                mid_point = (w["start"] + w["end"]) / 2.0
-                if turn.start <= mid_point <= turn.end:
-                    words_in_turn.append(w["word"])
-
-            if words_in_turn:
-                sentence = "".join(words_in_turn).strip()
-                turns.append({
-                    "start": turn.start,
-                    "end": turn.end,
-                    "speaker": speaker,
-                    "text": sentence
-                })
-                final_html += f"<b>[{turn.start:.1f}s - {turn.end:.1f}s] {speaker}:</b> {sentence}<br><br>"
-                final_plain += f"[{turn.start:.1f}s - {turn.end:.1f}s] {speaker}: {sentence}\n\n"
+        for t in turns:
+            spk = t["speaker"]
+            s_txt = t["text"]
+            st = t["start"]
+            en = t["end"]
+            final_html += f"<b>[{st:.1f}s - {en:.1f}s] {spk}:</b> {s_txt}<br><br>"
+            final_plain += f"[{st:.1f}s - {en:.1f}s] {spk}: {s_txt}\n\n"
 
         print(f"✅ [PYANNOTE] Diaryzacja zakończona! Wykryto mówców: {', '.join(sorted(speakers_detected)) if speakers_detected else 'Brak'}")
 
@@ -170,11 +252,11 @@ class DiarizationEngine:
             pass
         gc.collect()
 
-        if not final_html:
-            fallback_msg = "Transkrypcja zakończona, ale nie udało się zmapować głosów do słów."
-            return fallback_msg, fallback_msg, []
+        if not final_html or not turns:
+            return format_transcript_without_diarization(transcript_words)
 
         return final_html, final_plain, turns
+
 
 
 def format_transcript_without_diarization(transcript_words: List[Dict[str, Any]]) -> Tuple[str, str, List[Dict[str, Any]]]:

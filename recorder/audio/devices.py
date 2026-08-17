@@ -2,13 +2,22 @@ import sounddevice as sd
 from typing import List, Dict, Any
 
 
-def get_working_input_devices() -> List[Dict[str, Any]]:
+def get_working_input_devices(force_refresh: bool = True) -> List[Dict[str, Any]]:
     """
     Pobiera listę sprawnych urządzeń wejściowych, ignorując surowe sterowniki WDM-KS
     powodujące błędy PortAudio w systemie Windows.
+    Gdy force_refresh=True, resetuje pamięć podręczną urządzeń PortAudio, aby wykryć
+    nowo podłączone mikrofony USB.
     """
     valid_devices = []
     try:
+        if force_refresh:
+            try:
+                sd._terminate()
+                sd._initialize()
+            except Exception:
+                pass
+
         devices = sd.query_devices()
         hostapis = sd.query_hostapis()
 

@@ -77,12 +77,12 @@ def find_names_in_text(text: str) -> List[str]:
 
 def analyze_speakers(turns: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     """
-    Kompleksowa, odporna analiza intencji i kontekstu wypowiedzi:
-    1. Rozpoznaje kiedy ktoś mówi O SOBIE w 1. osobie (np. 'pytali mnie radziu', 'sygnał radek weź').
-    2. Rozpoznaje zwroty bezpośrednie i pytania do rozmówcy na początku zdań (np. 'Łukasz, a czym się zajmiemy?').
-    3. Rozpoznaje polecenia skierowane do kogoś (np. 'wyloguj się Szymon').
-    4. Rozpoznaje mówienie o kimś w 3. osobie (np. 'wysłałem to Radziowi').
-    5. Zwraca statystyki, próbki wypowiedzi oraz czytelne wskazówki kontekstowe (clues) dla człowieka.
+    Zaawansowana, odporna analiza kontekstu rozmowy w języku polskim:
+    1. Rozpoznaje samoprezentację w 1. osobie ('z tej strony Radek', 'tu Łukasz', 'mówi Szymon').
+    2. Rozpoznaje bezpośrednie zwroty wołaczowe do rozmówcy ('Dobra Łukasz, ...', 'Szymon, powiedz mi...', 'Cześć Radek').
+    3. Przypisuje imię rzeczywistemu partnerowi w dialogu (analizując kontekst wypowiedzi sąsiednich i ignorując wtrącenia typu 'hmm').
+    4. Bezwzględnie wyklucza osobę wypowiadającą zwrot z bycia nazwaną tym imieniem.
+    5. Zwraca statystyki, próbki i czytelne wskazówki kontekstowe dla użytkownika.
     """
     if not turns:
         return {}
@@ -91,7 +91,6 @@ def analyze_speakers(turns: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     if not speakers:
         return {}
 
-    # Inicjalizacja struktur
     stats = {}
     for spk in speakers:
         stats[spk] = {
@@ -102,7 +101,7 @@ def analyze_speakers(turns: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
             "clue": ""
         }
 
-    # Zbieranie próbek i statystyk
+    # Zliczanie wypowiedzi i dobór próbek
     for t in turns:
         spk = t.get("speaker")
         if not spk:
@@ -112,82 +111,101 @@ def analyze_speakers(turns: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         stats[spk]["count"] += 1
         stats[spk]["total_duration"] += dur
 
-        # Wybór reprezentatywnej próbki
-        if len(stats[spk]["sample"]) < 20 and len(text) >= 15:
+        if len(stats[spk]["sample"]) < 25 and len(text) >= 15:
             stats[spk]["sample"] = text
         elif not stats[spk]["sample"] and text:
             stats[spk]["sample"] = text
 
-    # Obliczanie punktów i dowodów
     scores = defaultdict(lambda: Counter())
-    evidence = defaultdict(dict)  # evidence[spk][name] = "opis kontekstu"
+    evidence = defaultdict(dict)
 
     for i, t in enumerate(turns):
         cur_spk = t.get("speaker")
-        text = t.get("text", "")
+        text = t.get("text", "").strip()
         text_lower = text.lower()
 
-        # --- A. SAMOPREZENTACJA / MÓWIENIE O SOBIE W 1. OSOBIE ---
-        # Wzorce generyczne: "do mnie ... [Imię]", "pytali mnie ... [Imię]", "jestem [Imię]", "ja [Imię]"
+        if not cur_spk or not text:
+            continue
+
+        # --- A. SAMOPREZENTACJA W 1. OSOBIE ---
         self_patterns = [
-            r'\b(?:do\s+mnie|pytali\s+mnie|pytają\s+mnie|mówią\s+mi|mówi\s+mi|u\s+mnie|ja|jestem|dla\s+mnie)\b[^\.\,\?\!]{0,25}\b([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)\b',
-            r'\b(?:sygnał|mówi)\b[^\.\,\?\!]{0,20}\b([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)\s+weź\b'
+            r'\b(?:z\s+tej\s+strony|tu|jestem|mówi|ja\s+jestem|nazywam\s+się)\s+([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)\b',
+            r'\b(?:do\s+mnie|pytali\s+mnie|mówią\s+mi|u\s+mnie)\s+([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)\b'
         ]
         for pat in self_patterns:
             for match in re.finditer(pat, text_lower):
                 matched_name_word = match.group(1)
                 found_names = find_names_in_text(matched_name_word)
                 for fn in found_names:
-                    # Bardzo silny punkt dla MÓWCY AKTUALNEGO
-                    scores[cur_spk][fn] += 6.0
-                    snippet = text[max(0, match.start()-10):min(len(text), match.end()+25)].strip()
-                    evidence[cur_spk][fn] = f"Mówi o sobie w 1. os.: „...{snippet}...”"
+                    scores[cur_spk][fn] += 8.0
+                    snippet = text[max(0, match.start()-5):min(len(text), match.end()+20)].strip()
+                    evidence[cur_spk][fn] = f"Mówi o sobie w 1. os.: „{snippet}”"
 
-        # --- B. ZWROT BEZPOŚREDNI / PYTANIE NA POCZĄTKU WYPOWIEDZI ---
-        # Np. "Piotr, a o czym dzisiaj porozmawiamy?" lub "Tomasz, spójrz na to..."
-        words_first = text.strip().split()[:3]
-        first_str = " ".join(words_first)
-        first_names = find_names_in_text(first_str)
+        # --- B. BEZPOŚREDNI ZWROT DO ROZMÓWCY (WOŁACZ / POCZĄTEK LUB KONIEC ZDANIA) ---
+        # Np. "Dobra Łukasz, a o czym...", "Łukasz, słuchaj...", "Cześć Szymon...", "Słuchaj Radek..."
+        vocative_patterns = [
+            r'^(?:dobra|okej|ok|no|no\s+dobra|cześć|hej|witam|słuchaj|powiedz\s+mi|zobacz|spójrz)?\s*([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)[\,\s\.\!\?]',
+            r'[\,\.\!\?]\s*([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)[\?\!\.]$'
+        ]
 
-        if first_names and i + 1 < len(turns):
-            next_turn = turns[i + 1]
-            next_spk = next_turn.get("speaker")
-            if next_spk and next_spk != cur_spk:
-                for fn in first_names:
-                    # Rozmówca odpowiadający na wywołanie dostaje mocny punkt
-                    scores[next_spk][fn] += 4.5
-                    evidence[next_spk][fn] = f"Wywołany przez {cur_spk}: „{first_str}...”"
-                    # Mówiący wyklucza siebie
-                    scores[cur_spk][fn] -= 3.0
+        found_addressed_names = []
+        matched_snippet = ""
+        for v_pat in vocative_patterns:
+            m = re.search(v_pat, text_lower)
+            if m:
+                names = find_names_in_text(m.group(1))
+                if names:
+                    found_addressed_names.extend(names)
+                    matched_snippet = text[:min(len(text), 45)].strip()
+                    break
 
-        # --- C. POLECENIA I ZWROTY DO ROZMÓWCY ---
-        # Np. "Sprawdź to Piotr" lub "Ty Tomasz..."
-        cmd_matches = re.findall(r'\b(?:ty|tobie|ciebie|się)\s+([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)\b', text_lower)
-        for cm in cmd_matches:
-            target_names = find_names_in_text(cm)
-            for tn in target_names:
-                # Wszyscy inni oprócz mówcy
-                for other_spk in speakers:
-                    if other_spk != cur_spk:
-                        scores[other_spk][tn] += 2.5
-                        if tn not in evidence[other_spk]:
-                            evidence[other_spk][tn] = f"Zwrot od {cur_spk}: „...{cm}... {tn}”"
+        if found_addressed_names:
+            for fn in found_addressed_names:
+                # Mówca cur_spk ZAWSZE wyklucza siebie
+                scores[cur_spk][fn] -= 6.0
 
-        # --- D. ODNIESIENIE W 3. OSOBIE ---
-        # Np. "Wysłałem to Janowi", "U Piotra na biurku"
-        ref_matches = re.findall(r'\b(?:wysłałem|wysłałam|poszło\s+do|u|od|tam\s+jest\s+u)\s+([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)\b', text_lower)
-        for rm in ref_matches:
-            target_names = find_names_in_text(rm)
-            for tn in target_names:
-                scores[cur_spk][tn] -= 2.0  # Mówca mówi o kimś innym
-                if i + 1 < len(turns) and turns[i + 1].get("speaker") != cur_spk:
-                    scores[turns[i + 1].get("speaker")][tn] += 2.0
+                # Szukamy właściwego rozmówcy w sąsiednich turach dialogu
+                target_spk = None
+
+                # 1. Sprawdzamy kolejną turę (i+1), o ile nie jest tylko wtrąceniem typu "hmm"
+                if i + 1 < len(turns):
+                    candidate_spk = turns[i + 1].get("speaker")
+                    candidate_txt = turns[i + 1].get("text", "").strip().lower()
+                    if candidate_spk and candidate_spk != cur_spk:
+                        if len(candidate_txt) > 4 and candidate_txt not in ("hmm", "mhm", "aha", "tak", "nie"):
+                            target_spk = candidate_spk
+
+                # 2. Jeśli kolejna tura to wtrącenie, sprawdzamy turę i+2
+                if not target_spk and i + 2 < len(turns):
+                    candidate_spk = turns[i + 2].get("speaker")
+                    if candidate_spk and candidate_spk != cur_spk:
+                        target_spk = candidate_spk
+
+                # 3. Jeśli nie znaleziono po prawej, sprawdzamy poprzednią turę (i-1)
+                if not target_spk and i - 1 >= 0:
+                    candidate_spk = turns[i - 1].get("speaker")
+                    if candidate_spk and candidate_spk != cur_spk:
+                        target_spk = candidate_spk
+
+                # 4. Jeśli nadal brak, wybieramy najbardziej aktywnego innego mówcę w nagraniu
+                if not target_spk:
+                    other_spks = [s for s in speakers if s != cur_spk and stats[s]["count"] >= 3]
+                    if other_spks:
+                        target_spk = max(other_spks, key=lambda s: stats[s]["count"])
+
+                if target_spk:
+                    scores[target_spk][fn] += 5.0
+                    if fn not in evidence[target_spk]:
+                        evidence[target_spk][fn] = f"Zwrot bezpośredni od {cur_spk}: „{matched_snippet}...”"
 
     # Przypisywanie najlepszych, unikalnych dopasowań
     candidates = []
     for spk, name_counts in scores.items():
+        # Ignorujemy małe wtrącenia (<= 2 wypowiedzi) przy automatycznym przypisywaniu imion
+        if stats[spk]["count"] <= 2:
+            continue
         for name, score in name_counts.items():
-            if score >= 2.0:
+            if score >= 3.0:
                 candidates.append((score, spk, name))
 
     candidates.sort(key=lambda x: x[0], reverse=True)
@@ -198,7 +216,7 @@ def analyze_speakers(turns: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     for score, spk, name in candidates:
         if spk not in assigned_spk and name not in assigned_names:
             stats[spk]["suggested_name"] = name
-            stats[spk]["clue"] = f"💡 {evidence[spk].get(name, 'Wykryto powiązanie z kontekstu')}"
+            stats[spk]["clue"] = f"💡 {evidence[spk].get(name, 'Wykryto powiązanie z kontekstu dialogu')}"
             assigned_spk.add(spk)
             assigned_names.add(name)
 
@@ -207,7 +225,7 @@ def analyze_speakers(turns: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         cnt = stats[spk]["count"]
         if not stats[spk]["suggested_name"]:
             if cnt <= 2:
-                stats[spk]["clue"] = f"⚠️ Krótkie wtrącenie ({cnt} wypowiedzi) – wybierz osobę lub scali z innym mówcą"
+                stats[spk]["clue"] = f"⚠️ Krótkie wtrącenie ({cnt} wypowiedzi) – zalecane scalenie z innym mówcą"
             else:
                 stats[spk]["clue"] = "ℹ️ Brak bezpośrednich wzmianek imienia – wpisz osobę ręcznie"
 
