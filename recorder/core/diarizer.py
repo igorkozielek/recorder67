@@ -98,13 +98,29 @@ class DiarizationEngine:
         self._pipeline = pipeline
         return self._pipeline
 
-    def process(self, audio_path: str, transcript_words: List[Dict[str, Any]]) -> Tuple[str, str]:
+    def process(
+        self,
+        audio_path: str,
+        transcript_words: List[Dict[str, Any]],
+        num_speakers: int = None,
+        min_speakers: int = None,
+        max_speakers: int = None
+    ) -> Tuple[str, str]:
         """
         Wykonuje analizę mówców i łączy wypowiedzi z transkrypcją słów.
         Zwraca (final_html, final_plain).
         """
         pipeline = self.load_pipeline()
-        diarization = pipeline(audio_path)
+        
+        diarize_kwargs = {}
+        if num_speakers is not None and num_speakers > 0:
+            diarize_kwargs["num_speakers"] = int(num_speakers)
+        if min_speakers is not None:
+            diarize_kwargs["min_speakers"] = int(min_speakers)
+        if max_speakers is not None:
+            diarize_kwargs["max_speakers"] = int(max_speakers)
+
+        diarization = pipeline(audio_path, **diarize_kwargs)
 
         final_html = ""
         final_plain = ""
@@ -127,3 +143,55 @@ class DiarizationEngine:
             return fallback_msg, fallback_msg
 
         return final_html, final_plain
+
+
+def format_transcript_without_diarization(transcript_words: List[Dict[str, Any]]) -> Tuple[str, str]:
+    """
+    Szybko grupuje słowa w czytelne bloki zdań z timestampami (gdy diaryzacja mówców jest wyłączona).
+    Zwraca (final_html, final_plain).
+    """
+    if not transcript_words:
+        return "Brak zarejestrowanej mowy.", "Brak zarejestrowanej mowy."
+
+    chunks = []
+    current_chunk_words = []
+    chunk_start = transcript_words[0]["start"]
+    last_end = transcript_words[0]["end"]
+
+    for w in transcript_words:
+        w_word = w.get("word", "")
+        w_start = w.get("start", last_end)
+        w_end = w.get("end", w_start)
+
+        # Jeśli pauza między słowami przekracza 1.2s lub bieżący blok ma ponad 12 słów i kończy się kropką
+        is_long_pause = (w_start - last_end) > 1.2
+        is_sentence_end = any(current_chunk_words) and current_chunk_words[-1].rstrip().endswith((".", "!", "?")) and len(current_chunk_words) >= 8
+
+        if current_chunk_words and (is_long_pause or is_sentence_end):
+            text = "".join(current_chunk_words).strip()
+            if text:
+                chunks.append((chunk_start, last_end, text))
+            current_chunk_words = []
+            chunk_start = w_start
+
+        current_chunk_words.append(w_word)
+        last_end = w_end
+
+    if current_chunk_words:
+        text = "".join(current_chunk_words).strip()
+        if text:
+            chunks.append((chunk_start, last_end, text))
+
+    final_html = ""
+    final_plain = ""
+
+    for start_t, end_t, text in chunks:
+        final_html += f"<b>[{start_t:.1f}s - {end_t:.1f}s]:</b> {text}<br><br>"
+        final_plain += f"[{start_t:.1f}s - {end_t:.1f}s]: {text}\n\n"
+
+    if not final_html:
+        final_html = "Brak zarejestrowanej mowy."
+        final_plain = "Brak zarejestrowanej mowy."
+
+    return final_html, final_plain
+

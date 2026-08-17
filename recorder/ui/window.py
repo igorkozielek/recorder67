@@ -9,7 +9,7 @@ try:
         QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
         QPushButton, QLabel, QComboBox, QProgressBar, QListWidget,
         QListWidgetItem, QGroupBox, QMessageBox, QFrame,
-        QSlider, QLineEdit, QTextEdit, QScrollArea
+        QSlider, QLineEdit, QTextEdit, QScrollArea, QCheckBox
     )
 except ImportError:
     from PyQt6.QtCore import Qt, QTimer, QUrl
@@ -18,7 +18,7 @@ except ImportError:
         QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
         QPushButton, QLabel, QComboBox, QProgressBar, QListWidget,
         QListWidgetItem, QGroupBox, QMessageBox, QFrame,
-        QSlider, QLineEdit, QTextEdit, QScrollArea
+        QSlider, QLineEdit, QTextEdit, QScrollArea, QCheckBox
     )
 
 from recorder.config import (
@@ -27,7 +27,12 @@ from recorder.config import (
     TRANSCRIPTIONS_DIR,
     get_hf_token,
     SAMPLE_RATE,
-    DEFAULT_AUTO_PAUSE_SEC
+    DEFAULT_AUTO_PAUSE_SEC,
+    WHISPER_MODELS,
+    DEFAULT_WHISPER_MODEL,
+    get_hardware_acceleration_info,
+    SPEAKER_COUNT_OPTIONS,
+    get_recommended_profile
 )
 from recorder.audio.devices import get_working_input_devices
 from recorder.core.vad import is_silero_available
@@ -115,8 +120,48 @@ class SmartDictaphoneWindow(QMainWindow):
         device_layout.addWidget(self.btn_refresh_dev)
         main_layout.addWidget(device_box)
 
+        # WYBÓR MODELU FASTER-WHISPER I AKCELERACJA SPRZĘTOWA
+        model_box = QGroupBox("Model Transkrypcji AI (Faster-Whisper)")
+        model_layout = QVBoxLayout(model_box)
+
+        model_row = QHBoxLayout()
+        lbl_model_prefix = QLabel("Wybierz model:")
+        lbl_model_prefix.setFont(QFont("Segoe UI", 9, QFont.Weight.Medium))
+        self.combo_models = QComboBox()
+        
+        for m_id, m_info in WHISPER_MODELS.items():
+            self.combo_models.addItem(m_info["label"], userData=m_id)
+
+        default_idx = self.combo_models.findData(DEFAULT_WHISPER_MODEL)
+        if default_idx != -1:
+            self.combo_models.setCurrentIndex(default_idx)
+
+        self.combo_models.currentIndexChanged.connect(self._on_model_selection_changed)
+
+        self.btn_auto_detect = QPushButton("🎯 Auto-dopasuj")
+        self.btn_auto_detect.setToolTip("Automatycznie dopasuj model i parametry do parametrów Twojego komputera")
+        self.btn_auto_detect.clicked.connect(self._on_auto_detect_clicked)
+
+        model_row.addWidget(lbl_model_prefix)
+        model_row.addWidget(self.combo_models, stretch=1)
+        model_row.addWidget(self.btn_auto_detect)
+        model_layout.addLayout(model_row)
+
+        self.lbl_model_desc = QLabel(WHISPER_MODELS.get(DEFAULT_WHISPER_MODEL, {}).get("desc", ""))
+        self.lbl_model_desc.setStyleSheet("color: #8d99ae; font-size: 11px; margin-top: 2px;")
+        model_layout.addWidget(self.lbl_model_desc)
+
+        hw_info = get_hardware_acceleration_info()
+        self.lbl_hw_badge = QLabel(hw_info["badge_text"])
+        self.lbl_hw_badge.setStyleSheet("color: #10b981; font-weight: bold; font-size: 11px; margin-top: 4px;")
+        model_layout.addWidget(self.lbl_hw_badge)
+
+        main_layout.addWidget(model_box)
+
+
         # PANEL MONITORINGU
         display_frame = QFrame()
+
         display_frame.setObjectName("DisplayFrame")
         display_layout = QVBoxLayout(display_frame)
         display_layout.setContentsMargins(18, 18, 18, 18)
@@ -228,12 +273,30 @@ class SmartDictaphoneWindow(QMainWindow):
         outputs_box = QGroupBox("Wygenerowane Wyjścia i Transkrypcje")
         outputs_main_layout = QVBoxLayout(outputs_box)
 
+        # Opcje Diaryzacji i Liczby Osób
+        diarization_row = QHBoxLayout()
+        self.check_enable_diarization = QCheckBox("Włącz diaryzację mówców (PyAnnote AI - podział na osoby)")
+        self.check_enable_diarization.setChecked(True)
+        self.check_enable_diarization.setFont(QFont("Segoe UI", 9, QFont.Weight.Medium))
+        self.check_enable_diarization.toggled.connect(self._on_diarization_toggled)
+
+        lbl_speakers = QLabel("Liczba osób:")
+        lbl_speakers.setStyleSheet("color: #8d99ae; font-size: 11px;")
+        self.combo_speakers = QComboBox()
+        for label, count_val in SPEAKER_COUNT_OPTIONS:
+            self.combo_speakers.addItem(label, userData=count_val)
+
+        diarization_row.addWidget(self.check_enable_diarization, stretch=1)
+        diarization_row.addWidget(lbl_speakers)
+        diarization_row.addWidget(self.combo_speakers)
+        outputs_main_layout.addLayout(diarization_row)
+
         # Token + Pasek Postępu AI
         token_layout = QHBoxLayout()
         lbl_token = QLabel("HuggingFace Token:")
         self.input_token = QLineEdit()
         self.input_token.setEchoMode(QLineEdit.EchoMode.Password)
-        self.input_token.setPlaceholderText("Wklej tutaj token wygenerowany na HuggingFace (hf_...)")
+        self.input_token.setPlaceholderText("Wklej tutaj token HuggingFace (hf_...) - wymagany tylko do diaryzacji")
         
         # Automatyczne załadowanie tokena z .env lub config
         loaded_token = get_hf_token()
@@ -245,6 +308,7 @@ class SmartDictaphoneWindow(QMainWindow):
         outputs_main_layout.addLayout(token_layout)
 
         self.progress_transcription = QProgressBar()
+
         self.progress_transcription.setRange(0, 100)
         self.progress_transcription.setValue(0)
         self.progress_transcription.setTextVisible(True)
@@ -334,6 +398,23 @@ class SmartDictaphoneWindow(QMainWindow):
             item.setData(Qt.ItemDataRole.UserRole, full_path)
             self.list_recordings.addItem(item)
 
+    def _on_model_selection_changed(self, index):
+        model_id = self.combo_models.currentData()
+        if model_id in WHISPER_MODELS:
+            self.lbl_model_desc.setText(WHISPER_MODELS[model_id]["desc"])
+
+    def _on_auto_detect_clicked(self):
+        profile = get_recommended_profile()
+        rec_model = profile["recommended_model"]
+        idx = self.combo_models.findData(rec_model)
+        if idx != -1:
+            self.combo_models.setCurrentIndex(idx)
+        QMessageBox.information(self, profile["title"], profile["message"])
+
+    def _on_diarization_toggled(self, checked):
+        self.input_token.setEnabled(checked)
+        self.combo_speakers.setEnabled(checked)
+
     def _on_silence_slider_changed(self, value):
         self.lbl_thresh_val.setText(f"{value}.0 s")
         self.lbl_silence_title.setText(f"Brak mowy (Auto-Pauza przy {value}.0 s):")
@@ -364,8 +445,10 @@ class SmartDictaphoneWindow(QMainWindow):
         self.progress_transcription.setValue(0)
         self.progress_transcription.setFormat("Inicjalizacja transkrypcji na żywo...")
 
-        # Uruchomienie wątku transkrypcji na żywo
-        self.live_transcription_worker = LiveTranscriptionWorker(model_size="small")
+        selected_model = self.combo_models.currentData() or DEFAULT_WHISPER_MODEL
+
+        # Uruchomienie wątku transkrypcji na żywo z wybranym modelem
+        self.live_transcription_worker = LiveTranscriptionWorker(model_size=selected_model)
         self.live_transcription_worker.phrase_transcribed_signal.connect(self._on_live_phrase_received)
         self.live_transcription_worker.status_signal.connect(self._on_live_status_changed)
         self.live_transcription_worker.error_signal.connect(self._on_live_error)
@@ -383,6 +466,11 @@ class SmartDictaphoneWindow(QMainWindow):
         self.btn_pause.setText("⏸ Pauza Ręczna")
         self.btn_stop.setEnabled(True)
         self.combo_devices.setEnabled(False)
+        self.combo_models.setEnabled(False)
+        self.btn_auto_detect.setEnabled(False)
+        self.check_enable_diarization.setEnabled(False)
+        self.combo_speakers.setEnabled(False)
+        self.input_token.setEnabled(False)
         self.slider_silence.setEnabled(False)
 
     def _on_live_phrase_received(self, time_str, text_phrase):
@@ -435,6 +523,12 @@ class SmartDictaphoneWindow(QMainWindow):
         self.btn_pause.setText("⏸ Pauza Ręczna")
         self.btn_stop.setEnabled(False)
         self.combo_devices.setEnabled(True)
+        self.combo_models.setEnabled(True)
+        self.btn_auto_detect.setEnabled(True)
+        self.check_enable_diarization.setEnabled(True)
+        is_diar = self.check_enable_diarization.isChecked()
+        self.combo_speakers.setEnabled(is_diar)
+        self.input_token.setEnabled(is_diar)
         self.slider_silence.setEnabled(True)
 
         if saved:
@@ -455,18 +549,32 @@ class SmartDictaphoneWindow(QMainWindow):
 
             QMessageBox.information(self, "Zapisano Nagranie", f"Pomyślnie zapisano plik audio:\n{filename}\noraz notatki z transkrypcji na żywo!")
             
+            enable_diar = self.check_enable_diarization.isChecked()
+            num_spk = self.combo_speakers.currentData()
+            selected_model = self.combo_models.currentData() or DEFAULT_WHISPER_MODEL
             token = self.input_token.text().strip()
-            if token:
-                self.progress_transcription.setValue(0)
-                self.progress_transcription.setFormat("Trwa analiza głosów i diaryzacja w tle...")
-                
-                self.transcription_thread = TranscriptionWorker(save_path, token)
-                self.transcription_thread.progress_signal.connect(self._on_transcription_progress)
-                self.transcription_thread.finished_signal.connect(self._on_transcription_finished)
-                self.transcription_thread.error_signal.connect(self._on_transcription_error)
-                self.transcription_thread.start()
+
+            self.progress_transcription.setValue(0)
+            if enable_diar and token:
+                spk_info = f" ({num_spk} os.)" if num_spk else ""
+                self.progress_transcription.setFormat(f"Trwa analiza głosów i diaryzacja{spk_info} w tle...")
+            else:
+                self.progress_transcription.setFormat("Trwa szybka transkrypcja bez diaryzacji...")
+
+            self.transcription_thread = TranscriptionWorker(
+                save_path,
+                token,
+                model_size=selected_model,
+                enable_diarization=enable_diar,
+                num_speakers=num_spk
+            )
+            self.transcription_thread.progress_signal.connect(self._on_transcription_progress)
+            self.transcription_thread.finished_signal.connect(self._on_transcription_finished)
+            self.transcription_thread.error_signal.connect(self._on_transcription_error)
+            self.transcription_thread.start()
         else:
             QMessageBox.warning(self, "Brak Nagrania", "Nie zarejestrowano mowy do zapisu.")
+
 
     def _on_transcription_progress(self, value, text):
         self.progress_transcription.setValue(value)
