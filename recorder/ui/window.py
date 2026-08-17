@@ -545,6 +545,7 @@ class SmartDictaphoneWindow(QMainWindow):
     def _on_stop_clicked(self):
         self.timer.stop()
         self.worker.stop_recording()
+        self.worker.wait(1500)
 
         if self.live_transcription_worker is not None:
             try:
@@ -604,13 +605,21 @@ class SmartDictaphoneWindow(QMainWindow):
             QMessageBox.information(self, "Zapisano Nagranie", f"Pomyślnie zapisano plik audio:\n{filename}\noraz notatki z transkrypcji na żywo!")
             
             enable_diar = self.check_enable_diarization.isChecked()
-            num_spk = self.combo_speakers.currentData()
+            spk_cfg = self.combo_speakers.currentData() or {}
+            num_spk = spk_cfg.get("num_speakers")
+            min_spk = spk_cfg.get("min_speakers")
+            max_spk = spk_cfg.get("max_speakers")
             selected_model = self.combo_models.currentData() or DEFAULT_WHISPER_MODEL
             token = self.input_token.text().strip()
 
             self.progress_transcription.setValue(0)
             if enable_diar and token:
-                spk_info = f" ({num_spk} os.)" if num_spk else ""
+                if num_spk:
+                    spk_info = f" (dokładnie {num_spk} os.)"
+                elif max_spk:
+                    spk_info = f" (max {max_spk} os.)"
+                else:
+                    spk_info = ""
                 self.progress_transcription.setFormat(f"Trwa analiza głosów i diaryzacja{spk_info} w tle...")
             else:
                 self.progress_transcription.setFormat("Trwa szybka transkrypcja bez diaryzacji...")
@@ -620,7 +629,9 @@ class SmartDictaphoneWindow(QMainWindow):
                 token,
                 model_size=selected_model,
                 enable_diarization=enable_diar,
-                num_speakers=num_spk
+                num_speakers=num_spk,
+                min_speakers=min_spk,
+                max_speakers=max_spk
             )
             self.transcription_thread.progress_signal.connect(self._on_transcription_progress)
             self.transcription_thread.finished_signal.connect(self._on_transcription_finished)
@@ -628,6 +639,7 @@ class SmartDictaphoneWindow(QMainWindow):
             self.transcription_thread.start()
         else:
             QMessageBox.warning(self, "Brak Nagrania", "Nie zarejestrowano mowy do zapisu.")
+
 
     def _on_upload_file_clicked(self):
         """
@@ -658,7 +670,10 @@ class SmartDictaphoneWindow(QMainWindow):
         filename = os.path.basename(file_path)
         selected_model = self.combo_models.currentData() or DEFAULT_WHISPER_MODEL
         enable_diar = self.check_enable_diarization.isChecked()
-        num_spk = self.combo_speakers.currentData()
+        spk_cfg = self.combo_speakers.currentData() or {}
+        num_spk = spk_cfg.get("num_speakers")
+        min_spk = spk_cfg.get("min_speakers")
+        max_spk = spk_cfg.get("max_speakers")
 
         # Blokowanie kontrolek na czas przetwarzania pliku
         self.btn_start.setEnabled(False)
@@ -683,7 +698,9 @@ class SmartDictaphoneWindow(QMainWindow):
             hf_token=token if token else None,
             model_size=selected_model,
             enable_diarization=enable_diar,
-            num_speakers=num_spk
+            num_speakers=num_spk,
+            min_speakers=min_spk,
+            max_speakers=max_spk
         )
         self.file_processing_worker.progress_signal.connect(self._on_file_progress)
         self.file_processing_worker.finished_signal.connect(self._on_file_finished)
@@ -972,7 +989,14 @@ class SmartDictaphoneWindow(QMainWindow):
             self.lbl_timer.setText(f"{hrs:02d}:{mins:02d}:{secs:02d}")
 
     def _update_audio_level(self, level):
-        self.progress_vu.setValue(int(level))
+        try:
+            if level is None or level != level:
+                val = 0
+            else:
+                val = int(max(0.0, min(100.0, float(level))))
+            self.progress_vu.setValue(val)
+        except Exception:
+            self.progress_vu.setValue(0)
 
     def _update_vad_info(self, is_speech, speech_prob, current_silence_sec):
         if self.worker.state == SmartRecordState.MANUAL_PAUSED:
@@ -981,14 +1005,20 @@ class SmartDictaphoneWindow(QMainWindow):
             self.lbl_vad_detail.setStyleSheet("color: #f59e0b; font-weight: bold; font-size: 11px;")
             return
 
-        threshold = self.slider_silence.value()
-        val_tenths = int(min(current_silence_sec, threshold) * 10)
-        self.progress_silence.setValue(val_tenths)
-        self.lbl_silence_val.setText(f"{current_silence_sec:.1f} s / {threshold}.0 s")
+        try:
+            threshold = float(self.slider_silence.value())
+            if current_silence_sec is None or current_silence_sec != current_silence_sec:
+                current_silence_sec = 0.0
+            val_tenths = int(max(0.0, min(float(current_silence_sec), threshold)) * 10)
+            self.progress_silence.setValue(val_tenths)
+            self.lbl_silence_val.setText(f"{float(current_silence_sec):.1f} s / {threshold:.1f} s")
+        except Exception:
+            self.progress_silence.setValue(0)
 
         vad_mode_str = "Silero VAD AI" if is_silero_available() else "Detekcja Energii"
+        prob_pct = int(speech_prob * 100) if (speech_prob and speech_prob == speech_prob) else 0
         if is_speech:
-            self.lbl_vad_detail.setText(f"🗣️ VAD: DETEKCJA MOWY (Prawdopodobieństwo: {speech_prob*100:.0f}%, Tryb: {vad_mode_str})")
+            self.lbl_vad_detail.setText(f"🗣️ VAD: DETEKCJA MOWY (Prawdopodobieństwo: {prob_pct}%, Tryb: {vad_mode_str})")
             self.lbl_vad_detail.setStyleSheet("color: #10b981; font-weight: bold; font-size: 11px;")
         else:
             self.lbl_vad_detail.setText(f"🔇 VAD: Brak mowy / Szum tła (Tryb: {vad_mode_str})")
@@ -1049,7 +1079,24 @@ class SmartDictaphoneWindow(QMainWindow):
             QDesktopServices.openUrl(QUrl.fromLocalFile(self.recordings_dir))
 
     def closeEvent(self, event):
-        if self.worker.state != SmartRecordState.STOPPED:
-            self.worker.stop_recording()
-        self.worker.wait(1000)
+        try:
+            self.timer.stop()
+            if self.worker.state != SmartRecordState.STOPPED:
+                self.worker.stop_recording()
+            self.worker.wait(1000)
+
+            if self.live_transcription_worker is not None:
+                self.live_transcription_worker.stop()
+                self.live_transcription_worker.wait(1000)
+                self.live_transcription_worker = None
+
+            if self.transcription_thread is not None and self.transcription_thread.isRunning():
+                self.transcription_thread.quit()
+                self.transcription_thread.wait(1000)
+
+            if self.file_processing_worker is not None and self.file_processing_worker.isRunning():
+                self.file_processing_worker.quit()
+                self.file_processing_worker.wait(1000)
+        except Exception:
+            pass
         event.accept()
