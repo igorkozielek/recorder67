@@ -32,21 +32,24 @@ from recorder.core.diarizer import DiarizationEngine, format_transcript_without_
 class SmartAudioWorker(QThread):
     """
     Wątek przechwytywania dźwięku w czasie rzeczywistym z detekcją Silero VAD i buforowaniem.
+    Obsługuje natywne próbkowanie urządzeń WASAPI / DirectSound / MME i zapobiega błędom NaN.
     """
     audio_level_signal = pyqtSignal(float)             # Poziom RMS (0 - 100)
     vad_info_signal = pyqtSignal(bool, float, float)    # (is_speech, speech_prob, silence_sec)
     state_changed_signal = pyqtSignal(int)             # SmartRecordState
-    phrase_signal = pyqtSignal(np.ndarray, int)        # Frazy audio dla transkrypcji na żywo
+    phrase_signal = pyqtSignal(np.ndarray, int)        # Frazy audio dla transkrypcji na żywo (16kHz)
     error_signal = pyqtSignal(str)
 
     def __init__(self, samplerate=SAMPLE_RATE, channels=AUDIO_CHANNELS, device_index=None, auto_pause_sec=DEFAULT_AUTO_PAUSE_SEC):
         super().__init__()
-        self.samplerate = samplerate
+        self.target_samplerate = 16000
+        self.actual_samplerate = samplerate or 16000
+        self.samplerate = 16000
         self.channels = channels
         self.device_index = device_index
         self.auto_pause_sec = auto_pause_sec
 
-        self.vad_detector = SileroVADDetector(speech_threshold=VAD_SPEECH_THRESHOLD, default_samplerate=self.samplerate)
+        self.vad_detector = SileroVADDetector(speech_threshold=VAD_SPEECH_THRESHOLD, default_samplerate=16000)
         self.state = SmartRecordState.STOPPED
         self.frames = []
         self.silence_samples_count = 0
@@ -59,7 +62,10 @@ class SmartAudioWorker(QThread):
         self.phrase_speech_detected = False
 
     def set_auto_pause_sec(self, seconds: float):
-        self.auto_pause_sec = float(seconds)
+        try:
+            self.auto_pause_sec = float(seconds)
+        except (ValueError, TypeError):
+            self.auto_pause_sec = 5.0
 
     def start_recording(self, device_index=None):
         self.device_index = device_index
@@ -87,29 +93,69 @@ class SmartAudioWorker(QThread):
         self.state = SmartRecordState.STOPPED
         self._is_running = False
         if self.phrase_speech_detected and self.current_phrase_chunks:
-            phrase_arr = np.concatenate(self.current_phrase_chunks)
-            if len(phrase_arr) >= int(0.3 * self.samplerate):
-                self.phrase_signal.emit(phrase_arr, self.samplerate)
+            try:
+                phrase_arr = np.concatenate(self.current_phrase_chunks)
+                if len(phrase_arr) >= int(0.3 * self.target_samplerate):
+                    self.phrase_signal.emit(phrase_arr, self.target_samplerate)
+            except Exception:
+                pass
             self.current_phrase_chunks = []
             self.phrase_speech_detected = False
         self.state_changed_signal.emit(self.state)
 
     def run(self):
-        def audio_callback(indata, frames_count, time_info, status):
-            if status and sys.stderr:
-                print(f"Status audio: {status}", file=sys.stderr)
+        actual_sr = self.target_samplerate
 
+        # Próba odpytania urządzenia o jego domyślny / natywny samplerate
+        if self.device_index is not None:
+            try:
+                dev_info = sd.query_devices(self.device_index)
+                dev_sr = int(dev_info.get('default_samplerate', 16000))
+                if dev_sr > 0:
+                    actual_sr = dev_sr
+            except Exception:
+                actual_sr = 16000
+
+        self.actual_samplerate = actual_sr
+
+        def audio_callback(indata, frames_count, time_info, status):
             if not self._is_running or self.state == SmartRecordState.STOPPED:
                 return
 
-            # 1. Poziom głośności RMS
-            norm_factor = np.linalg.norm(indata)
-            rms = (norm_factor / np.sqrt(len(indata))) * 100
-            level = min(100.0, float(rms * 6.0))
+            if indata is None or len(indata) == 0:
+                return
+
+            # Bezpieczne czyszczenie NaN / Inf
+            if np.isnan(indata).any() or np.isinf(indata).any():
+                indata = np.nan_to_num(indata, nan=0.0, posinf=1.0, neginf=-1.0)
+
+            # Pobranie kanału mono
+            if indata.ndim > 1:
+                chunk_mono = np.mean(indata, axis=1).astype(np.float32)
+            else:
+                chunk_mono = indata.astype(np.float32).flatten()
+
+            # Resampling do 16kHz jeśli wejście miało np. 44.1k/48k WASAPI
+            if actual_sr != 16000 and len(chunk_mono) > 0:
+                chunk_16k = resample_to_16k(chunk_mono, actual_sr)
+            else:
+                chunk_16k = chunk_mono
+
+            if len(chunk_16k) == 0:
+                return
+
+            # 1. Poziom głośności RMS z zabezpieczeniem NaN
+            norm_factor = float(np.linalg.norm(chunk_16k))
+            if np.isnan(norm_factor) or np.isinf(norm_factor):
+                norm_factor = 0.0
+            rms = (norm_factor / np.sqrt(len(chunk_16k))) * 100.0 if len(chunk_16k) > 0 else 0.0
+            if np.isnan(rms) or np.isinf(rms):
+                rms = 0.0
+            level = float(min(100.0, max(0.0, rms * 6.0)))
             self.audio_level_signal.emit(level)
 
             # 2. VAD AI (Silero VAD na próbkach 16kHz)
-            is_speech, speech_prob = self.vad_detector.process_chunk(indata, samplerate=self.samplerate, rms_level=level)
+            is_speech, speech_prob = self.vad_detector.process_chunk(chunk_16k, samplerate=16000, rms_level=level)
 
             # 3. Logika Auto-Pause & Auto-Resume
             if self.state != SmartRecordState.MANUAL_PAUSED:
@@ -119,8 +165,8 @@ class SmartAudioWorker(QThread):
                         self.state_changed_signal.emit(self.state)
                     self.silence_samples_count = 0
                 else:
-                    self.silence_samples_count += len(indata)
-                    silence_sec = self.silence_samples_count / self.samplerate
+                    self.silence_samples_count += len(chunk_16k)
+                    silence_sec = self.silence_samples_count / 16000.0
 
                     if self.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:
                         if silence_sec < self.auto_pause_sec:
@@ -131,71 +177,80 @@ class SmartAudioWorker(QThread):
                             self.state = SmartRecordState.AUTO_PAUSED
                             self.state_changed_signal.emit(self.state)
 
-                            frames_to_remove = int((self.auto_pause_sec * self.samplerate) / len(indata))
-                            if len(self.frames) > frames_to_remove:
-                                self.frames = self.frames[:-frames_to_remove]
+                            if len(chunk_16k) > 0:
+                                frames_to_remove = int((self.auto_pause_sec * 16000) / len(chunk_16k))
+                                if len(self.frames) > frames_to_remove:
+                                    self.frames = self.frames[:-frames_to_remove]
 
-            current_silence_sec = self.silence_samples_count / self.samplerate
+            current_silence_sec = self.silence_samples_count / 16000.0
             self.vad_info_signal.emit(is_speech, speech_prob, current_silence_sec)
 
-            # 4. Zapis próbek oraz buforowanie fraz mowy na żywo (z 0.2s pre-bufferingiem)
+            # 4. Zapis próbek 16kHz oraz buforowanie fraz mowy na żywo (z 0.2s pre-bufferingiem)
             if self.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:
-                if indata.dtype != np.int16:
-                    audio_int16 = (indata * 32767).clip(-32768, 32767).astype(np.int16)
-                    self.frames.append(audio_int16.tobytes())
-                else:
-                    self.frames.append(indata.tobytes())
+                audio_int16 = (chunk_16k * 32767).clip(-32768, 32767).astype(np.int16)
+                self.frames.append(audio_int16.tobytes())
 
-                chunk_flat = indata.copy().flatten()
+                chunk_flat = chunk_16k.copy().flatten()
                 if is_speech:
                     if not self.phrase_speech_detected:
-                        # Dołącz pre-buffer (poprzednie ~0.2s), aby nie ucinać pierwszych fonemów
                         self.current_phrase_chunks.extend(list(self.pre_speech_buffer))
                         self.phrase_speech_detected = True
 
                     self.current_phrase_chunks.append(chunk_flat)
                     self.silence_in_phrase_samples = 0
 
-                    # Jeśli ciągła mowa trwa ponad 3.0 sekundy, wyślij wyciętą frazę
                     total_samples = sum(len(c) for c in self.current_phrase_chunks)
-                    if total_samples >= int(3.0 * self.samplerate):
+                    if total_samples >= int(3.0 * 16000):
                         phrase_arr = np.concatenate(self.current_phrase_chunks)
-                        self.phrase_signal.emit(phrase_arr, self.samplerate)
+                        self.phrase_signal.emit(phrase_arr, 16000)
                         self.current_phrase_chunks = []
                         self.phrase_speech_detected = False
                 else:
                     self.pre_speech_buffer.append(chunk_flat)
 
                     if self.phrase_speech_detected and self.current_phrase_chunks:
-                        self.silence_in_phrase_samples += len(indata)
-                        silence_dur = self.silence_in_phrase_samples / self.samplerate
-                        if silence_dur >= 0.4:  # 0.4s ciszy po wypowiedzi = koniec frazy
+                        self.silence_in_phrase_samples += len(chunk_16k)
+                        silence_dur = self.silence_in_phrase_samples / 16000.0
+                        if silence_dur >= 0.4:
                             phrase_arr = np.concatenate(self.current_phrase_chunks)
-                            if len(phrase_arr) >= int(0.3 * self.samplerate):
-                                self.phrase_signal.emit(phrase_arr, self.samplerate)
+                            if len(phrase_arr) >= int(0.3 * 16000):
+                                self.phrase_signal.emit(phrase_arr, 16000)
                             self.current_phrase_chunks = []
                             self.phrase_speech_detected = False
                             self.silence_in_phrase_samples = 0
 
-        try:
-            self.samplerate = 16000
-            with sd.InputStream(
-                samplerate=self.samplerate,
-                channels=self.channels,
-                dtype='float32',
-                device=self.device_index,
-                callback=audio_callback,
-                blocksize=512
-            ):
-                while self._is_running:
-                    self.msleep(40)
-        except Exception as e:
-            self.error_signal.emit(f"Błąd otwarcia strumienia audio:\n{str(e)}")
+        # Otwarcie strumienia: najpierw próbujemy 16000, a jeśli sterownik (np. WASAPI) wymaga natywnego SR, otwieramy z actual_sr
+        stream_opened = False
+        rates_to_try = [actual_sr] if actual_sr != 16000 else [16000, 48000, 44100]
+        if 16000 not in rates_to_try:
+            rates_to_try.append(16000)
+
+        for sr_try in rates_to_try:
+            try:
+                actual_sr = sr_try
+                with sd.InputStream(
+                    samplerate=actual_sr,
+                    channels=self.channels,
+                    dtype='float32',
+                    device=self.device_index,
+                    callback=audio_callback,
+                    blocksize=1024 if actual_sr > 16000 else 512
+                ):
+                    stream_opened = True
+                    while self._is_running:
+                        self.msleep(40)
+                break
+            except Exception:
+                continue
+
+        if not stream_opened and self._is_running:
+            self.error_signal.emit(f"Nie udało się otworzyć mikrofonu (indeks: {self.device_index}). Upewnij się, że urządzenie nie jest zablokowane.")
             self.state = SmartRecordState.STOPPED
             self.state_changed_signal.emit(self.state)
 
     def save_wav(self, file_path: str) -> bool:
-        return save_wav_file(file_path, self.frames, channels=self.channels, samplerate=self.samplerate)
+        return save_wav_file(file_path, self.frames, channels=1, samplerate=16000)
+
 
 
 class LiveTranscriptionWorker(QThread):
@@ -284,7 +339,9 @@ class TranscriptionWorker(QThread):
         hf_token: str,
         model_size: str = DEFAULT_WHISPER_MODEL,
         enable_diarization: bool = True,
-        num_speakers: int = None
+        num_speakers: Optional[int] = None,
+        min_speakers: Optional[int] = None,
+        max_speakers: Optional[int] = None
     ):
         super().__init__()
         self.audio_path = audio_path
@@ -292,6 +349,8 @@ class TranscriptionWorker(QThread):
         self.model_size = model_size
         self.enable_diarization = enable_diarization
         self.num_speakers = num_speakers
+        self.min_speakers = min_speakers
+        self.max_speakers = max_speakers
 
     def run(self):
         try:
@@ -314,7 +373,12 @@ class TranscriptionWorker(QThread):
                 return
 
             # Pełna diaryzacja mówców (PyAnnote)
-            speaker_info = f" ({self.num_speakers} os.)" if self.num_speakers else ""
+            speaker_info = ""
+            if self.num_speakers:
+                speaker_info = f" (dokładnie {self.num_speakers} os.)"
+            elif self.max_speakers:
+                speaker_info = f" (max {self.max_speakers} os.)"
+
             self.progress_signal.emit(60, f"Ładowanie modelu PyAnnote{speaker_info}...")
             diarizer = DiarizationEngine(hf_token=self.hf_token)
 
@@ -322,7 +386,9 @@ class TranscriptionWorker(QThread):
             final_html, final_plain, turns = diarizer.process(
                 self.audio_path,
                 transcript_words,
-                num_speakers=self.num_speakers
+                num_speakers=self.num_speakers,
+                min_speakers=self.min_speakers,
+                max_speakers=self.max_speakers
             )
 
             self.progress_signal.emit(100, "Gotowe!")
@@ -337,7 +403,7 @@ class FileProcessingWorker(QThread):
     Wątek asynchroniczny przetwarzający wgrany z dysku plik audio lub wideo (np. .mp4 ze spotkania):
     1. Normalizacja do formatu WAV 16kHz mono (za pomocą wbudowanego imageio-ffmpeg)
     2. Transkrypcja Faster-Whisper z wybranym modelem i wskaźnikiem postępu w locie
-    3. Opcjonalna diaryzacja mówców PyAnnote (z automatycznym doborem batch_size dla CPU/GPU)
+    3. Opcjonalna diaryzacja mówców PyAnnote (z automatycznym doborem parametrów)
     """
     progress_signal = pyqtSignal(int, str)
     finished_signal = pyqtSignal(str, str, str, list)  # (html_text, plain_text, prepared_wav_path, turns)
@@ -350,7 +416,9 @@ class FileProcessingWorker(QThread):
         hf_token: Optional[str] = None,
         model_size: str = DEFAULT_WHISPER_MODEL,
         enable_diarization: bool = True,
-        num_speakers: Optional[int] = None
+        num_speakers: Optional[int] = None,
+        min_speakers: Optional[int] = None,
+        max_speakers: Optional[int] = None
     ):
         super().__init__()
         self.input_file_path = input_file_path
@@ -359,6 +427,8 @@ class FileProcessingWorker(QThread):
         self.model_size = model_size
         self.enable_diarization = enable_diarization
         self.num_speakers = num_speakers
+        self.min_speakers = min_speakers
+        self.max_speakers = max_speakers
 
     def run(self):
         try:
@@ -404,7 +474,12 @@ class FileProcessingWorker(QThread):
             # ETAP 3: Diaryzacja PyAnnote lub czysta transkrypcja Whisper
             turns = []
             if self.enable_diarization and self.hf_token and self.hf_token.strip():
-                speaker_info = f" ({self.num_speakers} os.)" if self.num_speakers else ""
+                speaker_info = ""
+                if self.num_speakers:
+                    speaker_info = f" (dokładnie {self.num_speakers} os.)"
+                elif self.max_speakers:
+                    speaker_info = f" (max {self.max_speakers} os.)"
+
                 self.progress_signal.emit(65, f"Etap 3/3: Ładowanie modelu PyAnnote{speaker_info}...")
                 diarizer = DiarizationEngine(hf_token=self.hf_token.strip())
 
@@ -412,7 +487,9 @@ class FileProcessingWorker(QThread):
                 final_html, final_plain, turns = diarizer.process(
                     prepared_wav_path,
                     transcript_words,
-                    num_speakers=self.num_speakers
+                    num_speakers=self.num_speakers,
+                    min_speakers=self.min_speakers,
+                    max_speakers=self.max_speakers
                 )
             else:
                 self.progress_signal.emit(85, "Formatowanie transkrypcji...")
@@ -428,3 +505,4 @@ class FileProcessingWorker(QThread):
         except Exception as e:
             print(f"❌ [BŁĄD PRZETWARZANIA]: {e}", file=sys.stderr)
             self.error_signal.emit(str(e))
+

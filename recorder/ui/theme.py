@@ -270,8 +270,29 @@ QTextEdit {
 }
 
 /* Okna dialogowe i komunikaty */
-QMessageBox QLabel {
+QMessageBox {
+    background-color: #111216;
     color: #edf2f4;
+}
+QMessageBox QWidget {
+    background-color: #111216;
+    color: #edf2f4;
+}
+QMessageBox QLabel {
+    background-color: transparent;
+    color: #edf2f4;
+    font-size: 12px;
+}
+QMessageBox QPushButton {
+    background-color: #222533;
+    border: 1px solid #33374c;
+    border-radius: 6px;
+    padding: 6px 16px;
+    color: #edf2f4;
+    min-width: 65px;
+}
+QMessageBox QPushButton:hover {
+    background-color: #33374c;
 }
 QToolTip {
     background-color: #222533;
