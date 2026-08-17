@@ -102,7 +102,15 @@ class DiarizationEngine:
         self._pipeline = pipeline
         return self._pipeline
 
-    def process(self, audio_path: str, transcript_words: List[Dict[str, Any]], batch_size: int = 32) -> Tuple[str, str, List[Dict[str, Any]]]:
+    def process(
+        self,
+        audio_path: str,
+        transcript_words: List[Dict[str, Any]],
+        batch_size: int = 32,
+        num_speakers: int = None,
+        min_speakers: int = None,
+        max_speakers: int = None
+    ) -> Tuple[str, str, List[Dict[str, Any]]]:
         """
         Wykonuje analizę mówców i łączy wypowiedzi z transkrypcją słów.
         Optymalizacja: wykorzystanie batch_size=32 dla efektywnego przetwarzania długich plików (1-2h).
@@ -111,8 +119,18 @@ class DiarizationEngine:
         pipeline = self.load_pipeline()
 
         print(f"⏳ [PYANNOTE] Rozpoczęto analizę głosów (batch_size={batch_size}) dla pliku: {os.path.basename(audio_path)}...")
+        diarize_kwargs = {}
+        if batch_size is not None and batch_size > 0:
+            diarize_kwargs["batch_size"] = int(batch_size)
+        if num_speakers is not None and num_speakers > 0:
+            diarize_kwargs["num_speakers"] = int(num_speakers)
+        if min_speakers is not None:
+            diarize_kwargs["min_speakers"] = int(min_speakers)
+        if max_speakers is not None:
+            diarize_kwargs["max_speakers"] = int(max_speakers)
+
         try:
-            diarization = pipeline(audio_path, batch_size=batch_size)
+            diarization = pipeline(audio_path, **diarize_kwargs)
         except TypeError:
             diarization = pipeline(audio_path)
 
@@ -210,4 +228,3 @@ def format_transcript_without_diarization(transcript_words: List[Dict[str, Any]]
         final_plain += f"[{start_t:.1f}s - {end_t:.1f}s]: {text}\n\n"
 
     return final_html, final_plain, turns
-
