@@ -104,11 +104,12 @@ class DiarizationEngine:
         transcript_words: List[Dict[str, Any]],
         num_speakers: int = None,
         min_speakers: int = None,
-        max_speakers: int = None
-    ) -> Tuple[str, str]:
+        max_speakers: int = None,
+        batch_size: int = 32
+    ) -> Tuple[str, str, List[Dict[str, Any]]]:
         """
         Wykonuje analizę mówców i łączy wypowiedzi z transkrypcją słów.
-        Zwraca (final_html, final_plain).
+        Zwraca (final_html, final_plain, turns).
         """
         pipeline = self.load_pipeline()
         
@@ -120,8 +121,12 @@ class DiarizationEngine:
         if max_speakers is not None:
             diarize_kwargs["max_speakers"] = int(max_speakers)
 
-        diarization = pipeline(audio_path, **diarize_kwargs)
+        try:
+            diarization = pipeline(audio_path, batch_size=batch_size, **diarize_kwargs)
+        except TypeError:
+            diarization = pipeline(audio_path, **diarize_kwargs)
 
+        turns = []
         final_html = ""
         final_plain = ""
 
@@ -135,23 +140,29 @@ class DiarizationEngine:
 
             if words_in_turn:
                 sentence = "".join(words_in_turn).strip()
+                turns.append({
+                    "start": round(turn.start, 1),
+                    "end": round(turn.end, 1),
+                    "speaker": speaker,
+                    "text": sentence
+                })
                 final_html += f"<b>[{turn.start:.1f}s - {turn.end:.1f}s] {speaker}:</b> {sentence}<br><br>"
                 final_plain += f"[{turn.start:.1f}s - {turn.end:.1f}s] {speaker}: {sentence}\n\n"
 
         if not final_html:
             fallback_msg = "Transkrypcja zakończona, ale nie udało się zmapować głosów do słów."
-            return fallback_msg, fallback_msg
+            return fallback_msg, fallback_msg, []
 
-        return final_html, final_plain
+        return final_html, final_plain, turns
 
 
-def format_transcript_without_diarization(transcript_words: List[Dict[str, Any]]) -> Tuple[str, str]:
+def format_transcript_without_diarization(transcript_words: List[Dict[str, Any]]) -> Tuple[str, str, List[Dict[str, Any]]]:
     """
     Szybko grupuje słowa w czytelne bloki zdań z timestampami (gdy diaryzacja mówców jest wyłączona).
-    Zwraca (final_html, final_plain).
+    Zwraca (final_html, final_plain, turns).
     """
     if not transcript_words:
-        return "Brak zarejestrowanej mowy.", "Brak zarejestrowanej mowy."
+        return "Brak zarejestrowanej mowy.", "Brak zarejestrowanej mowy.", []
 
     chunks = []
     current_chunk_words = []
@@ -182,10 +193,17 @@ def format_transcript_without_diarization(transcript_words: List[Dict[str, Any]]
         if text:
             chunks.append((chunk_start, last_end, text))
 
+    turns = []
     final_html = ""
     final_plain = ""
 
     for start_t, end_t, text in chunks:
+        turns.append({
+            "start": round(start_t, 1),
+            "end": round(end_t, 1),
+            "speaker": "Mówca",
+            "text": text
+        })
         final_html += f"<b>[{start_t:.1f}s - {end_t:.1f}s]:</b> {text}<br><br>"
         final_plain += f"[{start_t:.1f}s - {end_t:.1f}s]: {text}\n\n"
 
@@ -193,5 +211,5 @@ def format_transcript_without_diarization(transcript_words: List[Dict[str, Any]]
         final_html = "Brak zarejestrowanej mowy."
         final_plain = "Brak zarejestrowanej mowy."
 
-    return final_html, final_plain
+    return final_html, final_plain, turns
 

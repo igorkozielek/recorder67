@@ -50,6 +50,8 @@ graph TD
 - [x] **Lokalna Transkrypcja na Żywo i po nagraniu**: Silnik `faster-whisper` z możliwością wyboru modelu w UI (`small`, `medium`, `large-v3-turbo`, `large-v3`, `base`), automatycznym wykrywaniem akceleracji sprzętowej (CUDA `float16` lub CPU `int8` z przydziałem wątków) oraz strumieniowym wypisywaniem zdań z timestampami.
 - [x] **Transkrypcja i Diaryzacja po zakończeniu nagrania**: Integracja z `pyannote.audio` (model `pyannote/speaker-diarization-3.1`) + `faster-whisper`, łączenie segmentów słów z etykietami mówców.
 - [x] **Filtrowanie i selekcja urządzeń wejściowych**: Wykrywanie sprawnych mikrofonów w Windows z pomijaniem niestabilnych sterowników WDM-KS.
+- [x] **Wgrywanie Gotowych Plików Audio/Wideo (MP4, MKV, WAV, MP3, M4A, FLAC)**: Wgrywanie zewnętrznych nagrań ze spotkań, automatyczna ekstrakcja/normalizacja do 16kHz WAV bez systemowego FFmpeg, asynchroniczna transkrypcja z live-progression.
+- [x] **Panel Mapowania i Weryfikacji Mówców (Speaker Mapping & Correction)**: Automatyczna autosugestia imion z kontekstu rozmowy, podgląd próbek wypowiedzi per mówca, możliwość szybkiej korekty w GUI oraz natychmiastowa podmiana etykiet w całym dokumencie i pliku `.txt`.
 - [x] **Eksport lokalny**: Automatyczny zapis nagrań `.wav` i plików transkrypcji `.txt`.
 
 ---
