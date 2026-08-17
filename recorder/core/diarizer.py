@@ -80,6 +80,13 @@ class DiarizationEngine:
 
         import torch
         from pyannote.audio import Pipeline
+        from recorder.config import get_hardware_acceleration_info
+
+        hw_info = get_hardware_acceleration_info()
+        if not hw_info.get("is_cuda", False):
+            safe_threads = hw_info.get("cpu_threads", 5)
+            torch.set_num_threads(safe_threads)
+            print(f"👥 [PYANNOTE] Ustawiono {safe_threads} wątków roboczych PyTorch na CPU.")
 
         print("👥 [PYANNOTE] Ładowanie modelu 'pyannote/speaker-diarization-3.1'...")
         pipeline = None
@@ -106,17 +113,21 @@ class DiarizationEngine:
         self,
         audio_path: str,
         transcript_words: List[Dict[str, Any]],
-        batch_size: int = 32,
+        batch_size: int = None,
         num_speakers: int = None,
         min_speakers: int = None,
         max_speakers: int = None
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         """
         Wykonuje analizę mówców i łączy wypowiedzi z transkrypcją słów.
-        Optymalizacja: wykorzystanie batch_size=32 dla efektywnego przetwarzania długich plików (1-2h).
+        Optymalizacja: batch_size=8 na CPU (dla redukcji narzutu pamięci) lub batch_size=32 na GPU.
         Zwraca (final_html, final_plain, turns).
         """
         pipeline = self.load_pipeline()
+
+        import torch
+        if batch_size is None:
+            batch_size = 32 if torch.cuda.is_available() else 8
 
         print(f"⏳ [PYANNOTE] Rozpoczęto analizę głosów (batch_size={batch_size}) dla pliku: {os.path.basename(audio_path)}...")
         diarize_kwargs = {}

@@ -318,11 +318,10 @@ class TranscriptionWorker(QThread):
             self.progress_signal.emit(60, f"Ładowanie modelu PyAnnote{speaker_info}...")
             diarizer = DiarizationEngine(hf_token=self.hf_token)
 
-            self.progress_signal.emit(75, f"Analiza głosów mówców{speaker_info} (batch_size=32)...")
+            self.progress_signal.emit(75, f"Analiza głosów mówców{speaker_info}...")
             final_html, final_plain, turns = diarizer.process(
                 self.audio_path,
                 transcript_words,
-                batch_size=32,
                 num_speakers=self.num_speakers
             )
 
@@ -338,7 +337,7 @@ class FileProcessingWorker(QThread):
     Wątek asynchroniczny przetwarzający wgrany z dysku plik audio lub wideo (np. .mp4 ze spotkania):
     1. Normalizacja do formatu WAV 16kHz mono (za pomocą wbudowanego imageio-ffmpeg)
     2. Transkrypcja Faster-Whisper z wybranym modelem i wskaźnikiem postępu w locie
-    3. Opcjonalna diaryzacja mówców PyAnnote (z batch_size=32 dla długich plików 1-2h)
+    3. Opcjonalna diaryzacja mówców PyAnnote (z automatycznym doborem batch_size dla CPU/GPU)
     """
     progress_signal = pyqtSignal(int, str)
     finished_signal = pyqtSignal(str, str, str, list)  # (html_text, plain_text, prepared_wav_path, turns)
@@ -409,11 +408,10 @@ class FileProcessingWorker(QThread):
                 self.progress_signal.emit(65, f"Etap 3/3: Ładowanie modelu PyAnnote{speaker_info}...")
                 diarizer = DiarizationEngine(hf_token=self.hf_token.strip())
 
-                self.progress_signal.emit(75, f"Etap 3/3: Rozpoznawanie osób i łączenie z tekstem{speaker_info} (batch_size=32)...")
+                self.progress_signal.emit(75, f"Etap 3/3: Rozpoznawanie osób i łączenie z tekstem{speaker_info}...")
                 final_html, final_plain, turns = diarizer.process(
                     prepared_wav_path,
                     transcript_words,
-                    batch_size=32,
                     num_speakers=self.num_speakers
                 )
             else:
