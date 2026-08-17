@@ -102,11 +102,11 @@ class DiarizationEngine:
         self._pipeline = pipeline
         return self._pipeline
 
-    def process(self, audio_path: str, transcript_words: List[Dict[str, Any]], batch_size: int = 32) -> Tuple[str, str]:
+    def process(self, audio_path: str, transcript_words: List[Dict[str, Any]], batch_size: int = 32) -> Tuple[str, str, List[Dict[str, Any]]]:
         """
         Wykonuje analizę mówców i łączy wypowiedzi z transkrypcją słów.
         Optymalizacja: wykorzystanie batch_size=32 dla efektywnego przetwarzania długich plików (1-2h).
-        Zwraca (final_html, final_plain).
+        Zwraca (final_html, final_plain, turns).
         """
         pipeline = self.load_pipeline()
 
@@ -118,6 +118,7 @@ class DiarizationEngine:
 
         final_html = ""
         final_plain = ""
+        turns = []
         speakers_detected = set()
 
         for turn, _, speaker in diarization.itertracks(yield_label=True):
@@ -131,6 +132,12 @@ class DiarizationEngine:
 
             if words_in_turn:
                 sentence = "".join(words_in_turn).strip()
+                turns.append({
+                    "start": turn.start,
+                    "end": turn.end,
+                    "speaker": speaker,
+                    "text": sentence
+                })
                 final_html += f"<b>[{turn.start:.1f}s - {turn.end:.1f}s] {speaker}:</b> {sentence}<br><br>"
                 final_plain += f"[{turn.start:.1f}s - {turn.end:.1f}s] {speaker}: {sentence}\n\n"
 
@@ -147,6 +154,60 @@ class DiarizationEngine:
 
         if not final_html:
             fallback_msg = "Transkrypcja zakończona, ale nie udało się zmapować głosów do słów."
-            return fallback_msg, fallback_msg
+            return fallback_msg, fallback_msg, []
 
-        return final_html, final_plain
+        return final_html, final_plain, turns
+
+
+def format_transcript_without_diarization(transcript_words: List[Dict[str, Any]]) -> Tuple[str, str, List[Dict[str, Any]]]:
+    """
+    Szybko grupuje słowa w czytelne bloki zdań z timestampami (gdy diaryzacja mówców jest wyłączona).
+    Zwraca (final_html, final_plain, turns).
+    """
+    if not transcript_words:
+        return "Brak zarejestrowanej mowy.", "Brak zarejestrowanej mowy.", []
+
+    chunks = []
+    current_chunk_words = []
+    chunk_start = transcript_words[0]["start"]
+    last_end = transcript_words[0]["end"]
+
+    for w in transcript_words:
+        w_word = w.get("word", "")
+        w_start = w.get("start", last_end)
+        w_end = w.get("end", w_start)
+
+        is_long_pause = (w_start - last_end) > 1.2
+        is_sentence_end = any(current_chunk_words) and current_chunk_words[-1].rstrip().endswith((".", "!", "?")) and len(current_chunk_words) >= 8
+
+        if current_chunk_words and (is_long_pause or is_sentence_end):
+            text = "".join(current_chunk_words).strip()
+            if text:
+                chunks.append((chunk_start, last_end, text))
+            current_chunk_words = []
+            chunk_start = w_start
+
+        current_chunk_words.append(w_word)
+        last_end = w_end
+
+    if current_chunk_words:
+        text = "".join(current_chunk_words).strip()
+        if text:
+            chunks.append((chunk_start, last_end, text))
+
+    final_html = ""
+    final_plain = ""
+    turns = []
+
+    for start_t, end_t, text in chunks:
+        turns.append({
+            "start": start_t,
+            "end": end_t,
+            "speaker": "Mówca",
+            "text": text
+        })
+        final_html += f"<b>[{start_t:.1f}s - {end_t:.1f}s]:</b> {text}<br><br>"
+        final_plain += f"[{start_t:.1f}s - {end_t:.1f}s]: {text}\n\n"
+
+    return final_html, final_plain, turns
+

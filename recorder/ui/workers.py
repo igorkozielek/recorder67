@@ -25,7 +25,7 @@ from recorder.audio.capture import save_wav_file
 from recorder.audio.converter import resample_to_16k, prepare_audio_file
 from recorder.core.vad import SileroVADDetector, is_silero_available
 from recorder.core.transcriber import TranscriberEngine
-from recorder.core.diarizer import DiarizationEngine
+from recorder.core.diarizer import DiarizationEngine, format_transcript_without_diarization
 
 
 class SmartAudioWorker(QThread):
@@ -274,7 +274,7 @@ class TranscriptionWorker(QThread):
     Wątek wykonujący pełną transkrypcję z modelowaniem słów oraz diaryzację mówców (PyAnnote).
     """
     progress_signal = pyqtSignal(int, str)
-    finished_signal = pyqtSignal(str, str)
+    finished_signal = pyqtSignal(str, str, list)  # (html_text, plain_text, turns)
     error_signal = pyqtSignal(str)
 
     def __init__(self, audio_path: str, hf_token: str):
@@ -291,17 +291,17 @@ class TranscriptionWorker(QThread):
             transcript_words = transcriber.transcribe_file_with_words(self.audio_path, language="pl")
 
             if not transcript_words:
-                self.finished_signal.emit("Brak wykrytej mowy w nagraniu.", "Brak wykrytej mowy w nagraniu.")
+                self.finished_signal.emit("Brak wykrytej mowy w nagraniu.", "Brak wykrytej mowy w nagraniu.", [])
                 return
 
             self.progress_signal.emit(50, "Ładowanie modelu PyAnnote (Diaryzacja)...")
             diarizer = DiarizationEngine(hf_token=self.hf_token)
 
             self.progress_signal.emit(60, "Analiza głosów mówców (batch_size=32)...")
-            final_html, final_plain = diarizer.process(self.audio_path, transcript_words, batch_size=32)
+            final_html, final_plain, turns = diarizer.process(self.audio_path, transcript_words, batch_size=32)
 
             self.progress_signal.emit(100, "Gotowe!")
-            self.finished_signal.emit(final_html, final_plain)
+            self.finished_signal.emit(final_html, final_plain, turns)
 
         except Exception as e:
             self.error_signal.emit(str(e))
@@ -315,7 +315,7 @@ class FileProcessingWorker(QThread):
     3. Diaryzacja mówców PyAnnote (z batch_size=32 dla długich plików 1-2h)
     """
     progress_signal = pyqtSignal(int, str)
-    finished_signal = pyqtSignal(str, str, str)  # (html_text, plain_text, prepared_wav_path)
+    finished_signal = pyqtSignal(str, str, str, list)  # (html_text, plain_text, prepared_wav_path, turns)
     error_signal = pyqtSignal(str)
 
     def __init__(self, input_file_path: str, recordings_dir: str, hf_token: Optional[str] = None):
@@ -362,33 +362,28 @@ class FileProcessingWorker(QThread):
             if not transcript_words:
                 msg = "Nie wykryto zrozumiałej mowy w przesłanym pliku audio."
                 print("⚠️ [PLIK] Nie wykryto słów w pliku audio.")
-                self.finished_signal.emit(msg, msg, prepared_wav_path)
+                self.finished_signal.emit(msg, msg, prepared_wav_path, [])
                 return
 
             # ETAP 3: Diaryzacja PyAnnote lub czysta transkrypcja Whisper
+            turns = []
             if self.hf_token and self.hf_token.strip():
                 self.progress_signal.emit(65, "Etap 3/3: Ładowanie modelu PyAnnote (Diaryzacja)...")
                 diarizer = DiarizationEngine(hf_token=self.hf_token.strip())
 
                 self.progress_signal.emit(75, "Etap 3/3: Rozpoznawanie osób i łączenie z tekstem (batch_size=32)...")
-                final_html, final_plain = diarizer.process(prepared_wav_path, transcript_words, batch_size=32)
+                final_html, final_plain, turns = diarizer.process(prepared_wav_path, transcript_words, batch_size=32)
             else:
                 self.progress_signal.emit(85, "Formatowanie transkrypcji (brak tokenu HF dla diaryzacji)...")
                 print("ℹ️ [PLIK] Brak tokenu HuggingFace - pominięto diaryzację mówców.")
-                full_text = "".join(w["word"] for w in transcript_words).strip()
-                final_html = (
-                    f"<i><font color='#f59e0b'>Wskazówka: Aby rozpoznać poszczególnych mówców, "
-                    f"wklej token HuggingFace w polu powyżej.</font></i><br><br>"
-                    f"<b>[0.0s - {duration_sec:.1f}s] Transkrypcja:</b><br>{full_text}"
-                )
-                final_plain = f"[{duration_sec:.1f}s] Transkrypcja:\n{full_text}"
+                final_html, final_plain, turns = format_transcript_without_diarization(transcript_words)
 
             print("="*70)
             print(f"🎉 [PLIK] Sukces! Przetwarzanie zakończone: {os.path.basename(prepared_wav_path)}")
             print("="*70 + "\n")
 
             self.progress_signal.emit(100, "Przetwarzanie zakończone pomyślnie!")
-            self.finished_signal.emit(final_html, final_plain, prepared_wav_path)
+            self.finished_signal.emit(final_html, final_plain, prepared_wav_path, turns)
 
         except Exception as e:
             print(f"❌ [BŁĄD PRZETWARZANIA]: {e}", file=sys.stderr)

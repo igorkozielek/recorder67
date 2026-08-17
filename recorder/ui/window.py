@@ -38,6 +38,7 @@ from recorder.ui.workers import (
     TranscriptionWorker,
     FileProcessingWorker
 )
+from recorder.core.speakers import analyze_speakers, suggest_speaker_names, format_turns
 
 
 class SmartDictaphoneWindow(QMainWindow):
@@ -63,6 +64,11 @@ class SmartDictaphoneWindow(QMainWindow):
         self.live_plain_text_lines = []
         self.transcription_thread = None
         self.file_processing_worker = None
+
+        # Stan mapowania mówców
+        self.current_turns = []
+        self.current_txt_path = None
+        self.speaker_inputs = {}
 
         self.worker = SmartAudioWorker(samplerate=SAMPLE_RATE, auto_pause_sec=DEFAULT_AUTO_PAUSE_SEC)
         self.worker.audio_level_signal.connect(self._update_audio_level)
@@ -304,6 +310,30 @@ class SmartDictaphoneWindow(QMainWindow):
 
         outputs_main_layout.addLayout(columns_layout)
 
+        # PANEL MAPOWANIA I WERYFIKACJI MÓWCÓW
+        self.speaker_box = QGroupBox("👥 Przypisanie i Korekta Mówców (Weryfikacja)")
+        self.speaker_box.setStyleSheet("QGroupBox { border: 1px solid #4361ee; margin-top: 10px; font-weight: bold; }")
+        speaker_main_layout = QVBoxLayout(self.speaker_box)
+        speaker_main_layout.setContentsMargins(12, 14, 12, 12)
+        speaker_main_layout.setSpacing(10)
+
+        lbl_spk_info = QLabel("🤖 Program przeanalizował dialogi i zasugerował imiona. Zweryfikuj je lub popraw przed zapisem:")
+        lbl_spk_info.setStyleSheet("color: #4cc9f0; font-size: 11px;")
+        speaker_main_layout.addWidget(lbl_spk_info)
+
+        self.speaker_rows_layout = QVBoxLayout()
+        self.speaker_rows_layout.setSpacing(8)
+        speaker_main_layout.addLayout(self.speaker_rows_layout)
+
+        self.btn_apply_speakers = QPushButton("✅ Zastosuj Imiona Mówców i Zapisz Zmiany")
+        self.btn_apply_speakers.setFixedHeight(36)
+        self.btn_apply_speakers.setStyleSheet("background-color: #2b9348; color: #ffffff; font-weight: bold; border-radius: 6px;")
+        self.btn_apply_speakers.clicked.connect(self._on_apply_speakers_clicked)
+        speaker_main_layout.addWidget(self.btn_apply_speakers)
+
+        self.speaker_box.setVisible(False)
+        outputs_main_layout.addWidget(self.speaker_box)
+
         # PODGLĄD AKTYWNEJ TRANSKRYPCJI
         self.text_transcript = QTextEdit()
         self.text_transcript.setReadOnly(True)
@@ -535,7 +565,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.progress_transcription.setValue(value)
         self.progress_transcription.setFormat(f"{value}% - {text}")
 
-    def _on_file_finished(self, html_text: str, plain_text: str, prepared_wav_path: str):
+    def _on_file_finished(self, html_text: str, plain_text: str, prepared_wav_path: str, turns: list = None):
         self.progress_transcription.setValue(100)
         self.progress_transcription.setFormat("Przetwarzanie pliku zakończone!")
         self.text_transcript.setHtml(html_text)
@@ -553,6 +583,18 @@ class SmartDictaphoneWindow(QMainWindow):
         file_stem = os.path.splitext(base_name)[0]
         txt_filename = f"transkrypcja_{file_stem}.txt"
         txt_path = os.path.join(self.transcriptions_dir, txt_filename)
+        self.current_txt_path = txt_path
+        self.current_turns = turns or []
+
+        # Wypełnienie panelu mapowania mówców
+        self._populate_speaker_mapping(self.current_turns)
+
+        # Jeśli wykryto pewne sugestie imion, automatycznie aktualizujemy treść
+        suggestions = suggest_speaker_names(self.current_turns) if self.current_turns else {}
+        if suggestions and any(k != v for k, v in suggestions.items()):
+            auto_html, auto_plain = format_turns(self.current_turns, suggestions)
+            self.text_transcript.setHtml(auto_html)
+            plain_text = auto_plain
 
         try:
             with open(txt_path, 'w', encoding='utf-8') as f:
@@ -582,7 +624,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.progress_transcription.setValue(value)
         self.progress_transcription.setFormat(f"{value}% - {text}")
 
-    def _on_transcription_finished(self, html_text, plain_text):
+    def _on_transcription_finished(self, html_text: str, plain_text: str, turns: list = None):
         self.progress_transcription.setValue(100)
         self.progress_transcription.setFormat("Transkrypcja zakończona!")
         self.text_transcript.setHtml(html_text)
@@ -598,6 +640,18 @@ class SmartDictaphoneWindow(QMainWindow):
             txt_filename = f"transkrypcja_{timestamp}.txt"
 
         txt_path = os.path.join(self.transcriptions_dir, txt_filename)
+        self.current_txt_path = txt_path
+        self.current_turns = turns or []
+
+        # Wypełnienie panelu mapowania mówców
+        self._populate_speaker_mapping(self.current_turns)
+
+        suggestions = suggest_speaker_names(self.current_turns) if self.current_turns else {}
+        if suggestions and any(k != v for k, v in suggestions.items()):
+            auto_html, auto_plain = format_turns(self.current_turns, suggestions)
+            self.text_transcript.setHtml(auto_html)
+            plain_text = auto_plain
+
         try:
             with open(txt_path, 'w', encoding='utf-8') as f:
                 f.write(plain_text)
@@ -605,6 +659,115 @@ class SmartDictaphoneWindow(QMainWindow):
         except Exception as e:
             if sys.stderr:
                 print(f"Błąd zapisu pliku TXT: {e}", file=sys.stderr)
+
+    def _populate_speaker_mapping(self, turns: list):
+        """
+        Dynamicznie buduje listę wykrytych mówców w panelu weryfikacji.
+        """
+        while self.speaker_rows_layout.count():
+            child = self.speaker_rows_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+            elif child.layout():
+                while child.layout().count():
+                    subchild = child.layout().takeAt(0)
+                    if subchild.widget():
+                        subchild.widget().deleteLater()
+
+        self.speaker_inputs.clear()
+
+        if not turns:
+            self.speaker_box.setVisible(False)
+            return
+
+        speakers = sorted(list(set(t.get("speaker", "") for t in turns if t.get("speaker"))))
+        has_diarization = any(spk.startswith("SPEAKER_") for spk in speakers)
+
+        if not has_diarization or len(speakers) == 0:
+            self.speaker_box.setVisible(False)
+            return
+
+        analysis = analyze_speakers(turns)
+
+        for spk_id in speakers:
+            s_data = analysis.get(spk_id, {})
+            count = s_data.get("count", 0)
+            sample_text = s_data.get("sample", "")
+            suggested_name = s_data.get("suggested_name", "")
+            clue = s_data.get("clue", "")
+
+            if len(sample_text) > 55:
+                sample_text = sample_text[:52] + "..."
+
+            card_frame = QFrame()
+            card_frame.setStyleSheet("QFrame { background-color: #1a1b26; border: 1px solid #33374b; border-radius: 6px; padding: 6px 10px; }")
+            card_layout = QVBoxLayout(card_frame)
+            card_layout.setContentsMargins(4, 4, 4, 4)
+            card_layout.setSpacing(4)
+
+            top_row = QHBoxLayout()
+            top_row.setSpacing(10)
+
+            lbl_spk = QLabel(f"<b>{spk_id}</b> ({count} wypowiedzi)")
+            lbl_spk.setMinimumWidth(160)
+            lbl_spk.setFont(QFont("Segoe UI", 9))
+
+            edit_name = QLineEdit()
+            edit_name.setPlaceholderText("Wpisz imię / rolę (np. Jan, Piotr, Klient)")
+            edit_name.setText(suggested_name)
+            edit_name.setStyleSheet("background-color: #2b2d42; color: #edf2f4; border: 1px solid #4cc9f0; border-radius: 4px; padding: 4px 8px; font-weight: bold;")
+
+            self.speaker_inputs[spk_id] = edit_name
+
+            top_row.addWidget(lbl_spk)
+            top_row.addWidget(edit_name, stretch=1)
+            card_layout.addLayout(top_row)
+
+            # Dolny wiersz: Wskazówka kontekstowa z dowodem oraz próbka wypowiedzi
+            bottom_row = QHBoxLayout()
+            bottom_row.setSpacing(10)
+
+            lbl_clue = QLabel(clue)
+            lbl_clue.setStyleSheet("color: #4cc9f0; font-size: 11px;")
+
+            lbl_sample = QLabel(f"Próbka: <i>„{sample_text}”</i>" if sample_text else "")
+            lbl_sample.setStyleSheet("color: #8d99ae; font-size: 11px;")
+
+            bottom_row.addWidget(lbl_clue, stretch=2)
+            bottom_row.addWidget(lbl_sample, stretch=3)
+            card_layout.addLayout(bottom_row)
+
+            self.speaker_rows_layout.addWidget(card_frame)
+
+        self.speaker_box.setVisible(True)
+
+    def _on_apply_speakers_clicked(self):
+        """
+        Zatwierdza nowe nazwy mówców wprowadzone przez użytkownika i aktualizuje podgląd oraz plik TXT.
+        """
+        if not self.current_turns:
+            return
+
+        mapping = {}
+        for spk_id, edit in self.speaker_inputs.items():
+            val = edit.text().strip()
+            mapping[spk_id] = val if val else spk_id
+
+        html_text, plain_text = format_turns(self.current_turns, mapping)
+        self.text_transcript.setHtml(html_text)
+
+        if self.current_txt_path:
+            try:
+                with open(self.current_txt_path, 'w', encoding='utf-8') as f:
+                    f.write(plain_text)
+                self._refresh_transcriptions_list()
+                QMessageBox.information(
+                    self,
+                    "Zaktualizowano Mówców",
+                    "Pomyślnie zaktualizowano imiona mówców w podglądzie oraz w zapisanym pliku transkrypcji!"
+                )
+            except Exception as e:
+                QMessageBox.warning(self, "Błąd Zapisu", f"Nie udało się zaktualizować pliku TXT:\n{e}")
 
     def _refresh_transcriptions_list(self):
         self.list_transcriptions.clear()

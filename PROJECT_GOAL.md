@@ -51,6 +51,7 @@ graph TD
 - [x] **Transkrypcja i Diaryzacja po zakończeniu nagrania**: Integracja z `pyannote.audio` (model `pyannote/speaker-diarization-3.1`) + `faster-whisper`, łączenie segmentów słów z etykietami mówców.
 - [x] **Filtrowanie i selekcja urządzeń wejściowych**: Wykrywanie sprawnych mikrofonów w Windows z pomijaniem niestabilnych sterowników WDM-KS.
 - [x] **Wgrywanie Gotowych Plików Audio (WAV / MP3 / M4A / FLAC / OGG / AAC)**: Wgrywanie zewnętrznych nagrań ze spotkań lub dyktafonów, automatyczna normalizacja do 16kHz mono bez potrzeby systemowego FFmpeg, asynchroniczna transkrypcja Whisper + diaryzacja PyAnnote (`batch_size=32`), podgląd w oknie i zapis do `.txt`.
+- [x] **Panel Mapowania i Autosugestii Mówców (Speaker Mapping & Verification)**: Automatyczna analiza kontekstu dialogów w celu sugerowania imion (np. Jan, Piotr, Tomasz), wbudowany panel weryfikacji z próbkami wypowiedzi, możliwość szybkiej korekty w GUI oraz natychmiastowe przemapowanie w tekście i pliku `.txt`.
 - [x] **Eksport lokalny**: Automatyczny zapis nagrań `.wav` i plików transkrypcji `.txt`.
 
 ---
