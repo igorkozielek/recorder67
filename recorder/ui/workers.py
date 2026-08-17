@@ -330,7 +330,8 @@ class TranscriptionWorker(QThread):
     Wątek wykonujący pełną transkrypcję z opcjonalną diaryzacją mówców (PyAnnote).
     """
     progress_signal = pyqtSignal(int, str)
-    finished_signal = pyqtSignal(str, str, list)  # (html_text, plain_text, turns)
+    preliminary_signal = pyqtSignal(str, str, list)  # Wstępna transkrypcja z Whispera przed diaryzacją
+    finished_signal = pyqtSignal(str, str, list)     # (html_text, plain_text, turns)
     error_signal = pyqtSignal(str)
 
     def __init__(
@@ -364,12 +365,14 @@ class TranscriptionWorker(QThread):
                 self.finished_signal.emit("Brak wykrytej mowy w nagraniu.", "Brak wykrytej mowy w nagraniu.", [])
                 return
 
+            # Wstępne sformatowanie transkrypcji (gwarancja braku utraty danych)
+            init_html, init_plain, init_turns = format_transcript_without_diarization(transcript_words)
+            self.preliminary_signal.emit(init_html, init_plain, init_turns)
+
             # Jeśli wyłączono diaryzację lub brak tokena HuggingFace
             if not self.enable_diarization or not self.hf_token:
-                self.progress_signal.emit(90, "Formatowanie transkrypcji...")
-                final_html, final_plain, turns = format_transcript_without_diarization(transcript_words)
                 self.progress_signal.emit(100, "Gotowe!")
-                self.finished_signal.emit(final_html, final_plain, turns)
+                self.finished_signal.emit(init_html, init_plain, init_turns)
                 return
 
             # Pełna diaryzacja mówców (PyAnnote)
@@ -382,13 +385,18 @@ class TranscriptionWorker(QThread):
             self.progress_signal.emit(60, f"Ładowanie modelu PyAnnote{speaker_info}...")
             diarizer = DiarizationEngine(hf_token=self.hf_token)
 
-            self.progress_signal.emit(75, f"Analiza głosów mówców{speaker_info}...")
+            def on_diar_progress(pct: int, msg: str):
+                self.progress_signal.emit(pct, msg)
+
+            self.progress_signal.emit(65, f"Analiza głosów mówców{speaker_info}...")
             final_html, final_plain, turns = diarizer.process(
                 self.audio_path,
                 transcript_words,
+                batch_size=32,
                 num_speakers=self.num_speakers,
                 min_speakers=self.min_speakers,
-                max_speakers=self.max_speakers
+                max_speakers=self.max_speakers,
+                progress_callback=on_diar_progress
             )
 
             self.progress_signal.emit(100, "Gotowe!")
@@ -402,11 +410,12 @@ class FileProcessingWorker(QThread):
     """
     Wątek asynchroniczny przetwarzający wgrany z dysku plik audio lub wideo (np. .mp4 ze spotkania):
     1. Normalizacja do formatu WAV 16kHz mono (za pomocą wbudowanego imageio-ffmpeg)
-    2. Transkrypcja Faster-Whisper z wybranym modelem i wskaźnikiem postępu w locie
-    3. Opcjonalna diaryzacja mówców PyAnnote (z automatycznym doborem parametrów)
+    2. Transkrypcja Faster-Whisper z wybranym modelem i wskaźnikiem postępu w locie + natychmiastowy autozapis TXT
+    3. Opcjonalna diaryzacja mówców PyAnnote (batch_size=32, hook postępu w UI, automatyczna aktualizacja TXT)
     """
     progress_signal = pyqtSignal(int, str)
-    finished_signal = pyqtSignal(str, str, str, list)  # (html_text, plain_text, prepared_wav_path, turns)
+    preliminary_signal = pyqtSignal(str, str, str, list)  # (html_text, plain_text, prepared_wav_path, turns)
+    finished_signal = pyqtSignal(str, str, str, list)     # (html_text, plain_text, prepared_wav_path, turns)
     error_signal = pyqtSignal(str)
 
     def __init__(
@@ -471,7 +480,26 @@ class FileProcessingWorker(QThread):
                 self.finished_signal.emit(msg, msg, prepared_wav_path, [])
                 return
 
-            # ETAP 3: Diaryzacja PyAnnote lub czysta transkrypcja Whisper
+            # Wczesne sformatowanie i NATYCHMIASTOWY zapis wstępnego pliku TXT na dysk
+            init_html, init_plain, init_turns = format_transcript_without_diarization(transcript_words)
+            
+            base_name = os.path.basename(prepared_wav_path)
+            file_stem = os.path.splitext(base_name)[0]
+            txt_dir = self.recordings_dir.replace("recordings", "transcriptions")
+            os.makedirs(txt_dir, exist_ok=True)
+            txt_path = os.path.join(txt_dir, f"transkrypcja_{file_stem}.txt")
+            
+            try:
+                with open(txt_path, "w", encoding="utf-8") as f:
+                    f.write(init_plain)
+                print(f"💾 [AUTOZAPIS] Zapisano wstępną transkrypcję do: {txt_path}")
+            except Exception as save_err:
+                print(f"⚠️ [AUTOZAPIS] Błąd wstępnego zapisu TXT: {save_err}")
+
+            # Wyemitowanie wstępnego tekstu do GUI (użytkownik już ma podgląd pełnego tekstu!)
+            self.preliminary_signal.emit(init_html, init_plain, prepared_wav_path, init_turns)
+
+            # ETAP 3: Diaryzacja PyAnnote lub zakończenie
             turns = []
             if self.enable_diarization and self.hf_token and self.hf_token.strip():
                 speaker_info = ""
@@ -480,20 +508,35 @@ class FileProcessingWorker(QThread):
                 elif self.max_speakers:
                     speaker_info = f" (max {self.max_speakers} os.)"
 
-                self.progress_signal.emit(65, f"Etap 3/3: Ładowanie modelu PyAnnote{speaker_info}...")
+                self.progress_signal.emit(60, f"Etap 3/3: Ładowanie modelu PyAnnote{speaker_info}...")
                 diarizer = DiarizationEngine(hf_token=self.hf_token.strip())
 
-                self.progress_signal.emit(75, f"Etap 3/3: Rozpoznawanie osób i łączenie z tekstem{speaker_info}...")
+                def on_diar_progress(pct: int, msg: str):
+                    self.progress_signal.emit(pct, msg)
+
+                self.progress_signal.emit(65, f"Etap 3/3: Rozpoznawanie osób i łączenie z tekstem{speaker_info}...")
                 final_html, final_plain, turns = diarizer.process(
                     prepared_wav_path,
                     transcript_words,
+                    batch_size=32,
                     num_speakers=self.num_speakers,
                     min_speakers=self.min_speakers,
-                    max_speakers=self.max_speakers
+                    max_speakers=self.max_speakers,
+                    progress_callback=on_diar_progress
                 )
+
+                # Aktualizacja pliku TXT o przypisanych mówców
+                try:
+                    with open(txt_path, "w", encoding="utf-8") as f:
+                        f.write(final_plain)
+                    print(f"💾 [AUTOZAPIS] Zaktualizowano plik z mówcami: {txt_path}")
+                except Exception as update_err:
+                    print(f"⚠️ [AUTOZAPIS] Błąd aktualizacji TXT: {update_err}")
+
             else:
-                self.progress_signal.emit(85, "Formatowanie transkrypcji...")
-                final_html, final_plain, turns = format_transcript_without_diarization(transcript_words)
+                final_html = init_html
+                final_plain = init_plain
+                turns = init_turns
 
             print("="*70)
             print(f"🎉 [PLIK] Sukces! Przetwarzanie zakończone: {os.path.basename(prepared_wav_path)}")

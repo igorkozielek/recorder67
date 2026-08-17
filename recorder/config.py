@@ -143,6 +143,8 @@ def get_hardware_acceleration_info() -> dict:
 # Opcje wyboru liczby osób dla PyAnnote (Limity Max vs Dokładna liczba)
 SPEAKER_COUNT_OPTIONS = [
     ("Auto (Bez limitu)", {}),
+    ("Rozmowa 2-3 osoby (Zalecane dla biura)", {"min_speakers": 2, "max_speakers": 3}),
+    ("Rozmowa 2-4 osoby", {"min_speakers": 2, "max_speakers": 4}),
     ("Maksymalnie 2 osoby (Dialog)", {"max_speakers": 2}),
     ("Maksymalnie 3 osoby", {"max_speakers": 3}),
     ("Maksymalnie 4 osoby", {"max_speakers": 4}),
@@ -150,6 +152,7 @@ SPEAKER_COUNT_OPTIONS = [
     ("Dokładnie 1 osoba (Monolog)", {"num_speakers": 1}),
     ("Dokładnie 2 osoby", {"num_speakers": 2}),
     ("Dokładnie 3 osoby", {"num_speakers": 3}),
+    ("Dokładnie 4 osoby", {"num_speakers": 4}),
 ]
 
 

@@ -113,20 +113,30 @@ class DiarizationEngine:
         self,
         audio_path: str,
         transcript_words: List[Dict[str, Any]],
-        batch_size: int = None,
+        batch_size: int = 32,
         num_speakers: int = None,
         min_speakers: int = None,
-        max_speakers: int = None
+        max_speakers: int = None,
+        progress_callback: Optional[Callable[[int, str], None]] = None
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         """
         Wykonuje analizę mówców i łączy wypowiedzi z transkrypcją słów.
-        Gwarantuje, że żadne słowo z transkrypcji nie zostanie utracone (pełne dopasowanie słowo-mówca).
+        Optymalizacja: batch_size=32 dla szybkiego przetwarzania paczek audio na GPU/CPU.
+        Raportuje postęp w czasie rzeczywistym przez progress_callback (hook PyAnnote).
         Zwraca (final_html, final_plain, turns).
         """
         if not transcript_words:
             return "Brak zarejestrowanej mowy.", "Brak zarejestrowanej mowy.", []
 
         pipeline = self.load_pipeline()
+
+        # Konfiguracja wielkości paczki na komponentach pipeline (jeśli wspierana)
+        effective_batch_size = int(batch_size) if batch_size and int(batch_size) > 0 else 32
+        if hasattr(pipeline, "segmentation_batch_size"):
+            try:
+                pipeline.segmentation_batch_size = effective_batch_size
+            except Exception:
+                pass
 
         diarize_kwargs = {}
         if num_speakers is not None and int(num_speakers) > 0:
@@ -139,14 +149,44 @@ class DiarizationEngine:
             if max_speakers is not None and int(max_speakers) > 0:
                 diarize_kwargs["max_speakers"] = int(max_speakers)
 
-        print(f"⏳ [PYANNOTE] Rozpoczęto analizę głosów (parametry: {diarize_kwargs or 'auto'}) dla pliku: {os.path.basename(audio_path)}...")
+        # Hook do raportowania postępu etapów PyAnnote
+        if progress_callback:
+            def _pyannote_hook(step_name: str, step_artifact: Any = None, file: Any = None, total: int = None, completed: int = None):
+                try:
+                    step_desc = {
+                        "segmentation": "Segmentacja dźwięku",
+                        "embeddings": "Ekstrakcja cech mówców (embeddings)",
+                        "speaker_counting": "Zliczanie mówców",
+                        "clustering": "Klasteryzacja i rozpoznawanie osób",
+                        "discrete_diarization": "Wyznaczanie przedziałów wypowiedzi"
+                    }.get(step_name, step_name)
+
+                    if total and completed is not None and total > 0:
+                        pct_step = int((completed / total) * 100)
+                        if step_name == "segmentation":
+                            overall = int(60 + (completed / total) * 15)
+                        elif step_name in ("embeddings", "speaker_counting"):
+                            overall = int(75 + (completed / total) * 15)
+                        else:
+                            overall = int(90 + (completed / total) * 8)
+                        progress_callback(min(98, overall), f"Etap 3/3: {step_desc} ({pct_step}% - {completed}/{total})...")
+                    else:
+                        progress_callback(70, f"Etap 3/3: {step_desc}...")
+                except Exception:
+                    pass
+
+            diarize_kwargs["hook"] = _pyannote_hook
+
+        print(f"⏳ [PYANNOTE] Rozpoczęto analizę głosów (parametry: {diarize_kwargs}) dla pliku: {os.path.basename(audio_path)}...")
 
         try:
             diarization = pipeline(audio_path, **diarize_kwargs)
         except Exception as err:
-            print(f"⚠️ [PYANNOTE] Błąd wywołania z parametrami ({err}), ponawianie domyślne...")
+            print(f"⚠️ [PYANNOTE] Błąd wywołania z parametrami ({err}), ponawianie bezpieczne...")
             try:
-                diarization = pipeline(audio_path)
+                # W razie błędu usuwamy dodatkowe opcje, zachowując hook i limity mówców
+                fallback_kwargs = {k: v for k, v in diarize_kwargs.items() if k in ("num_speakers", "min_speakers", "max_speakers", "hook")}
+                diarization = pipeline(audio_path, **fallback_kwargs)
             except Exception as pipe_err:
                 print(f"❌ [PYANNOTE] Błąd diaryzacji: {pipe_err}")
                 diarization = None
@@ -169,8 +209,10 @@ class DiarizationEngine:
             print("⚠️ [PYANNOTE] Nie wykryto segmentów mówców. Powrót do transkrypcji ciągłej.")
             return format_transcript_without_diarization(transcript_words)
 
-        # Dopasowanie KAŻDEGO słowa do najbardziej prawdopodobnego mówcy (brak utraty słów!)
+        # Dopasowanie KAŻDEGO słowa do najbardziej prawdopodobnego mówcy
         word_speaker_tags = []
+        prev_speaker = "SPEAKER_00"
+
         for w in transcript_words:
             w_start = w.get("start", 0.0)
             w_end = w.get("end", w_start + 0.1)
@@ -179,23 +221,34 @@ class DiarizationEngine:
             best_speaker = None
             best_dist = 999999.0
 
-            # 1. Sprawdzenie czy słowo leży bezpośrednio wewnątrz segmentu
+            # 1. Sprawdzenie czy słowo leży bezpośrednio wewnątrz segmentu PyAnnote
             for seg_start, seg_end, seg_spk in diar_segments:
                 if seg_start <= mid <= seg_end:
                     best_speaker = seg_spk
                     break
                 else:
-                    # Obliczenie odległości do najbliższego segmentu
                     dist = min(abs(mid - seg_start), abs(mid - seg_end))
                     if dist < best_dist:
                         best_dist = dist
                         best_speaker = seg_spk
 
-            # Jeśli brak dopasowania wewnątrz, przypisz najbliższego mówcę
-            assigned_spk = best_speaker or "SPEAKER_00"
+            # Jeśli słowo jest blisko segmentu (do 1.5s), przypisujemy tego mówcę, w przeciwnym razie prev_speaker
+            if best_speaker and best_dist <= 1.5:
+                assigned_spk = best_speaker
+            elif best_speaker and not word_speaker_tags:
+                assigned_spk = best_speaker
+            else:
+                assigned_spk = prev_speaker
+
+            prev_speaker = assigned_spk
             word_speaker_tags.append((w.get("word", ""), w_start, w_end, assigned_spk))
 
-        # Grupowanie kolejnych słów tego samego mówcy w spójne wypowiedzi (turns)
+        # Naturalne grupowanie słów w tury dialogu:
+        # Rozdzielamy turę gdy:
+        # 1. Zmienił się mówca
+        # 2. Wystąpiła pauza > 1.0s
+        # 3. Zdanie zakończyło się kropką/pytajnikiem/wykrzyknikiem i pauzą > 0.6s
+        # 4. Tura przekroczyła 25 sekund (zabezpieczenie przed gigantycznymi blokami)
         turns = []
         if word_speaker_tags:
             cur_spk = word_speaker_tags[0][3]
@@ -204,8 +257,16 @@ class DiarizationEngine:
             cur_words = []
 
             for w_text, w_s, w_e, w_spk in word_speaker_tags:
-                # Rozdzielamy turę jeśli zmienił się mówca LUB wystąpiła bardzo długa przerwa (> 3.0s)
-                if w_spk != cur_spk or (w_s - cur_end) > 3.0:
+                pause = max(0.0, w_s - cur_end)
+                turn_dur = max(0.0, cur_end - cur_start)
+                last_word_ends_sentence = any(cur_words) and cur_words[-1].rstrip().endswith((".", "!", "?"))
+
+                speaker_changed = (w_spk != cur_spk)
+                pause_split = (pause > 1.0)
+                sentence_split = (last_word_ends_sentence and pause > 0.6 and len(cur_words) >= 4)
+                duration_split = (turn_dur >= 25.0 and last_word_ends_sentence)
+
+                if cur_words and (speaker_changed or pause_split or sentence_split or duration_split):
                     sentence = "".join(cur_words).strip()
                     if sentence:
                         turns.append({
