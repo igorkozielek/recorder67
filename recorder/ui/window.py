@@ -9,7 +9,7 @@ try:
         QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
         QPushButton, QLabel, QComboBox, QProgressBar, QListWidget,
         QListWidgetItem, QGroupBox, QMessageBox, QFrame,
-        QSlider, QLineEdit, QTextEdit, QScrollArea
+        QSlider, QLineEdit, QTextEdit, QScrollArea, QFileDialog
     )
 except ImportError:
     from PyQt6.QtCore import Qt, QTimer, QUrl
@@ -18,7 +18,7 @@ except ImportError:
         QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
         QPushButton, QLabel, QComboBox, QProgressBar, QListWidget,
         QListWidgetItem, QGroupBox, QMessageBox, QFrame,
-        QSlider, QLineEdit, QTextEdit, QScrollArea
+        QSlider, QLineEdit, QTextEdit, QScrollArea, QFileDialog
     )
 
 from recorder.config import (
@@ -35,7 +35,8 @@ from recorder.ui.theme import DARK_THEME_QSS
 from recorder.ui.workers import (
     SmartAudioWorker,
     LiveTranscriptionWorker,
-    TranscriptionWorker
+    TranscriptionWorker,
+    FileProcessingWorker
 )
 
 
@@ -46,8 +47,8 @@ class SmartDictaphoneWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Inteligentny Dyktafon AI - Wykrywanie Mowy (VAD)")
-        self.resize(750, 900)
-        self.setMinimumSize(600, 700)
+        self.resize(780, 920)
+        self.setMinimumSize(620, 720)
 
         self.recordings_dir = RECORDINGS_DIR
         self.transcriptions_dir = TRANSCRIPTIONS_DIR
@@ -61,6 +62,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.live_transcription_worker = None
         self.live_plain_text_lines = []
         self.transcription_thread = None
+        self.file_processing_worker = None
 
         self.worker = SmartAudioWorker(samplerate=SAMPLE_RATE, auto_pause_sec=DEFAULT_AUTO_PAUSE_SEC)
         self.worker.audio_level_signal.connect(self._update_audio_level)
@@ -197,31 +199,39 @@ class SmartDictaphoneWindow(QMainWindow):
 
         # PRZYCISKI STEROWANIA
         controls_layout = QHBoxLayout()
-        controls_layout.setSpacing(12)
+        controls_layout.setSpacing(10)
 
-        self.btn_start = QPushButton("⏺ Start Inteligentnego Nagrywania")
+        self.btn_start = QPushButton("⏺ Start Nagrywania")
         self.btn_start.setObjectName("BtnStart")
-        self.btn_start.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        self.btn_start.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         self.btn_start.setMinimumHeight(48)
         self.btn_start.clicked.connect(self._on_start_clicked)
 
-        self.btn_pause = QPushButton("⏸ Pauza Ręczna")
+        self.btn_pause = QPushButton("⏸ Pauza")
         self.btn_pause.setObjectName("BtnPause")
-        self.btn_pause.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        self.btn_pause.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         self.btn_pause.setMinimumHeight(48)
         self.btn_pause.setEnabled(False)
         self.btn_pause.clicked.connect(self._on_pause_clicked)
 
         self.btn_stop = QPushButton("⏹ Stop i Zapisz")
         self.btn_stop.setObjectName("BtnStop")
-        self.btn_stop.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        self.btn_stop.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         self.btn_stop.setMinimumHeight(48)
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self._on_stop_clicked)
 
-        controls_layout.addWidget(self.btn_start)
-        controls_layout.addWidget(self.btn_pause)
-        controls_layout.addWidget(self.btn_stop)
+        self.btn_upload = QPushButton("📂 Prześlij Plik Audio")
+        self.btn_upload.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        self.btn_upload.setMinimumHeight(48)
+        self.btn_upload.setStyleSheet("background-color: #3a0ca3; color: #ffffff; border-radius: 8px; padding: 0 14px;")
+        self.btn_upload.setToolTip("Wgraj gotowy plik audio (WAV, MP3, M4A, FLAC, OGG, AAC) do transkrypcji i diaryzacji")
+        self.btn_upload.clicked.connect(self._on_upload_file_clicked)
+
+        controls_layout.addWidget(self.btn_start, stretch=3)
+        controls_layout.addWidget(self.btn_pause, stretch=2)
+        controls_layout.addWidget(self.btn_stop, stretch=2)
+        controls_layout.addWidget(self.btn_upload, stretch=3)
         main_layout.addLayout(controls_layout)
 
         # WYGENEROWANE WYJŚCIA (Master GroupBox)
@@ -248,7 +258,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.progress_transcription.setRange(0, 100)
         self.progress_transcription.setValue(0)
         self.progress_transcription.setTextVisible(True)
-        self.progress_transcription.setFormat("Oczekuje na nagranie...")
+        self.progress_transcription.setFormat("Oczekuje na nagranie lub plik...")
         outputs_main_layout.addWidget(self.progress_transcription)
 
         # UKŁAD DWUKOLUMNOWY: LEWA = NAGRANIA AUDIO, PRAWA = TRANSKRYPCJE TEKSTOWE
@@ -298,7 +308,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.text_transcript = QTextEdit()
         self.text_transcript.setReadOnly(True)
         self.text_transcript.setMinimumHeight(220)
-        self.text_transcript.setPlaceholderText("Tutaj pojawi się transkrypcja z podziałem na role po zakończeniu nagrywania (lub po dwukrotnym kliknięciu na plik .txt powyżej)...")
+        self.text_transcript.setPlaceholderText("Tutaj pojawi się transkrypcja z podziałem na role po zakończeniu nagrywania / wgraniu pliku...")
         outputs_main_layout.addWidget(self.text_transcript)
 
         main_layout.addWidget(outputs_box)
@@ -379,8 +389,9 @@ class SmartDictaphoneWindow(QMainWindow):
         self.timer.start()
 
         self.btn_start.setEnabled(False)
+        self.btn_upload.setEnabled(False)
         self.btn_pause.setEnabled(True)
-        self.btn_pause.setText("⏸ Pauza Ręczna")
+        self.btn_pause.setText("⏸ Pauza")
         self.btn_stop.setEnabled(True)
         self.combo_devices.setEnabled(False)
         self.slider_silence.setEnabled(False)
@@ -431,8 +442,9 @@ class SmartDictaphoneWindow(QMainWindow):
         self.lbl_vad_detail.setText("VAD: Oczekiwanie na uruchomienie...")
 
         self.btn_start.setEnabled(True)
+        self.btn_upload.setEnabled(True)
         self.btn_pause.setEnabled(False)
-        self.btn_pause.setText("⏸ Pauza Ręczna")
+        self.btn_pause.setText("⏸ Pauza")
         self.btn_stop.setEnabled(False)
         self.combo_devices.setEnabled(True)
         self.slider_silence.setEnabled(True)
@@ -468,6 +480,104 @@ class SmartDictaphoneWindow(QMainWindow):
         else:
             QMessageBox.warning(self, "Brak Nagrania", "Nie zarejestrowano mowy do zapisu.")
 
+    def _on_upload_file_clicked(self):
+        """
+        Obsługa wgrywania zewnętrznego pliku audio (WAV, MP3, M4A, FLAC, OGG, AAC)
+        bez konieczności posiadania zewnętrznego narzędzia FFmpeg w systemie Windows.
+        """
+        file_filter = (
+            "Wszystkie Obsługiwane (*.mp4 *.mkv *.mov *.webm *.wav *.mp3 *.m4a *.flac *.ogg *.aac *.wma);;"
+            "Nagrania Wideo (*.mp4 *.mkv *.mov *.webm);;"
+            "Nagrania Audio (*.wav *.mp3 *.m4a *.flac *.ogg *.aac *.wma);;"
+            "Wszystkie pliki (*.*)"
+        )
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Wybierz plik audio do transkrypcji",
+            "",
+            file_filter
+        )
+
+        if not file_path:
+            return
+
+        # Walidacja pliku (czy istnieje i czy rozmiar > 0)
+        if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+            QMessageBox.warning(self, "Niepoprawny Plik", "Wybrany plik jest pusty lub nie istnieje na dysku.")
+            return
+
+        token = self.input_token.text().strip()
+        filename = os.path.basename(file_path)
+
+        # Blokowanie kontrolek na czas przetwarzania pliku
+        self.btn_start.setEnabled(False)
+        self.btn_upload.setEnabled(False)
+        self.btn_pause.setEnabled(False)
+        self.btn_stop.setEnabled(False)
+        self.combo_devices.setEnabled(False)
+
+        self.text_transcript.clear()
+        self.text_transcript.setPlaceholderText(f"Trwa przetwarzanie pliku '{filename}'...\nProszę czekać, operacja odbywa się asynchronicznie.")
+        self.progress_transcription.setValue(0)
+        self.progress_transcription.setFormat(f"Inicjalizacja przetwarzania: {filename}")
+
+        self.file_processing_worker = FileProcessingWorker(
+            input_file_path=file_path,
+            recordings_dir=self.recordings_dir,
+            hf_token=token if token else None
+        )
+        self.file_processing_worker.progress_signal.connect(self._on_file_progress)
+        self.file_processing_worker.finished_signal.connect(self._on_file_finished)
+        self.file_processing_worker.error_signal.connect(self._on_file_error)
+        self.file_processing_worker.start()
+
+    def _on_file_progress(self, value: int, text: str):
+        self.progress_transcription.setValue(value)
+        self.progress_transcription.setFormat(f"{value}% - {text}")
+
+    def _on_file_finished(self, html_text: str, plain_text: str, prepared_wav_path: str):
+        self.progress_transcription.setValue(100)
+        self.progress_transcription.setFormat("Przetwarzanie pliku zakończone!")
+        self.text_transcript.setHtml(html_text)
+
+        # Odblokowanie kontrolek
+        self.btn_start.setEnabled(True)
+        self.btn_upload.setEnabled(True)
+        self.combo_devices.setEnabled(True)
+
+        self.last_audio_save_path = prepared_wav_path
+        self._refresh_recordings_list()
+
+        # Zapis transkrypcji do pliku TXT
+        base_name = os.path.basename(prepared_wav_path)
+        file_stem = os.path.splitext(base_name)[0]
+        txt_filename = f"transkrypcja_{file_stem}.txt"
+        txt_path = os.path.join(self.transcriptions_dir, txt_filename)
+
+        try:
+            with open(txt_path, 'w', encoding='utf-8') as f:
+                f.write(plain_text)
+            self._refresh_transcriptions_list()
+        except Exception as e:
+            if sys.stderr:
+                print(f"Błąd zapisu pliku TXT: {e}", file=sys.stderr)
+
+        QMessageBox.information(
+            self,
+            "Plik Przetworzony",
+            f"Pomyślnie przetworzono plik audio!\n\n"
+            f"Zapisano audio 16kHz:\n{os.path.basename(prepared_wav_path)}\n\n"
+            f"Zapisano transkrypcję:\n{txt_filename}"
+        )
+
+    def _on_file_error(self, err_msg: str):
+        self.progress_transcription.setValue(0)
+        self.progress_transcription.setFormat("Błąd przetwarzania pliku!")
+        self.btn_start.setEnabled(True)
+        self.btn_upload.setEnabled(True)
+        self.combo_devices.setEnabled(True)
+        QMessageBox.critical(self, "Błąd Przetwarzania Pliku", f"Wystąpił błąd podczas przetwarzania pliku audio:\n\n{err_msg}")
+
     def _on_transcription_progress(self, value, text):
         self.progress_transcription.setValue(value)
         self.progress_transcription.setFormat(f"{value}% - {text}")
@@ -477,6 +587,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.progress_transcription.setFormat("Transkrypcja zakończona!")
         self.text_transcript.setHtml(html_text)
         self.btn_start.setEnabled(True)
+        self.btn_upload.setEnabled(True)
 
         if self.last_audio_save_path:
             base_name = os.path.basename(self.last_audio_save_path)
@@ -532,6 +643,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.progress_transcription.setFormat("Błąd transkrypcji!")
         QMessageBox.critical(self, "Błąd AI", f"Wystąpił błąd podczas przetwarzania:\n{err_msg}")
         self.btn_start.setEnabled(True)
+        self.btn_upload.setEnabled(True)
 
     def _on_timer_tick(self):
         if self.worker.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:

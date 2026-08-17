@@ -1,5 +1,6 @@
 import os
 import sys
+import gc
 from typing import List, Dict, Any, Tuple
 
 
@@ -61,7 +62,7 @@ def apply_torchaudio_patches():
 
 class DiarizationEngine:
     """
-    Silnik diaryzacji mówców bazujący na PyAnnote.audio.
+    Silnik diaryzacji mówców bazujący na PyAnnote.audio z optymalizacją batch_size dla długich plików (1-2h).
     """
     def __init__(self, hf_token: str = None):
         self.hf_token = hf_token
@@ -98,13 +99,20 @@ class DiarizationEngine:
         self._pipeline = pipeline
         return self._pipeline
 
-    def process(self, audio_path: str, transcript_words: List[Dict[str, Any]]) -> Tuple[str, str]:
+    def process(self, audio_path: str, transcript_words: List[Dict[str, Any]], batch_size: int = 32) -> Tuple[str, str]:
         """
         Wykonuje analizę mówców i łączy wypowiedzi z transkrypcją słów.
+        Optymalizacja: wykorzystanie batch_size=32 dla efektywnego przetwarzania długich plików (1-2h).
         Zwraca (final_html, final_plain).
         """
         pipeline = self.load_pipeline()
-        diarization = pipeline(audio_path)
+
+        # Wywołanie pipeline z batch_size dla optymalizacji pamięci RAM / GPU
+        try:
+            diarization = pipeline(audio_path, batch_size=batch_size)
+        except TypeError:
+            # Fallback dla starszych wersji pyannote nie przyjmujących batch_size bezpośrednio
+            diarization = pipeline(audio_path)
 
         final_html = ""
         final_plain = ""
@@ -121,6 +129,15 @@ class DiarizationEngine:
                 sentence = "".join(words_in_turn).strip()
                 final_html += f"<b>[{turn.start:.1f}s - {turn.end:.1f}s] {speaker}:</b> {sentence}<br><br>"
                 final_plain += f"[{turn.start:.1f}s - {turn.end:.1f}s] {speaker}: {sentence}\n\n"
+
+        # Zwolnienie pamięci podręcznej PyTorch i Garbage Collector
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+        gc.collect()
 
         if not final_html:
             fallback_msg = "Transkrypcja zakończona, ale nie udało się zmapować głosów do słów."

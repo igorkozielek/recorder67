@@ -2,6 +2,7 @@ import sys
 import queue
 import collections
 from datetime import datetime
+from typing import Optional
 import numpy as np
 import sounddevice as sd
 
@@ -20,7 +21,7 @@ from recorder.config import (
     RMS_SILENCE_THRESHOLD
 )
 from recorder.audio.capture import save_wav_file
-from recorder.audio.converter import resample_to_16k
+from recorder.audio.converter import resample_to_16k, prepare_audio_file
 from recorder.core.vad import SileroVADDetector, is_silero_available
 from recorder.core.transcriber import TranscriberEngine
 from recorder.core.diarizer import DiarizationEngine
@@ -295,11 +296,73 @@ class TranscriptionWorker(QThread):
             self.progress_signal.emit(50, "Ładowanie modelu PyAnnote (Diaryzacja)...")
             diarizer = DiarizationEngine(hf_token=self.hf_token)
 
-            self.progress_signal.emit(60, "Analiza głosów mówców (to potrwa chwilę)...")
-            final_html, final_plain = diarizer.process(self.audio_path, transcript_words)
+            self.progress_signal.emit(60, "Analiza głosów mówców (batch_size=32)...")
+            final_html, final_plain = diarizer.process(self.audio_path, transcript_words, batch_size=32)
 
             self.progress_signal.emit(100, "Gotowe!")
             self.finished_signal.emit(final_html, final_plain)
+
+        except Exception as e:
+            self.error_signal.emit(str(e))
+
+
+class FileProcessingWorker(QThread):
+    """
+    Wątek asynchroniczny przetwarzający wgrany z dysku plik audio:
+    1. Normalizacja do formatu WAV 16kHz mono bez zewnętrznego FFmpeg
+    2. Transkrypcja Faster-Whisper
+    3. Diaryzacja mówców PyAnnote (z batch_size=32 dla długich plików)
+    """
+    progress_signal = pyqtSignal(int, str)
+    finished_signal = pyqtSignal(str, str, str)  # (html_text, plain_text, prepared_wav_path)
+    error_signal = pyqtSignal(str)
+
+    def __init__(self, input_file_path: str, recordings_dir: str, hf_token: Optional[str] = None):
+        super().__init__()
+        self.input_file_path = input_file_path
+        self.recordings_dir = recordings_dir
+        self.hf_token = hf_token
+
+    def run(self):
+        try:
+            # ETAP 1: Konwersja i normalizacja formatu audio
+            self.progress_signal.emit(5, "Etap 1/3: Konwersja i normalizacja audio do 16kHz...")
+            prepared_wav_path, duration_sec = prepare_audio_file(self.input_file_path, self.recordings_dir)
+
+            mins = int(duration_sec // 60)
+            secs = int(duration_sec % 60)
+            self.progress_signal.emit(15, f"Etap 1/3: Gotowe (Długość: {mins}m {secs}s). Ładowanie Whisper...")
+
+            # ETAP 2: Transkrypcja Faster-Whisper
+            self.progress_signal.emit(25, "Etap 2/3: Transkrypcja nagrania przez Whisper...")
+            transcriber = TranscriberEngine(model_size="small")
+            transcript_words = transcriber.transcribe_file_with_words(prepared_wav_path, language="pl")
+
+            if not transcript_words:
+                msg = "Nie wykryto zrozumiałej mowy w przesłanym pliku audio."
+                self.finished_signal.emit(msg, msg, prepared_wav_path)
+                return
+
+            # ETAP 3: Diaryzacja PyAnnote lub czysta transkrypcja Whisper
+            if self.hf_token and self.hf_token.strip():
+                self.progress_signal.emit(60, "Etap 3/3: Ładowanie modelu PyAnnote (Diaryzacja)...")
+                diarizer = DiarizationEngine(hf_token=self.hf_token.strip())
+
+                self.progress_signal.emit(70, "Etap 3/3: Rozpoznawanie osób i łączenie z tekstem...")
+                final_html, final_plain = diarizer.process(prepared_wav_path, transcript_words, batch_size=32)
+            else:
+                self.progress_signal.emit(85, "Formatowanie transkrypcji (brak tokenu HF dla diaryzacji)...")
+                # Złożenie tekstu bez diaryzacji
+                full_text = "".join(w["word"] for w in transcript_words).strip()
+                final_html = (
+                    f"<i><font color='#f59e0b'>Wskazówka: Aby rozpoznać poszczególnych mówców, "
+                    f"wklej token HuggingFace w polu powyżej.</font></i><br><br>"
+                    f"<b>[0.0s - {duration_sec:.1f}s] Transkrypcja:</b><br>{full_text}"
+                )
+                final_plain = f"[{duration_sec:.1f}s] Transkrypcja:\n{full_text}"
+
+            self.progress_signal.emit(100, "Przetwarzanie zakończone pomyślnie!")
+            self.finished_signal.emit(final_html, final_plain, prepared_wav_path)
 
         except Exception as e:
             self.error_signal.emit(str(e))
