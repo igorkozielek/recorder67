@@ -36,6 +36,7 @@ transcriptions/
 # Model Cache & Temp Data
 .cache/
 *.jit
+scratch/
 
 # Zmienne środowiskowe i sekrety (nie publikować na GitHubie!)
 .env

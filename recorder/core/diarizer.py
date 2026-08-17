@@ -1,5 +1,6 @@
 import os
 import sys
+import gc
 from typing import List, Dict, Any, Tuple
 
 
@@ -61,7 +62,7 @@ def apply_torchaudio_patches():
 
 class DiarizationEngine:
     """
-    Silnik diaryzacji mówców bazujący na PyAnnote.audio.
+    Silnik diaryzacji mówców bazujący na PyAnnote.audio z optymalizacją batch_size dla długich plików (1-2h).
     """
     def __init__(self, hf_token: str = None):
         self.hf_token = hf_token
@@ -80,6 +81,7 @@ class DiarizationEngine:
         import torch
         from pyannote.audio import Pipeline
 
+        print("👥 [PYANNOTE] Ładowanie modelu 'pyannote/speaker-diarization-3.1'...")
         pipeline = None
         try:
             pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=self.hf_token)
@@ -92,9 +94,11 @@ class DiarizationEngine:
         if pipeline is None:
             raise ValueError("Nie udało się załadować modelu PyAnnote. Sprawdź poprawność tokenu HuggingFace.")
 
+        device_name = "CUDA (GPU)" if torch.cuda.is_available() else "CPU"
         if torch.cuda.is_available():
             pipeline.to(torch.device("cuda"))
 
+        print(f"✅ [PYANNOTE] Model załadowany pomyślnie na: {device_name}!")
         self._pipeline = pipeline
         return self._pipeline
 
@@ -102,17 +106,22 @@ class DiarizationEngine:
         self,
         audio_path: str,
         transcript_words: List[Dict[str, Any]],
+        batch_size: int = 32,
         num_speakers: int = None,
         min_speakers: int = None,
         max_speakers: int = None
-    ) -> Tuple[str, str]:
+    ) -> Tuple[str, str, List[Dict[str, Any]]]:
         """
         Wykonuje analizę mówców i łączy wypowiedzi z transkrypcją słów.
-        Zwraca (final_html, final_plain).
+        Optymalizacja: wykorzystanie batch_size=32 dla efektywnego przetwarzania długich plików (1-2h).
+        Zwraca (final_html, final_plain, turns).
         """
         pipeline = self.load_pipeline()
-        
+
+        print(f"⏳ [PYANNOTE] Rozpoczęto analizę głosów (batch_size={batch_size}) dla pliku: {os.path.basename(audio_path)}...")
         diarize_kwargs = {}
+        if batch_size is not None and batch_size > 0:
+            diarize_kwargs["batch_size"] = int(batch_size)
         if num_speakers is not None and num_speakers > 0:
             diarize_kwargs["num_speakers"] = int(num_speakers)
         if min_speakers is not None:
@@ -120,12 +129,18 @@ class DiarizationEngine:
         if max_speakers is not None:
             diarize_kwargs["max_speakers"] = int(max_speakers)
 
-        diarization = pipeline(audio_path, **diarize_kwargs)
+        try:
+            diarization = pipeline(audio_path, **diarize_kwargs)
+        except TypeError:
+            diarization = pipeline(audio_path)
 
         final_html = ""
         final_plain = ""
+        turns = []
+        speakers_detected = set()
 
         for turn, _, speaker in diarization.itertracks(yield_label=True):
+            speakers_detected.add(speaker)
             # Dopasowanie słów po punkcie środkowym (odporniejsze na przesunięcia czasowe)
             words_in_turn = []
             for w in transcript_words:
@@ -135,23 +150,40 @@ class DiarizationEngine:
 
             if words_in_turn:
                 sentence = "".join(words_in_turn).strip()
+                turns.append({
+                    "start": turn.start,
+                    "end": turn.end,
+                    "speaker": speaker,
+                    "text": sentence
+                })
                 final_html += f"<b>[{turn.start:.1f}s - {turn.end:.1f}s] {speaker}:</b> {sentence}<br><br>"
                 final_plain += f"[{turn.start:.1f}s - {turn.end:.1f}s] {speaker}: {sentence}\n\n"
 
+        print(f"✅ [PYANNOTE] Diaryzacja zakończona! Wykryto mówców: {', '.join(sorted(speakers_detected)) if speakers_detected else 'Brak'}")
+
+        # Zwolnienie pamięci podręcznej PyTorch i Garbage Collector
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+        gc.collect()
+
         if not final_html:
             fallback_msg = "Transkrypcja zakończona, ale nie udało się zmapować głosów do słów."
-            return fallback_msg, fallback_msg
+            return fallback_msg, fallback_msg, []
 
-        return final_html, final_plain
+        return final_html, final_plain, turns
 
 
-def format_transcript_without_diarization(transcript_words: List[Dict[str, Any]]) -> Tuple[str, str]:
+def format_transcript_without_diarization(transcript_words: List[Dict[str, Any]]) -> Tuple[str, str, List[Dict[str, Any]]]:
     """
     Szybko grupuje słowa w czytelne bloki zdań z timestampami (gdy diaryzacja mówców jest wyłączona).
-    Zwraca (final_html, final_plain).
+    Zwraca (final_html, final_plain, turns).
     """
     if not transcript_words:
-        return "Brak zarejestrowanej mowy.", "Brak zarejestrowanej mowy."
+        return "Brak zarejestrowanej mowy.", "Brak zarejestrowanej mowy.", []
 
     chunks = []
     current_chunk_words = []
@@ -163,7 +195,6 @@ def format_transcript_without_diarization(transcript_words: List[Dict[str, Any]]
         w_start = w.get("start", last_end)
         w_end = w.get("end", w_start)
 
-        # Jeśli pauza między słowami przekracza 1.2s lub bieżący blok ma ponad 12 słów i kończy się kropką
         is_long_pause = (w_start - last_end) > 1.2
         is_sentence_end = any(current_chunk_words) and current_chunk_words[-1].rstrip().endswith((".", "!", "?")) and len(current_chunk_words) >= 8
 
@@ -184,14 +215,16 @@ def format_transcript_without_diarization(transcript_words: List[Dict[str, Any]]
 
     final_html = ""
     final_plain = ""
+    turns = []
 
     for start_t, end_t, text in chunks:
+        turns.append({
+            "start": start_t,
+            "end": end_t,
+            "speaker": "Mówca",
+            "text": text
+        })
         final_html += f"<b>[{start_t:.1f}s - {end_t:.1f}s]:</b> {text}<br><br>"
         final_plain += f"[{start_t:.1f}s - {end_t:.1f}s]: {text}\n\n"
 
-    if not final_html:
-        final_html = "Brak zarejestrowanej mowy."
-        final_plain = "Brak zarejestrowanej mowy."
-
-    return final_html, final_plain
-
+    return final_html, final_plain, turns

@@ -1,11 +1,28 @@
+import os
+import sys
+import types
+from typing import List, Dict, Any, Tuple, Optional, Callable
 import numpy as np
-from typing import List, Dict, Any, Tuple
+import soundfile as sf
 from recorder.config import get_hardware_acceleration_info, DEFAULT_WHISPER_MODEL
+
+
+def apply_av_patches():
+    """
+    Omija błąd ładowania DLL w pakiecie 'av' na Windowsie (AppLocker/Security Control),
+    tworząc bezpieczną atrapę modułu w sys.modules.
+    """
+    if 'av' not in sys.modules:
+        av_mock = types.ModuleType('av')
+        sys.modules['av'] = av_mock
+        sys.modules['av.audio'] = types.ModuleType('av.audio')
+        sys.modules['av.video'] = types.ModuleType('av.video')
 
 
 class TranscriberEngine:
     """
-    Silnik transkrypcji mowy oparty na faster-whisper ze wsparciem dla akceleracji CPU (int8) oraz CUDA (float16).
+    Silnik transkrypcji mowy oparty na faster-whisper z bezpiecznym wczytywaniem audio przez soundfile
+    oraz wsparciem dla akceleracji CPU (int8) i CUDA (float16).
     """
     def __init__(
         self,
@@ -28,6 +45,8 @@ class TranscriberEngine:
         if self._model is not None:
             return self._model
 
+        apply_av_patches()
+
         from faster_whisper import WhisperModel
 
         init_kwargs = {
@@ -38,9 +57,10 @@ class TranscriberEngine:
         if self.device == "cpu" and self.cpu_threads:
             init_kwargs["cpu_threads"] = self.cpu_threads
 
+        print(f"🎙️ [WHISPER] Ładowanie modelu '{self.model_size}' (urządzenie: {self.device.upper()}, precyzja: {self.compute_type})...")
         self._model = WhisperModel(**init_kwargs)
+        print(f"✅ [WHISPER] Model '{self.model_size}' został pomyślnie załadowany do pamięci!")
         return self._model
-
 
     def transcribe_live_chunk(self, audio_float: np.ndarray, language: str = "pl") -> str:
         """
@@ -67,16 +87,41 @@ class TranscriberEngine:
 
         return phrase_text
 
-    def transcribe_file_with_words(self, audio_path: str, language: str = "pl") -> List[Dict[str, Any]]:
+    def transcribe_file_with_words(
+        self,
+        audio_path: str,
+        language: str = "pl",
+        progress_callback: Optional[Callable[[float, float], None]] = None,
+        duration_sec: float = 0.0
+    ) -> List[Dict[str, Any]]:
         """
         Transkrybuje cały plik audio i zwraca listę słów z precyzyjnymi timestampami word-level.
+        Wczytuje dźwięk bezpośrednio przez soundfile (jako tablicę float32), eliminując zależność od biblioteki av.
         """
         if self._model is None:
             self.load_model()
 
-        segments, _ = self._model.transcribe(audio_path, word_timestamps=True, language=language)
+        # Bezpieczne wczytanie tablicy float32 przez soundfile
+        audio_arr, sr = sf.read(audio_path, dtype='float32')
+        if audio_arr.ndim > 1:
+            audio_arr = np.mean(audio_arr, axis=1)
+
+        total_duration = duration_sec if duration_sec > 0 else (len(audio_arr) / float(sr))
+        mins = int(total_duration // 60)
+        secs = int(total_duration % 60)
+        print(f"⏳ [WHISPER] Rozpoczęto transkrypcję nagrania: {os.path.basename(audio_path)} (Długość: {mins}m {secs}s)...")
+
+        # Przekazanie tablicy numpy bezpośrednio do modelu Whisper
+        segments, _ = self._model.transcribe(
+            audio_arr,
+            word_timestamps=True,
+            language=language,
+            beam_size=5
+        )
 
         transcript_words = []
+        last_logged_pct = -1
+
         for segment in segments:
             if segment.words:
                 for word in segment.words:
@@ -86,4 +131,20 @@ class TranscriberEngine:
                             "start": word.start,
                             "end": word.end
                         })
+
+            cur_time = segment.end
+            ratio = min(1.0, max(0.0, cur_time / total_duration)) if total_duration > 0 else 0.0
+            
+            # Logowanie do konsoli co 10%
+            pct = int(ratio * 100)
+            if pct // 10 > last_logged_pct:
+                last_logged_pct = pct // 10
+                c_mins = int(cur_time // 60)
+                c_secs = int(cur_time % 60)
+                print(f"   [WHISPER Postęp] {pct}% ({c_mins}m {c_secs}s / {mins}m {secs}s) -> Ostatnia fraza: \"{segment.text.strip()}\"")
+
+            if progress_callback:
+                progress_callback(ratio, cur_time)
+
+        print(f"✅ [WHISPER] Transkrypcja zakończona! Rozpoznano {len(transcript_words)} słów.")
         return transcript_words
