@@ -4,7 +4,7 @@
     <SchemaVersion>2.0</SchemaVersion>
     <ProjectGuid>2fbdf51b-144e-45b3-83a6-930e9b627a4d</ProjectGuid>
     <ProjectHome>.</ProjectHome>
-    <StartupFile>recorder.py</StartupFile>
+    <StartupFile>main.py</StartupFile>
     <SearchPath>
     </SearchPath>
     <WorkingDirectory>.</WorkingDirectory>
@@ -23,14 +23,54 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="recorder.py" />
-    <Compile Include="test.py" />
+    <Folder Include="audio\" />
+    <Folder Include="core\" />
+    <Folder Include="ui\" />
   </ItemGroup>
   <ItemGroup>
-    <Interpreter Include="env\">
+    <Compile Include="__init__.py" />
+    <Compile Include="config.py" />
+    <Compile Include="main.py" />
+    <Compile Include="recorder.py" />
+    <Compile Include="test.py" />
+    <Compile Include="audio\__init__.py" />
+    <Compile Include="audio\capture.py" />
+    <Compile Include="audio\converter.py" />
+    <Compile Include="audio\devices.py" />
+    <Compile Include="core\__init__.py" />
+    <Compile Include="core\diarizer.py" />
+    <Compile Include="core\transcriber.py" />
+    <Compile Include="core\vad.py" />
+    <Compile Include="ui\__init__.py" />
+    <Compile Include="ui\theme.py" />
+    <Compile Include="ui\window.py" />
+    <Compile Include="ui\workers.py" />
+    <Compile Include="..\main.py">
+      <Link>main_root.py</Link>
+    </Compile>
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="..\.env" Condition="Exists('..\.env')">
+      <Link>.env</Link>
+    </Content>
+    <Content Include="..\.env.example">
+      <Link>.env.example</Link>
+    </Content>
+    <Content Include="..\PROJECT_GOAL.md">
+      <Link>PROJECT_GOAL.md</Link>
+    </Content>
+    <Content Include="..\README.md">
+      <Link>README.md</Link>
+    </Content>
+    <Content Include="..\requirements.txt">
+      <Link>requirements.txt</Link>
+    </Content>
+  </ItemGroup>
+  <ItemGroup>
+    <Interpreter Include="..\env\">
       <Id>env</Id>
-      <Version>3.9</Version>
-      <Description>env (Python 3.9 (64-bit))</Description>
+      <Version>3.13</Version>
+      <Description>env (Python 3.13 (64-bit))</Description>
       <InterpreterPath>Scripts\python.exe</InterpreterPath>
       <WindowsInterpreterPath>Scripts\pythonw.exe</WindowsInterpreterPath>
       <PathEnvironmentVariable>PYTHONPATH</PathEnvironmentVariable>
