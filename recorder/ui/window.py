@@ -6,7 +6,7 @@ try:
     from PySide6.QtCore import Qt, QTimer, QUrl
     from PySide6.QtGui import QFont, QDesktopServices
     from PySide6.QtWidgets import (
-        QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
         QPushButton, QLabel, QComboBox, QProgressBar, QListWidget,
         QListWidgetItem, QGroupBox, QMessageBox, QFrame,
         QSlider, QLineEdit, QTextEdit, QScrollArea
@@ -15,7 +15,7 @@ except ImportError:
     from PyQt6.QtCore import Qt, QTimer, QUrl
     from PyQt6.QtGui import QFont, QDesktopServices
     from PyQt6.QtWidgets import (
-        QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
         QPushButton, QLabel, QComboBox, QProgressBar, QListWidget,
         QListWidgetItem, QGroupBox, QMessageBox, QFrame,
         QSlider, QLineEdit, QTextEdit, QScrollArea
@@ -31,7 +31,7 @@ from recorder.config import (
 )
 from recorder.audio.devices import get_working_input_devices
 from recorder.core.vad import is_silero_available
-from recorder.ui.theme import DARK_THEME_QSS
+from recorder.ui.theme import DARK_THEME_QSS, setup_dark_palette
 from recorder.ui.workers import (
     SmartAudioWorker,
     LiveTranscriptionWorker,
@@ -76,11 +76,13 @@ class SmartDictaphoneWindow(QMainWindow):
 
     def _init_ui(self):
         scroll_area = QScrollArea()
+        scroll_area.setObjectName("MainScrollArea")
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self.setCentralWidget(scroll_area)
 
         main_widget = QWidget()
+        main_widget.setObjectName("MainContainerWidget")
         scroll_area.setWidget(main_widget)
 
         main_layout = QVBoxLayout(main_widget)
@@ -304,6 +306,10 @@ class SmartDictaphoneWindow(QMainWindow):
         main_layout.addWidget(outputs_box)
 
     def _apply_theme(self):
+        app = QApplication.instance()
+        if app:
+            setup_dark_palette(app)
+            app.setStyleSheet(DARK_THEME_QSS)
         self.setStyleSheet(DARK_THEME_QSS)
 
     def _refresh_audio_devices(self):
@@ -380,7 +386,11 @@ class SmartDictaphoneWindow(QMainWindow):
 
         self.btn_start.setEnabled(False)
         self.btn_pause.setEnabled(True)
-        self.btn_pause.setText("⏸ Pauza Ręczna")
+        self.btn_pause.setText("⏸ Wstrzymaj Ręcznie")
+        self.btn_pause.setObjectName("BtnPause")
+        self.btn_pause.style().unpolish(self.btn_pause)
+        self.btn_pause.style().polish(self.btn_pause)
+        self.btn_pause.update()
         self.btn_stop.setEnabled(True)
         self.combo_devices.setEnabled(False)
         self.slider_silence.setEnabled(False)
@@ -432,7 +442,11 @@ class SmartDictaphoneWindow(QMainWindow):
 
         self.btn_start.setEnabled(True)
         self.btn_pause.setEnabled(False)
-        self.btn_pause.setText("⏸ Pauza Ręczna")
+        self.btn_pause.setText("⏸ Wstrzymaj Ręcznie")
+        self.btn_pause.setObjectName("BtnPause")
+        self.btn_pause.style().unpolish(self.btn_pause)
+        self.btn_pause.style().polish(self.btn_pause)
+        self.btn_pause.update()
         self.btn_stop.setEnabled(False)
         self.combo_devices.setEnabled(True)
         self.slider_silence.setEnabled(True)
@@ -545,6 +559,12 @@ class SmartDictaphoneWindow(QMainWindow):
         self.progress_vu.setValue(int(level))
 
     def _update_vad_info(self, is_speech, speech_prob, current_silence_sec):
+        if self.worker.state == SmartRecordState.MANUAL_PAUSED:
+            self.progress_silence.setValue(0)
+            self.lbl_vad_detail.setText("⏸ Nagrywanie wstrzymane ręcznie (kliknij 'Wznów Nagrywanie', aby kontynuować)")
+            self.lbl_vad_detail.setStyleSheet("color: #f59e0b; font-weight: bold; font-size: 11px;")
+            return
+
         threshold = self.slider_silence.value()
         val_tenths = int(min(current_silence_sec, threshold) * 10)
         self.progress_silence.setValue(val_tenths)
@@ -559,24 +579,41 @@ class SmartDictaphoneWindow(QMainWindow):
             self.lbl_vad_detail.setStyleSheet("color: #8d99ae; font-size: 11px;")
 
     def _on_worker_state_changed(self, state):
+        thresh_val = self.slider_silence.value()
         if state == SmartRecordState.STOPPED:
             self.lbl_status_badge.setText("ZATRZYMANY")
             self.lbl_status_badge.setObjectName("StatusStopped")
+            self.btn_pause.setText("⏸ Wstrzymaj Ręcznie")
+            self.btn_pause.setObjectName("BtnPause")
         elif state == SmartRecordState.RECORDING_SPEECH:
             self.lbl_status_badge.setText("🟢 NAGRYWANIE (WYKRYTO MOWĘ)")
             self.lbl_status_badge.setObjectName("StatusSpeech")
+            self.btn_pause.setText("⏸ Wstrzymaj Ręcznie")
+            self.btn_pause.setObjectName("BtnPause")
         elif state == SmartRecordState.RECORDING_SILENCE_COUNTDOWN:
             self.lbl_status_badge.setText("⏳ ODLICZANIE BRAKU MOWY (NAGRYWANIE)")
             self.lbl_status_badge.setObjectName("StatusCountdown")
+            self.btn_pause.setText("⏸ Wstrzymaj Ręcznie")
+            self.btn_pause.setObjectName("BtnPause")
         elif state == SmartRecordState.AUTO_PAUSED:
-            self.lbl_status_badge.setText("🟡 AUTOMATYCZNIE WSTRZYMANO (BRAK MOWY > 5s)")
+            self.lbl_status_badge.setText(f"🟡 AUTOMATYCZNIE WSTRZYMANO (BRAK MOWY > {thresh_val}s)")
             self.lbl_status_badge.setObjectName("StatusAutoPaused")
+            self.btn_pause.setText("⏸ Wstrzymaj Ręcznie")
+            self.btn_pause.setObjectName("BtnPause")
         elif state == SmartRecordState.MANUAL_PAUSED:
             self.lbl_status_badge.setText("⏸ WSTRZYMANO RĘCZNIE")
             self.lbl_status_badge.setObjectName("StatusManualPaused")
-            self.btn_pause.setText("▶ Wznów Ręcznie")
+            self.btn_pause.setText("▶ Wznów Nagrywanie")
+            self.btn_pause.setObjectName("BtnResume")
 
-        self.lbl_status_badge.setStyle(self.lbl_status_badge.style())
+        # Wymuszenie ponownego przeliczenia stylów QSS dla widgetów o dynamicznym ID
+        self.lbl_status_badge.style().unpolish(self.lbl_status_badge)
+        self.lbl_status_badge.style().polish(self.lbl_status_badge)
+        self.lbl_status_badge.update()
+
+        self.btn_pause.style().unpolish(self.btn_pause)
+        self.btn_pause.style().polish(self.btn_pause)
+        self.btn_pause.update()
 
     def _handle_audio_error(self, err_msg):
         self._on_stop_clicked()
