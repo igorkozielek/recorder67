@@ -44,31 +44,59 @@ CREATE INDEX IF NOT EXISTS idx_meeting_segments_meeting_id ON public.meeting_seg
 ALTER TABLE public.meetings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.meeting_segments ENABLE ROW LEVEL SECURITY;
 
--- Wszyscy zalogowani pracownicy mogą przeglądać spotkania
-CREATE POLICY "Meetings are viewable by authenticated users"
+-- Meetings: SELECT, INSERT, UPDATE dla zalogowanych i aplikacji biurowej
+DROP POLICY IF EXISTS "Meetings are viewable" ON public.meetings;
+CREATE POLICY "Meetings are viewable"
 ON public.meetings FOR SELECT
-TO authenticated
+TO authenticated, anon
 USING (true);
 
--- Wstawianie spotkań (np. z aplikacji desktopowej lub API)
-CREATE POLICY "Meetings can be inserted by authenticated or service role"
+DROP POLICY IF EXISTS "Meetings can be inserted" ON public.meetings;
+CREATE POLICY "Meetings can be inserted"
 ON public.meetings FOR INSERT
 TO authenticated, anon
 WITH CHECK (true);
 
--- Aktualizacja spotkań
-CREATE POLICY "Meetings can be updated by authenticated users"
+DROP POLICY IF EXISTS "Meetings can be updated" ON public.meetings;
+CREATE POLICY "Meetings can be updated"
 ON public.meetings FOR UPDATE
-TO authenticated
-USING (true);
+TO authenticated, anon
+USING (true)
+WITH CHECK (true);
 
--- Segmenty: SELECT dla zalogowanych, INSERT dla anon/authenticated
-CREATE POLICY "Meeting segments viewable by authenticated"
+-- Meeting Segments: SELECT, INSERT, UPDATE, DELETE
+DROP POLICY IF EXISTS "Meeting segments viewable" ON public.meeting_segments;
+CREATE POLICY "Meeting segments viewable"
 ON public.meeting_segments FOR SELECT
-TO authenticated
+TO authenticated, anon
 USING (true);
 
+DROP POLICY IF EXISTS "Meeting segments insertable" ON public.meeting_segments;
 CREATE POLICY "Meeting segments insertable"
 ON public.meeting_segments FOR INSERT
 TO authenticated, anon
 WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Meeting segments deletable" ON public.meeting_segments;
+CREATE POLICY "Meeting segments deletable"
+ON public.meeting_segments FOR DELETE
+TO authenticated, anon
+USING (true);
+
+-- 4. Uprawnienia Storage (bucket: voice-notes)
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('voice-notes', 'voice-notes', true)
+ON CONFLICT (id) DO NOTHING;
+
+DROP POLICY IF EXISTS "Voice notes storage insertable" ON storage.objects;
+CREATE POLICY "Voice notes storage insertable"
+ON storage.objects FOR INSERT
+TO authenticated, anon
+WITH CHECK (bucket_id = 'voice-notes');
+
+DROP POLICY IF EXISTS "Voice notes storage readable" ON storage.objects;
+CREATE POLICY "Voice notes storage readable"
+ON storage.objects FOR SELECT
+TO authenticated, anon
+USING (bucket_id = 'voice-notes');
+

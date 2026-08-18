@@ -212,11 +212,34 @@ class CloudSyncManager:
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 if resp.status in (200, 201, 204):
-                    # Zapis segmentów
-                    self._save_segments_to_supabase(url, headers, payload["id"], payload["segments"])
+                    self._save_segments_to_supabase(url, headers, payload["id"], payload.get("segments", []))
                     return True, "Zapisano w tabeli spotkań (meetings)"
         except urllib.error.HTTPError as http_err:
-            # Jeśli tabela 'meetings' jeszcze nie istnieje (np. kod 404/400), wykonujemy fallback do 'voice_notes'
+            if http_err.code == 409:
+                # Rekord o tym ID już istnieje w bazie -> wykonujemy aktualizację (PATCH)
+                logger.info(f"Spotkanie {payload['id']} już istnieje w bazie (409 Conflict), aktualizuję rekord metodą PATCH...")
+                patch_req = urllib.request.Request(
+                    f"{meetings_endpoint}?id=eq.{payload['id']}",
+                    data=json.dumps({
+                        "title": payload["title"],
+                        "duration_seconds": int(payload["duration_seconds"]),
+                        "transcript": payload.get("transcript_text", ""),
+                        "speaker_count": payload.get("speaker_count", 1),
+                        "status": "completed",
+                        "audio_url": audio_url or meeting_record.get("audio_url")
+                    }).encode("utf-8"),
+                    headers=headers,
+                    method="PATCH"
+                )
+                try:
+                    with urllib.request.urlopen(patch_req, timeout=15) as patch_resp:
+                        if patch_resp.status in (200, 204):
+                            self._save_segments_to_supabase(url, headers, payload["id"], payload.get("segments", []))
+                            return True, "Zaktualizowano spotkanie w tabeli meetings"
+                except Exception as patch_err:
+                    return False, f"Błąd aktualizacji PATCH spotkania: {patch_err}"
+
+            # Jeśli tabela 'meetings' nie istnieje, wykonujemy fallback do 'voice_notes'
             logger.info(f"Tabela 'meetings' zwróciła {http_err.code}, próba zapisu do tabeli 'voice_notes'...")
             fallback_success, fallback_msg = self._fallback_save_to_voice_notes(url, headers, payload, audio_url)
             if fallback_success:
@@ -228,10 +251,23 @@ class CloudSyncManager:
         return True, "Zsynchronizowano pomyślnie."
 
     def _save_segments_to_supabase(self, base_url: str, headers: dict, meeting_id: str, segments: List[dict]):
-        """Zapisuje listę segmentów wypowiedzi do meeting_segments."""
+        """Zapisuje listę segmentów wypowiedzi do meeting_segments (najpierw czyści stare, by uniknąć duplikatów)."""
         if not segments:
             return
 
+        # 1. Usuń stare segmenty dla tego meeting_id (jeśli to re-sync po edycji mówców)
+        del_req = urllib.request.Request(
+            f"{base_url}/rest/v1/meeting_segments?meeting_id=eq.{meeting_id}",
+            headers=headers,
+            method="DELETE"
+        )
+        try:
+            with urllib.request.urlopen(del_req, timeout=10):
+                pass
+        except Exception as e:
+            logger.debug(f"DELETE meeting_segments: {e}")
+
+        # 2. Wstaw nowe segmenty
         rows = []
         for s in segments:
             rows.append({
@@ -252,7 +288,8 @@ class CloudSyncManager:
             with urllib.request.urlopen(req, timeout=10):
                 pass
         except Exception as e:
-            logger.warning(f"Nie udało się zapisać segmentów do meeting_segments (tabela może nie istnieć): {e}")
+            logger.warning(f"Nie udało się zapisać segmentów do meeting_segments: {e}")
+
 
     def _fallback_save_to_voice_notes(self, base_url: str, headers: dict, payload: dict, audio_url: Optional[str]) -> tuple[bool, str]:
         """Zapisuje rekord do istniejącej tabeli 'voice_notes' jako kompatybilny fallback."""
