@@ -10,7 +10,8 @@ try:
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
         QPushButton, QLabel, QComboBox, QProgressBar, QListWidget,
         QListWidgetItem, QGroupBox, QMessageBox, QFrame,
-        QSlider, QLineEdit, QTextEdit, QScrollArea, QFileDialog, QCheckBox
+        QSlider, QLineEdit, QTextEdit, QScrollArea, QFileDialog, QCheckBox,
+        QSizePolicy
     )
 except ImportError:
     from PyQt6.QtCore import Qt, QTimer, QUrl
@@ -19,7 +20,8 @@ except ImportError:
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
         QPushButton, QLabel, QComboBox, QProgressBar, QListWidget,
         QListWidgetItem, QGroupBox, QMessageBox, QFrame,
-        QSlider, QLineEdit, QTextEdit, QScrollArea, QFileDialog, QCheckBox
+        QSlider, QLineEdit, QTextEdit, QScrollArea, QFileDialog, QCheckBox,
+        QSizePolicy
     )
 
 from recorder.config import (

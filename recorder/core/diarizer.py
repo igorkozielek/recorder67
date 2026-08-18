@@ -209,31 +209,36 @@ class DiarizationEngine:
 
         # Dopasowanie KAŻDEGO słowa do najbardziej prawdopodobnego mówcy
         word_speaker_tags = []
-        prev_speaker = "SPEAKER_00"
+        prev_speaker = diar_segments[0][2] if diar_segments else "SPEAKER_00"
 
         for w in transcript_words:
-            w_start = w.get("start", 0.0)
-            w_end = w.get("end", w_start + 0.1)
+            w_start = float(w.get("start", 0.0))
+            w_end = float(w.get("end", w_start + 0.1))
             mid = (w_start + w_end) / 2.0
 
-            best_speaker = None
-            best_dist = 999999.0
+            assigned_spk = None
 
-            # 1. Sprawdzenie czy słowo leży bezpośrednio wewnątrz segmentu PyAnnote
+            # 1. Sprawdzenie czy słowo nakłada się bezpośrednio z segmentem PyAnnote
             for seg_start, seg_end, seg_spk in diar_segments:
-                if seg_start <= mid <= seg_end:
-                    best_speaker = seg_spk
+                if not (w_end < seg_start or w_start > seg_end):
+                    assigned_spk = seg_spk
                     break
-                else:
-                    dist = min(abs(mid - seg_start), abs(mid - seg_end))
-                    if dist < best_dist:
-                        best_dist = dist
-                        best_speaker = seg_spk
 
-            # Przypisanie do wykrytego mówcy (jeśli odległość jest rozsądna, w przeciwnym razie najbliższy segment)
-            if best_speaker:
-                assigned_spk = best_speaker
-            else:
+            # 2. Jeśli słowo padło w mikro-pauzie poza segmentami PyAnnote,
+            # szukamy najbliższego segmentu w promieniu do 1.5 sekundy
+            if assigned_spk is None:
+                nearest_spk = None
+                nearest_dist = 1.5
+                for seg_start, seg_end, seg_spk in diar_segments:
+                    dist = min(abs(mid - seg_start), abs(mid - seg_end))
+                    if dist < nearest_dist:
+                        nearest_dist = dist
+                        nearest_spk = seg_spk
+                if nearest_spk:
+                    assigned_spk = nearest_spk
+
+            # 3. Fallback: jeśli brak segmentu w pobliżu, kontynuujemy mówcę z poprzedniego słowa
+            if assigned_spk is None:
                 assigned_spk = prev_speaker
 
             prev_speaker = assigned_spk
@@ -259,9 +264,9 @@ class DiarizationEngine:
                 last_word_ends_sentence = any(cur_words) and cur_words[-1].rstrip().endswith((".", "!", "?"))
 
                 speaker_changed = (w_spk != cur_spk)
-                pause_split = (pause > 1.0)
-                sentence_split = (last_word_ends_sentence and pause > 0.6 and len(cur_words) >= 4)
-                duration_split = (turn_dur >= 25.0 and last_word_ends_sentence)
+                pause_split = (pause > 0.8)
+                sentence_split = (last_word_ends_sentence and pause > 0.4 and len(cur_words) >= 3)
+                duration_split = (turn_dur >= 18.0 and last_word_ends_sentence)
 
                 if cur_words and (speaker_changed or pause_split or sentence_split or duration_split):
                     sentence = "".join(cur_words).strip()
