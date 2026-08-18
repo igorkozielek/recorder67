@@ -141,8 +141,6 @@ class DiarizationEngine:
         diarize_kwargs = {}
         if num_speakers is not None and int(num_speakers) > 0:
             diarize_kwargs["num_speakers"] = int(num_speakers)
-            diarize_kwargs["min_speakers"] = int(num_speakers)
-            diarize_kwargs["max_speakers"] = int(num_speakers)
         else:
             if min_speakers is not None and int(min_speakers) > 0:
                 diarize_kwargs["min_speakers"] = int(min_speakers)

@@ -118,7 +118,7 @@ class TranscriberEngine:
         total_duration = duration_sec if duration_sec > 0 else (len(audio_arr) / float(sr))
         mins = int(total_duration // 60)
         secs = int(total_duration % 60)
-        print(f"[WHISPER] Rozpoczęto transkrypcję (VAD filter=ON [czuły threshold=0.3], beam_size={beam_size}): {os.path.basename(audio_path)} (Długość: {mins}m {secs}s)...")
+        print(f"[WHISPER] Rozpoczęto pełną transkrypcję pliku (VAD filter=OFF [100% audio od 0.0s], beam_size={beam_size}): {os.path.basename(audio_path)} (Długość: {mins}m {secs}s)...")
 
         initial_prompt = (
             "Transkrypcja oficjalnych i roboczych spotkań biznesowych, narad biurowych, "
@@ -126,22 +126,13 @@ class TranscriberEngine:
             "Prawidłowa polska pisownia, interpunkcja, wielkie litery i podział na zdania."
         )
 
-        # Skalibrowane, bezpieczne parametry VAD zapobiegające wycinaniu cichych wypowiedzi
-        vad_params = dict(
-            threshold=0.3,
-            min_speech_duration_ms=200,
-            min_silence_duration_ms=600,
-            speech_pad_ms=400
-        )
-
-        # Przekazanie tablicy numpy bezpośrednio do modelu Whisper z filtrem VAD i promptem kontekstowym
+        # Transkrypcja całego nagrania bez wycinania przez filtr VAD (gwarancja braku ucinania początku)
         segments, _ = self._model.transcribe(
             audio_arr,
             word_timestamps=True,
             language=language,
             beam_size=beam_size,
-            vad_filter=True,
-            vad_parameters=vad_params,
+            vad_filter=False,
             initial_prompt=initial_prompt
         )
 
