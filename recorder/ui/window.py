@@ -398,9 +398,21 @@ class SmartDictaphoneWindow(QMainWindow):
         lbl_spk_info.setStyleSheet("color: #4cc9f0; font-size: 11px;")
         speaker_main_layout.addWidget(lbl_spk_info)
 
-        self.speaker_rows_layout = QVBoxLayout()
+        # Przewijalny obszar dla mówców (zapewnia doskonałą widoczność nawet przy 8-10 osobach na laptopie)
+        speaker_scroll = QScrollArea()
+        speaker_scroll.setWidgetResizable(True)
+        speaker_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        speaker_scroll.setMaximumHeight(280)
+        speaker_scroll.setStyleSheet("background: transparent;")
+
+        speaker_scroll_widget = QWidget()
+        speaker_scroll_widget.setStyleSheet("background: transparent;")
+        self.speaker_rows_layout = QVBoxLayout(speaker_scroll_widget)
+        self.speaker_rows_layout.setContentsMargins(0, 0, 0, 0)
         self.speaker_rows_layout.setSpacing(8)
-        speaker_main_layout.addLayout(self.speaker_rows_layout)
+        speaker_scroll.setWidget(speaker_scroll_widget)
+
+        speaker_main_layout.addWidget(speaker_scroll)
 
         self.btn_apply_speakers = QPushButton("✅ Zastosuj Imiona Mówców i Zapisz Zmiany")
         self.btn_apply_speakers.setFixedHeight(36)
@@ -948,13 +960,14 @@ class SmartDictaphoneWindow(QMainWindow):
             # Górny wiersz: ID Mówcy + Pole edycji imienia
             top_row = QHBoxLayout()
             lbl_spk = QLabel(f"🏷️ <b>{spk_id}</b>:")
-            lbl_spk.setStyleSheet("color: #edf2f4; font-size: 12px;")
-            lbl_spk.setFixedWidth(100)
+            lbl_spk.setStyleSheet("color: #edf2f4; font-size: 12px; font-weight: bold;")
+            lbl_spk.setMinimumWidth(140)
+            lbl_spk.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
             edit_name = QLineEdit()
             edit_name.setPlaceholderText("Wpisz imię / rolę mówcy...")
             edit_name.setText(suggested_name)
-            edit_name.setStyleSheet("background-color: #2b2d42; color: #edf2f4; border: 1px solid #4cc9f0; border-radius: 4px; padding: 4px 8px; font-weight: bold;")
+            edit_name.setStyleSheet("background-color: #2b2d42; color: #edf2f4; border: 1px solid #4cc9f0; border-radius: 4px; padding: 4px 8px; font-weight: bold; font-size: 12px;")
 
             self.speaker_inputs[spk_id] = edit_name
 
@@ -968,9 +981,11 @@ class SmartDictaphoneWindow(QMainWindow):
 
             lbl_clue = QLabel(clue)
             lbl_clue.setStyleSheet("color: #4cc9f0; font-size: 11px;")
+            lbl_clue.setWordWrap(True)
 
             lbl_sample = QLabel(f"Próbka: <i>„{sample_text}”</i>" if sample_text else "")
             lbl_sample.setStyleSheet("color: #8d99ae; font-size: 11px;")
+            lbl_sample.setWordWrap(True)
 
             bottom_row.addWidget(lbl_clue, stretch=2)
             bottom_row.addWidget(lbl_sample, stretch=3)
