@@ -57,10 +57,11 @@ class TranscriberEngine:
         if self.device == "cpu" and self.cpu_threads:
             init_kwargs["cpu_threads"] = self.cpu_threads
 
-        print(f"🎙️ [WHISPER] Ładowanie modelu '{self.model_size}' (urządzenie: {self.device.upper()}, precyzja: {self.compute_type})...")
+        print(f"[WHISPER] Ladowanie modelu '{self.model_size}' (urzadzenie: {self.device.upper()}, precyzja: {self.compute_type})...")
         self._model = WhisperModel(**init_kwargs)
-        print(f"✅ [WHISPER] Model '{self.model_size}' został pomyślnie załadowany do pamięci!")
+        print(f"[WHISPER] Model '{self.model_size}' zostal pomyslnie zaladowany do pamieci!")
         return self._model
+
 
     def transcribe_live_chunk(self, audio_float: np.ndarray, language: str = "pl") -> str:
         """
@@ -109,6 +110,12 @@ class TranscriberEngine:
         if audio_arr.ndim > 1:
             audio_arr = np.mean(audio_arr, axis=1)
 
+        total_duration = duration_sec if duration_sec > 0 else (len(audio_arr) / float(sr))
+        mins = int(total_duration // 60)
+        secs = int(total_duration % 60)
+        print(f"[WHISPER] Rozpoczeto transkrypcje (VAD filter=ON, beam_size={beam_size}): {os.path.basename(audio_path)} (Dlugosc: {mins}m {secs}s)...")
+
+
         initial_prompt = (
             "Transkrypcja oficjalnych i roboczych spotkań biznesowych, narad biurowych, "
             "dyskusji projektowych oraz ustaleń technicznych w języku polskim. "
@@ -126,8 +133,6 @@ class TranscriberEngine:
             initial_prompt=initial_prompt
         )
 
-
-
         transcript_words = []
         last_logged_pct = -1
 
@@ -143,17 +148,18 @@ class TranscriberEngine:
 
             cur_time = segment.end
             ratio = min(1.0, max(0.0, cur_time / total_duration)) if total_duration > 0 else 0.0
-            
+
             # Logowanie do konsoli co 10%
             pct = int(ratio * 100)
             if pct // 10 > last_logged_pct:
                 last_logged_pct = pct // 10
                 c_mins = int(cur_time // 60)
                 c_secs = int(cur_time % 60)
-                print(f"   [WHISPER Postęp] {pct}% ({c_mins}m {c_secs}s / {mins}m {secs}s) -> Ostatnia fraza: \"{segment.text.strip()}\"")
+                print(f"   [WHISPER Postep] {pct}% ({c_mins}m {c_secs}s / {mins}m {secs}s)")
 
             if progress_callback:
                 progress_callback(ratio, cur_time)
 
-        print(f"✅ [WHISPER] Transkrypcja zakończona! Rozpoznano {len(transcript_words)} słów.")
+        print(f"[WHISPER] Transkrypcja zakonczona! Rozpoznano {len(transcript_words)} slow.")
         return transcript_words
+
