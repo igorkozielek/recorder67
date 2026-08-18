@@ -163,25 +163,29 @@ def analyze_speakers(turns: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
 
         # --- A. Samoreferencje i cytaty o sobie ---
         self_quote_pats = [
-            r'\b(?:do\s+mnie|pytali\s+mnie|pytają\s+mnie|mówią\s+do\s+mnie)[\s\w\,]{1,40}?\b([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)\b',
+            r'\b(?:biorę\s+to|mówię\s+to)\s+ja[\,\s]+([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)\b',
+            r'\b(?:z\s+tej\s+strony|tu|jestem|mówi|ja\s+jestem|nazywam\s+się)\s+([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)\b',
+            r'\b(?:do\s+mnie|pytali\s+mnie|pytają\s+mnie|mówią\s+do\s+mnie|dzwonili\s+do\s+mnie)[\s\w\,]{1,40}?\b([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)\b',
             r'\b(?:dostać\s+sygnał|dostanę\s+sygnał)[\s\,\.\:]+([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)\b',
-            r'\b([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)[\,\s]+weź\s+(?:to|tu|ten|skrót|krzesło)\b',
-            r'\b(?:z\s+tej\s+strony|tu|jestem|mówi|ja\s+jestem)\s+([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)\b'
+            r'\b([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)[\,\s]+weź\s+(?:to|tu|ten|skrót|krzesło)\b'
         ]
         for pat in self_quote_pats:
             for match in re.finditer(pat, text_lower):
                 matched_word = match.group(1)
                 found = find_names_in_text(matched_word)
                 for fn in found:
-                    scores[cur_spk][fn] += 15.0
+                    scores[cur_spk][fn] += 20.0
                     evidence[cur_spk][fn] = f"Mówi o sobie / cytuje zwrot do siebie: „{match.group(0)}”"
 
         # --- B. Bezpośrednie zwroty do rozmówcy (Vocatives & Direct Address) ---
         addressed_patterns = [
-            r'\b(?:poczekaj|czekaj|dobra|słuchaj|powiedz|zobacz)[\,\s]+([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)\b',
-            r'\bty\s+([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)\b',
-            r'\b(?:wyloguj\s+się|wejdź|zrób|kliknij)[\,\s]+([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)\b',
-            r'^([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)[\,\:]\s+'
+            r'\b(?:poczekaj|czekaj|dobra|dobre|słuchaj|powiedz|zobacz|spójrz|jasne|okej|ok)[\,\s]+([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)\b',
+            r'\b(?:ja\s+rozumiem|rozumiem|wiesz\s+co|zresztą|faktycznie|pamiętasz|widzisz|powiedz\s+mi\s+jeszcze)[\,\s]+([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)\b',
+            r'\b(?:powiem\s+ci|mówię\s+ci|ja\s+ci)[\,\s]+([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)\b',
+            r'\bty[\,\s]+([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)\b',
+            r'\b(?:wyloguj\s+się|wejdź|zrób|kliknij|zostawmy|otwórz|zapisz|przepisz)[\,\s]+([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)\b',
+            r'^([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)[\,\:]\s+',
+            r'[\,\.\!\?]\s*([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)[\?\!\.]$'
         ]
         for v_pat in addressed_patterns:
             for m in re.finditer(v_pat, text_lower):
@@ -209,6 +213,7 @@ def analyze_speakers(turns: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
                         scores[target_spk][fn] += 8.0
                         if fn not in evidence[target_spk]:
                             evidence[target_spk][fn] = f"Bezpośredni zwrot od {cur_spk}: „{text[:40]}...”"
+
 
     # --- C. Płeć gramatyczna jako filtr bezwzględny ---
     for spk in speakers:

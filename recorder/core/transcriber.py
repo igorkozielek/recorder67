@@ -109,16 +109,10 @@ class TranscriberEngine:
         if audio_arr.ndim > 1:
             audio_arr = np.mean(audio_arr, axis=1)
 
-        total_duration = duration_sec if duration_sec > 0 else (len(audio_arr) / float(sr))
-        mins = int(total_duration // 60)
-        secs = int(total_duration % 60)
-        print(f"⏳ [WHISPER] Rozpoczęto zoptymalizowaną transkrypcję (VAD filter=ON, beam_size={beam_size}): {os.path.basename(audio_path)} (Długość: {mins}m {secs}s)...")
-
         initial_prompt = (
-            "Transkrypcja polskiej rozmowy biznesowej i wdrożeniowej. "
-            "Uczestnicy: Łukasz (Emanager), Radek (Aldent), Szymon (Aldent). "
-            "Słownictwo: CRM, system, Aldent, Emanager, kliniki, lekarze, pacjenci, cennik, zlecenia, "
-            "korony, mosty, implanty, cyrkon, wycisk cyfrowy, skaner, Itero, Invisalign, panel admina, portal."
+            "Transkrypcja oficjalnych i roboczych spotkań biznesowych, narad biurowych, "
+            "dyskusji projektowych oraz ustaleń technicznych w języku polskim. "
+            "Prawidłowa polska pisownia, interpunkcja, wielkie litery i podział na zdania."
         )
 
         # Przekazanie tablicy numpy bezpośrednio do modelu Whisper z filtrem VAD i promptem kontekstowym
@@ -131,6 +125,7 @@ class TranscriberEngine:
             vad_parameters=dict(min_silence_duration_ms=400),
             initial_prompt=initial_prompt
         )
+
 
 
         transcript_words = []
