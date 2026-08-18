@@ -101,6 +101,58 @@ WHISPER_MODELS = {
 DEFAULT_WHISPER_MODEL = "small"
 
 
+def get_env_variable(key: str, default: str = "") -> str:
+    """
+    Pobiera zmienną z os.environ lub z pliku .env.
+    """
+    val = os.environ.get(key)
+    if val:
+        return val.strip()
+
+    env_paths = [
+        os.path.join(os.getcwd(), ".env"),
+        os.path.join(BASE_DIR, ".env"),
+        os.path.join(os.path.dirname(__file__), ".env"),
+    ]
+
+    for env_path in env_paths:
+        if os.path.exists(env_path):
+            try:
+                with open(env_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        if line.startswith(f"{key}="):
+                            v = line.split("=", 1)[1].strip().strip('"').strip("'")
+                            if v:
+                                return v
+            except Exception:
+                pass
+    return default
+
+
+# Konfiguracja Cloud Sync / Multi-Tenant / EMANAGER.PRO
+SYNC_QUEUE_DIR = os.path.join(TRANSCRIPTIONS_DIR, "sync_queue")
+os.makedirs(SYNC_QUEUE_DIR, exist_ok=True)
+
+def get_cloud_sync_config() -> dict:
+    """
+    Zwraca aktualną konfigurację integracji chmurowej.
+    """
+    return {
+        "sync_target": get_env_variable("SYNC_TARGET", "emanager"),  # 'emanager', 'generic_webhook', 'none'
+        "supabase_url": get_env_variable("SUPABASE_URL", ""),
+        "supabase_key": get_env_variable("SUPABASE_KEY", get_env_variable("SUPABASE_PUBLISHABLE_KEY", "")),
+        "device_name": get_env_variable("DEVICE_NAME", "Biuro-Stanowisko-1"),
+
+        "organization_id": get_env_variable("ORGANIZATION_ID", "default_org"),
+        "auto_sync": get_env_variable("AUTO_CLOUD_SYNC", "true").lower() in ("1", "true", "yes"),
+        "generic_webhook_url": get_env_variable("GENERIC_WEBHOOK_URL", ""),
+        "upload_audio": get_env_variable("SYNC_UPLOAD_AUDIO", "true").lower() in ("1", "true", "yes"),
+    }
+
+
 def get_hardware_acceleration_info() -> dict:
     """
     Automatycznie wykrywa dostępne zasoby sprzętowe (CUDA GPU vs CPU)
@@ -198,5 +250,6 @@ def get_recommended_profile() -> dict:
                     f"Ustawiono lekki model: '{rec_model}' (int8) dla zachowania płynności działania systemu."
                 )
             }
+
 
 

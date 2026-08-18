@@ -11,7 +11,7 @@
     <OutputPath>.</OutputPath>
     <Name>recorder</Name>
     <RootNamespace>recorder</RootNamespace>
-    <InterpreterId>Global|PythonCore|3.14</InterpreterId>
+    <InterpreterId>MSBuild|env|$(MSBuildProjectFullPath)</InterpreterId>
     <IsWindowsApplication>True</IsWindowsApplication>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
@@ -38,7 +38,9 @@
     <Compile Include="audio\converter.py" />
     <Compile Include="audio\devices.py" />
     <Compile Include="core\__init__.py" />
+    <Compile Include="core\cloud_sync.py" />
     <Compile Include="core\diarizer.py" />
+    <Compile Include="core\speakers.py" />
     <Compile Include="core\transcriber.py" />
     <Compile Include="core\vad.py" />
     <Compile Include="ui\__init__.py" />
@@ -77,10 +79,8 @@
       <Architecture>X64</Architecture>
     </Interpreter>
   </ItemGroup>
-  <ItemGroup>
-    <InterpreterReference Include="Global|PythonCore|3.14" />
-  </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
+
   <!-- Uncomment the CoreCompile target to enable the Build command in
        Visual Studio and specify your pre- and post-build commands in
        the BeforeBuild and AfterBuild targets below. -->

@@ -281,3 +281,65 @@ def format_turns(turns: List[Dict[str, Any]], speaker_mapping: Optional[Dict[str
         final_plain = "Brak zarejestrowanej mowy."
 
     return final_html, final_plain
+
+
+def parse_txt_to_turns(txt_content: str) -> List[Dict[str, Any]]:
+    """
+    Parsuje treść pliku tekstowego transkrypcji na listę ustrukturyzowanych segmentów/turns.
+    Obsługuje formaty:
+    - [19.5s - 20.6s] SPEAKER_02: Treść wypowiedzi
+    - [00:19 - 00:20] Jan: Treść wypowiedzi
+    - SPEAKER_02: Treść wypowiedzi
+    """
+    turns = []
+    if not txt_content:
+        return turns
+
+    pattern_sec = re.compile(r'^\s*\[([\d\.]+)\s*s?\s*-\s*([\d\.]+)\s*s?\]\s*([^:]+):\s*(.*)$')
+    pattern_min = re.compile(r'^\s*\[(\d+):(\d+)\s*-\s*(\d+):(\d+)\]\s*([^:]+):\s*(.*)$')
+    pattern_simple = re.compile(r'^\s*([^:\[\n]+):\s*(.*)$')
+
+    blocks = txt_content.strip().split('\n\n')
+    current_time = 0.0
+
+    for block in blocks:
+        lines = [l.strip() for l in block.split('\n') if l.strip()]
+        if not lines:
+            continue
+        header_line = lines[0]
+        remaining_text = " ".join(lines[1:]) if len(lines) > 1 else ""
+
+        m_sec = pattern_sec.match(header_line)
+        if m_sec:
+            start = float(m_sec.group(1))
+            end = float(m_sec.group(2))
+            speaker = m_sec.group(3).strip()
+            text = (m_sec.group(4) + " " + remaining_text).strip()
+            turns.append({"speaker": speaker, "start": start, "end": end, "text": text})
+            current_time = end
+            continue
+
+        m_min = pattern_min.match(header_line)
+        if m_min:
+            start = int(m_min.group(1)) * 60 + int(m_min.group(2))
+            end = int(m_min.group(3)) * 60 + int(m_min.group(4))
+            speaker = m_min.group(5).strip()
+            text = (m_min.group(6) + " " + remaining_text).strip()
+            turns.append({"speaker": speaker, "start": float(start), "end": float(end), "text": text})
+            current_time = float(end)
+            continue
+
+        m_sim = pattern_simple.match(header_line)
+        if m_sim and len(m_sim.group(1)) < 40:
+            speaker = m_sim.group(1).strip()
+            text = (m_sim.group(2) + " " + remaining_text).strip()
+            turns.append({"speaker": speaker, "start": current_time, "end": current_time + 5.0, "text": text})
+            current_time += 5.0
+            continue
+
+        full_text = " ".join(lines)
+        turns.append({"speaker": "Mówca", "start": current_time, "end": current_time + 5.0, "text": full_text})
+        current_time += 5.0
+
+    return turns
+

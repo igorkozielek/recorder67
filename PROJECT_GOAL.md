@@ -56,10 +56,9 @@ graph TD
 
 ---
 
-### ⏳ DO ZROBIENIA (Kolejne etapy):
-- [ ] **Wielokanałowa obsługa Hollyland LARK MAX 2**:
-  - Obsługa wejść wielokanałowych / rozdzielanie kanałów stereo/multichannel na oddzielne strumienie VAD i transkrypcji per osoba.
-  - Mapowanie kanału wejściowego bezpośrednio na imię/rolę mówcy (np. CH1 = Adrian, CH2 = Przemek, itd.) bez konieczności kosztownego procesowania AI diaryzacji.
+- [x] **Separacja i Rozpoznawanie Mówców (Diarization)**:
+  - W oparciu o testy sprzętu Hollyland LARK MAX 2 w systemie Windows (brak 4 fizycznych niezależnych kanałów USB) wdrożono i zoptymalizowano programową diaryzację AI `pyannote.audio` (`batch_size=32`) z panelem autosugestii imion i weryfikacji w GUI.
+
 - [ ] **Globalny / Fizyczny Kill-Switch (Przycisk Prywatności)**:
   - Obsługa globalnych skrótów klawiszowych (działających w tle).
   - Integracja ze Stream Deck / przyciskiem USB / webhookiem lokalnym do natychmiastowego wyciszania/zatrzymywania nasłuchu.

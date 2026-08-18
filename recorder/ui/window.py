@@ -1,6 +1,7 @@
 import os
 import sys
 from datetime import datetime
+from typing import Optional, List, Dict, Any
 
 try:
     from PySide6.QtCore import Qt, QTimer, QUrl
@@ -43,7 +44,9 @@ from recorder.ui.workers import (
     TranscriptionWorker,
     FileProcessingWorker
 )
-from recorder.core.speakers import analyze_speakers, suggest_speaker_names, format_turns
+from recorder.core.speakers import analyze_speakers, suggest_speaker_names, format_turns, parse_txt_to_turns
+from recorder.core.cloud_sync import CloudSyncManager
+
 
 
 class SmartDictaphoneWindow(QMainWindow):
@@ -74,6 +77,14 @@ class SmartDictaphoneWindow(QMainWindow):
         self.current_turns = []
         self.current_txt_path = None
         self.speaker_inputs = {}
+        self.last_plain_text = ""
+        self.current_meeting_id = None
+
+        # Moduł Cloud Sync (Supabase / EMANAGER.PRO / Webhook)
+        self.cloud_sync = CloudSyncManager()
+        self.cloud_sync.signals.sync_started.connect(self._on_sync_started)
+        self.cloud_sync.signals.sync_finished.connect(self._on_sync_finished)
+        self.cloud_sync.signals.offline_queued.connect(self._on_offline_queued)
 
         self.worker = SmartAudioWorker(samplerate=SAMPLE_RATE, auto_pause_sec=DEFAULT_AUTO_PAUSE_SEC)
         self.worker.audio_level_signal.connect(self._update_audio_level)
@@ -86,6 +97,10 @@ class SmartDictaphoneWindow(QMainWindow):
         self._refresh_audio_devices()
         self._refresh_recordings_list()
         self._refresh_transcriptions_list()
+
+        # Uruchomienie przetwarzania zaległej kolejki offline
+        self.cloud_sync.process_offline_queue_async()
+
 
     def _init_ui(self):
         scroll_area = QScrollArea()
@@ -403,7 +418,26 @@ class SmartDictaphoneWindow(QMainWindow):
         self.text_transcript.setPlaceholderText("Tutaj pojawi się transkrypcja z podziałem na role po zakończeniu nagrywania / wgraniu pliku...")
         outputs_main_layout.addWidget(self.text_transcript)
 
+        # PASEK SYNCHRONIZACJI CHMUROWEJ (CLOUD SYNC / EMANAGER.PRO / CRM)
+        cloud_bar_layout = QHBoxLayout()
+        cloud_bar_layout.setContentsMargins(4, 4, 4, 4)
+
+        sync_target_name = self.cloud_sync.config.get("sync_target", "emanager").upper()
+        self.lbl_cloud_status = QLabel(f"☁️ Integracja: {sync_target_name} (Gotowa)")
+        self.lbl_cloud_status.setStyleSheet("color: #4cc9f0; font-size: 11px; font-weight: bold;")
+
+        self.btn_manual_sync = QPushButton(f"☁️ Wyślij do {sync_target_name}")
+        self.btn_manual_sync.setFixedHeight(30)
+        self.btn_manual_sync.setStyleSheet("background-color: #4361ee; color: #ffffff; font-weight: bold; border-radius: 4px; padding: 0 12px;")
+        self.btn_manual_sync.setEnabled(False)
+        self.btn_manual_sync.clicked.connect(self._on_manual_sync_clicked)
+
+        cloud_bar_layout.addWidget(self.lbl_cloud_status, stretch=1)
+        cloud_bar_layout.addWidget(self.btn_manual_sync)
+        outputs_main_layout.addLayout(cloud_bar_layout)
+
         main_layout.addWidget(outputs_box)
+
 
     def _apply_theme(self):
         app = QApplication.instance()
@@ -773,6 +807,19 @@ class SmartDictaphoneWindow(QMainWindow):
             if sys.stderr:
                 print(f"Błąd zapisu pliku TXT: {e}", file=sys.stderr)
 
+        self.last_plain_text = plain_text
+        self.btn_manual_sync.setEnabled(True)
+
+        # Automatyczna synchronizacja z chmurą / EMANAGER.PRO
+        if self.cloud_sync.config.get("auto_sync"):
+            self._trigger_cloud_sync(
+                plain_text=plain_text,
+                turns=self.current_turns,
+                audio_path=prepared_wav_path,
+                title=f"Plik: {base_name}",
+                silent=True
+            )
+
         QMessageBox.information(
             self,
             "Plik Przetworzony",
@@ -842,6 +889,19 @@ class SmartDictaphoneWindow(QMainWindow):
             if sys.stderr:
                 print(f"Błąd zapisu pliku TXT: {e}", file=sys.stderr)
 
+        self.last_plain_text = plain_text
+        self.btn_manual_sync.setEnabled(True)
+
+        # Automatyczna synchronizacja z chmurą / EMANAGER.PRO
+        if self.cloud_sync.config.get("auto_sync"):
+            self._trigger_cloud_sync(
+                plain_text=plain_text,
+                turns=self.current_turns,
+                audio_path=self.last_audio_save_path,
+                title=f"Nagranie: {txt_filename}",
+                silent=True
+            )
+
     def _populate_speaker_mapping(self, turns: list):
         """
         Dynamicznie buduje listę wykrytych mówców w panelu weryfikacji.
@@ -869,33 +929,30 @@ class SmartDictaphoneWindow(QMainWindow):
             self.speaker_box.setVisible(False)
             return
 
-        analysis = analyze_speakers(turns)
+        # Analiza dowodów i autosugestie
+        suggestions = suggest_speaker_names(turns)
+        evidence = analyze_speakers(turns)
 
         for spk_id in speakers:
-            s_data = analysis.get(spk_id, {})
-            count = s_data.get("count", 0)
-            sample_text = s_data.get("sample", "")
-            suggested_name = s_data.get("suggested_name", "")
-            clue = s_data.get("clue", "")
-
-            if len(sample_text) > 55:
-                sample_text = sample_text[:52] + "..."
+            suggested_name = suggestions.get(spk_id, spk_id)
+            ev = evidence.get(spk_id, {})
+            clue = ev.get("clue", "Brak jednoznacznego dowodu w tekście")
+            sample_text = ev.get("sample", "")
 
             card_frame = QFrame()
-            card_frame.setStyleSheet("QFrame { background-color: #1a1b26; border: 1px solid #33374b; border-radius: 6px; padding: 6px 10px; }")
+            card_frame.setStyleSheet("background-color: #1e1e2f; border: 1px solid #3d3d5c; border-radius: 6px; padding: 6px;")
             card_layout = QVBoxLayout(card_frame)
-            card_layout.setContentsMargins(4, 4, 4, 4)
+            card_layout.setContentsMargins(8, 8, 8, 8)
             card_layout.setSpacing(4)
 
+            # Górny wiersz: ID Mówcy + Pole edycji imienia
             top_row = QHBoxLayout()
-            top_row.setSpacing(10)
-
-            lbl_spk = QLabel(f"<b>{spk_id}</b> ({count} wypowiedzi)")
-            lbl_spk.setMinimumWidth(160)
-            lbl_spk.setFont(QFont("Segoe UI", 9))
+            lbl_spk = QLabel(f"🏷️ <b>{spk_id}</b>:")
+            lbl_spk.setStyleSheet("color: #edf2f4; font-size: 12px;")
+            lbl_spk.setFixedWidth(100)
 
             edit_name = QLineEdit()
-            edit_name.setPlaceholderText("Wpisz imię / rolę (np. Jan, Piotr, Klient)")
+            edit_name.setPlaceholderText("Wpisz imię / rolę mówcy...")
             edit_name.setText(suggested_name)
             edit_name.setStyleSheet("background-color: #2b2d42; color: #edf2f4; border: 1px solid #4cc9f0; border-radius: 4px; padding: 4px 8px; font-weight: bold;")
 
@@ -935,21 +992,102 @@ class SmartDictaphoneWindow(QMainWindow):
             val = edit.text().strip()
             mapping[spk_id] = val if val else spk_id
 
+        # Zaktualizuj etykiety mówców w turns
+        for t in self.current_turns:
+            orig_spk = t.get("speaker")
+            if orig_spk in mapping:
+                t["speaker"] = mapping[orig_spk]
+
         html_text, plain_text = format_turns(self.current_turns, mapping)
         self.text_transcript.setHtml(html_text)
+        self.last_plain_text = plain_text
 
         if self.current_txt_path:
             try:
                 with open(self.current_txt_path, 'w', encoding='utf-8') as f:
                     f.write(plain_text)
                 self._refresh_transcriptions_list()
+
+                # Ponowna synchronizacja z chmurą ze zweryfikowanymi imionami
+                self._trigger_cloud_sync(
+                    plain_text=plain_text,
+                    turns=self.current_turns,
+                    audio_path=self.last_audio_save_path,
+                    title=f"Zweryfikowano: {os.path.basename(self.current_txt_path or 'Spotkanie')}",
+                    silent=False
+                )
+
                 QMessageBox.information(
                     self,
                     "Zaktualizowano Mówców",
-                    "Pomyślnie zaktualizowano imiona mówców w podglądzie oraz w zapisanym pliku transkrypcji!"
+                    "Pomyślnie zaktualizowano imiona mówców w podglądzie, pliku TXT oraz przesłano aktualizację do chmury!"
                 )
             except Exception as e:
                 QMessageBox.warning(self, "Błąd Zapisu", f"Nie udało się zaktualizować pliku TXT:\n{e}")
+
+    def _trigger_cloud_sync(self, plain_text: str, turns: list, audio_path: Optional[str] = None, title: Optional[str] = None, silent: bool = False):
+        """Wysyła sesję do menedżera synchronizacji CloudSyncManager."""
+        if not plain_text or not plain_text.strip():
+            if not silent:
+                QMessageBox.warning(self, "Brak Treści", "Brak tekstu transkrypcji do wysłania.")
+            return
+
+        duration = float(self.recorded_seconds) if self.recorded_seconds > 0 else 0.0
+
+        # Przekształć turns na segmenty dla API
+        segments = []
+        for t in (turns or []):
+            segments.append({
+                "speaker": t.get("speaker", "Mówca"),
+                "start": t.get("start", 0.0),
+                "end": t.get("end", 0.0),
+                "text": t.get("text", "")
+            })
+
+        self.current_meeting_id = self.cloud_sync.sync_meeting_async(
+            title=title or f"Spotkanie {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            transcript_text=plain_text,
+            segments=segments,
+            duration_seconds=duration,
+            audio_path=audio_path,
+            context_type="general",
+            meeting_id=self.current_meeting_id
+        )
+
+    def _on_manual_sync_clicked(self):
+        """Ręczne wywołanie wysyłki z przycisku w UI."""
+        if not self.last_plain_text:
+            QMessageBox.warning(self, "Brak Transkrypcji", "Wykonaj nagranie lub wczytaj transkrypcję przed wysłaniem.")
+            return
+
+        self._trigger_cloud_sync(
+            plain_text=self.last_plain_text,
+            turns=self.current_turns,
+            audio_path=self.last_audio_save_path,
+            title=f"Ręczny Eksport: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            silent=False
+        )
+
+    def _on_sync_started(self, meeting_id: str):
+        target_name = self.cloud_sync.config.get("sync_target", "emanager").upper()
+        self.lbl_cloud_status.setText(f"☁️ Synchronizacja z {target_name} w toku...")
+        self.lbl_cloud_status.setStyleSheet("color: #f59e0b; font-size: 11px; font-weight: bold;")
+        self.btn_manual_sync.setEnabled(False)
+
+    def _on_sync_finished(self, meeting_id: str, success: bool, message: str):
+        target_name = self.cloud_sync.config.get("sync_target", "emanager").upper()
+        self.btn_manual_sync.setEnabled(True)
+        if success:
+            self.lbl_cloud_status.setText(f"☁️ Zsynchronizowano z {target_name} ✅")
+            self.lbl_cloud_status.setStyleSheet("color: #10b981; font-size: 11px; font-weight: bold;")
+        else:
+            self.lbl_cloud_status.setText(f"☁️ Zapisano lokalnie (kolejka offline)")
+            self.lbl_cloud_status.setStyleSheet("color: #f59e0b; font-size: 11px; font-weight: bold;")
+
+    def _on_offline_queued(self, meeting_id: str, message: str):
+        self.lbl_cloud_status.setText(f"☁️ Zapisano w kolejce offline ⏳")
+        self.lbl_cloud_status.setStyleSheet("color: #f59e0b; font-size: 11px; font-weight: bold;")
+        self.btn_manual_sync.setEnabled(True)
 
     def _refresh_transcriptions_list(self):
         self.list_transcriptions.clear()
@@ -974,10 +1112,29 @@ class SmartDictaphoneWindow(QMainWindow):
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     content = f.read()
-                html_content = content.replace("\n", "<br>")
-                self.text_transcript.setHtml(html_content)
+
+                turns = parse_txt_to_turns(content)
+                self.current_turns = turns or []
+                self.last_plain_text = content
+                self.current_txt_path = file_path
+                self.current_meeting_id = None
+
+                if turns:
+                    self._populate_speaker_mapping(turns)
+                    html_content, _ = format_turns(turns)
+                    self.text_transcript.setHtml(html_content)
+                else:
+                    self.speaker_box.setVisible(False)
+                    html_content = content.replace("\n", "<br>")
+                    self.text_transcript.setHtml(html_content)
+
+                self.btn_manual_sync.setEnabled(True)
+                target_name = self.cloud_sync.config.get("sync_target", "emanager").upper()
+                self.lbl_cloud_status.setText(f"☁️ Wczytano plik: {os.path.basename(file_path)} (Gotowy do wysłania)")
+                self.lbl_cloud_status.setStyleSheet("color: #4cc9f0; font-size: 11px; font-weight: bold;")
             except Exception as e:
                 QMessageBox.warning(self, "Błąd Odczytu", f"Nie udało się otworzyć pliku:\n{e}")
+
 
     def _on_open_txt_folder_clicked(self):
         if os.path.exists(self.transcriptions_dir):

@@ -1,7 +1,7 @@
 import os
 import sys
 import gc
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional, Callable
 
 
 def apply_torchaudio_patches():

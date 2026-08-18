@@ -18,10 +18,13 @@
    - Katalogi tymczasowe, pliki `.txt`, nagrania `.wav` oraz folder `scratch/` muszą pozostać wykluczone w `.gitignore`.
 
 2. **Git Workflow i Autonomia Użytkownika:**
-   - Nie commitować bezpośrednio do gałęzi `master` ani nie dokonywać automatycznego merge'a do `master`, chyba że użytkownik wyraźnie o to poprosi.
-   - Zadaniem asystenta jest przygotowanie czystego kodu, rozwiązanie konfliktów w plikach i podanie użytkownikowi gotowych komend do zatwierdzenia.
+   - **Nie tworzyć automatycznie commitów (`git commit`)**, nie pushować (`git push`) ani nie merge'ować gałęzi, chyba że użytkownik wyraźnie poprosi o wykonanie commita.
+   - Zadaniem asystenta jest przygotowanie i przetestowanie czystego kodu w drzewie roboczym (working directory), a zatwierdzanie commitów i podział zmian pozostawić do dyspozycji użytkownika.
+
 
 3. **Optymalizacje Techniczne Audio / AI w Środowisku Windows:**
    - Unikać zależności od zewnętrznego systemowego `ffmpeg` w transkrypcji plików – stosować wbudowane mechanizmy `soundfile` do bezpośredniego wczytywania tablic float32 do `faster-whisper`.
    - Stosować `apply_av_patches()` oraz `apply_torchaudio_patches()` omijające ograniczenia DLL w Windows (AppLocker/PyTorch 2.6+ `weights_only`).
    - W pipeline PyAnnote stosować `batch_size=32` dla efektywnego przetwarzania długich nagrań (1–2h).
+   - **Wnioski ze sprzętu Hollyland LARK MAX 2 w Windows:** Odbiornik Hollyland po USB w Windows sumuje sygnał do mono/stereo i nie udostępnia 4 odrębnych kanałów audio – nie próbować na siłę podziału sprzętowego, w 100% polegać na programowej diaryzacji `pyannote.audio` + panelu autosugestii mówców w UI.
+
