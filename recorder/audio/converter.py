@@ -7,6 +7,51 @@ import numpy as np
 import soundfile as sf
 
 
+def mix_to_mono(audio_arr: np.ndarray) -> np.ndarray:
+    """
+    Inteligentnie miksuje wielokanałowe audio do mono:
+    - Jeśli jeden kanał jest wyraźnie głośniejszy (np. mikrofon stereo/combo nagrywał tylko na lewym kanale),
+      wybiera dominujący kanał zamiast tłumić go przez uśrednianie z ciszą.
+    - W przeciwnym razie wylicza średnią arytmetyczną z kanałów.
+    """
+    if audio_arr.ndim <= 1:
+        return audio_arr.astype(np.float32)
+
+    num_channels = audio_arr.shape[1] if audio_arr.ndim > 1 else 1
+    if num_channels == 1:
+        return audio_arr[:, 0].astype(np.float32) if audio_arr.ndim > 1 else audio_arr.astype(np.float32)
+
+    # Oblicz RMS dla każdego kanału
+    channel_rms = [float(np.sqrt(np.mean(audio_arr[:, ch] ** 2))) for ch in range(num_channels)]
+    max_rms = max(channel_rms)
+    min_rms = min(channel_rms)
+
+    # Jeśli jeden kanał to cisza (< 15% głośności drugiego), bierzemy kanał z sygnałem
+    if max_rms > 0.001 and min_rms < (0.15 * max_rms):
+        best_ch = int(np.argmax(channel_rms))
+        return audio_arr[:, best_ch].astype(np.float32)
+
+    # Standardowy miks średniej
+    return np.mean(audio_arr, axis=1).astype(np.float32)
+
+
+def normalize_audio(audio_arr: np.ndarray, target_peak: float = 0.92) -> np.ndarray:
+    """
+    Normalizuje poziom głośności tablicy audio (Peak Normalization), jeśli sygnał jest cichy (np. cichy dyktafon).
+    Zapobiega wycinaniu cichych głosów przez Silero VAD i ułatwia transkrypcję modelowi Whisper.
+    """
+    if len(audio_arr) == 0:
+        return audio_arr.astype(np.float32)
+
+    max_val = float(np.max(np.abs(audio_arr)))
+    if 0.0001 < max_val < 0.70:
+        scale = min(target_peak / max_val, 8.0)
+        return (audio_arr * scale).astype(np.float32)
+    elif max_val >= 1.0:
+        return (audio_arr / (max_val + 1e-6) * target_peak).astype(np.float32)
+    return audio_arr.astype(np.float32)
+
+
 def resample_to_16k(audio_arr: np.ndarray, orig_sr: int) -> np.ndarray:
     """
     Interpoluje tablicę audio z pierwotnej częstotliwości próbkowania do 16000 Hz.
@@ -34,7 +79,8 @@ def get_embedded_ffmpeg_exe() -> str:
 def prepare_audio_file(input_path: str, output_dir: str) -> Tuple[str, float]:
     """
     Wczytuje dowolny plik audio LUB wideo (np. .mp4 ze spotkań Zoom/Teams/Google Meet, .mkv, .mov, .mp3, .m4a),
-    automatycznie ekstrahuje dźwięk, konwertuje go do mono 16kHz PCM_16 i zapisuje jako plik WAV w `output_dir`.
+    automatycznie ekstrahuje dźwięk, konwertuje go do mono 16kHz PCM_16 z automatyczną normalizacją głośności
+    i zapisuje jako plik WAV w `output_dir`.
     
     Działa w 100% samowystarczalnie – bez konieczności ręcznego instalowania FFmpeg w systemie Windows!
     Zwraca: (sciezka_do_pliku_wav, czas_trwania_sekundy).
@@ -84,8 +130,12 @@ def prepare_audio_file(input_path: str, output_dir: str) -> Tuple[str, float]:
             )
 
             if os.path.exists(target_path) and os.path.getsize(target_path) > 44:
-                info = sf.info(target_path)
-                duration_sec = info.duration
+                # Wczytanie i normalizacja poziomu głośności
+                data, sr = sf.read(target_path, dtype='float32')
+                data_norm = normalize_audio(data)
+                sf.write(target_path, data_norm, 16000, subtype='PCM_16')
+
+                duration_sec = len(data_norm) / 16000.0
                 if duration_sec < 0.2:
                     raise ValueError("Plik nie zawiera wystarczającej ilości danych dźwiękowych (mniej niż 0.2 sekundy).")
                 return target_path, duration_sec
@@ -96,21 +146,21 @@ def prepare_audio_file(input_path: str, output_dir: str) -> Tuple[str, float]:
     # 2. METODA B: Odczyt przez soundfile (dla czystych plików WAV, FLAC, OGG, MP3)
     try:
         data, sr = sf.read(input_path, dtype='float32')
-        if data.ndim > 1:
-            data = np.mean(data, axis=1)
+        mono_data = mix_to_mono(data)
 
         if sr != 16000:
-            audio_16k = resample_to_16k(data, sr)
+            audio_16k = resample_to_16k(mono_data, sr)
         else:
-            audio_16k = data.astype(np.float32)
+            audio_16k = mono_data.astype(np.float32)
 
+        audio_16k = normalize_audio(audio_16k)
         duration_sec = len(audio_16k) / 16000.0
         if duration_sec < 0.2:
             raise ValueError("Plik audio jest zbyt krótki (mniej niż 0.2 sekundy).")
 
         sf.write(target_path, audio_16k, 16000, subtype='PCM_16')
         return target_path, duration_sec
-    except Exception as sf_err:
+    except Exception:
         pass
 
     # 3. METODA C: Odczyt przez scipy.io.wavfile
@@ -126,14 +176,14 @@ def prepare_audio_file(input_path: str, output_dir: str) -> Tuple[str, float]:
         else:
             data_float = data.astype(np.float32)
 
-        if data_float.ndim > 1:
-            data_float = np.mean(data_float, axis=1)
+        mono_data = mix_to_mono(data_float)
 
         if sr != 16000:
-            audio_16k = resample_to_16k(data_float, sr)
+            audio_16k = resample_to_16k(mono_data, sr)
         else:
-            audio_16k = data_float
+            audio_16k = mono_data
 
+        audio_16k = normalize_audio(audio_16k)
         duration_sec = len(audio_16k) / 16000.0
         if duration_sec < 0.2:
             raise ValueError("Plik audio jest zbyt krótki (mniej niż 0.2 sekundy).")

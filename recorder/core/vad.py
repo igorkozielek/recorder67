@@ -33,7 +33,7 @@ class SileroVADDetector:
     """
     Klasa odpowiedzialna za detekcję aktywności głosowej (Voice Activity Detection).
     """
-    def __init__(self, speech_threshold: float = 0.45, default_samplerate: int = 16000):
+    def __init__(self, speech_threshold: float = 0.35, default_samplerate: int = 16000):
         self.speech_threshold = speech_threshold
         self.samplerate = default_samplerate
 
@@ -49,8 +49,8 @@ class SileroVADDetector:
                 is_speech = speech_prob >= self.speech_threshold
                 return is_speech, speech_prob
             except Exception:
-                is_speech = rms_level > 12.0
+                is_speech = rms_level > 6.0
                 return is_speech, (1.0 if is_speech else 0.0)
         else:
-            is_speech = rms_level > 12.0
+            is_speech = rms_level > 6.0
             return is_speech, (1.0 if is_speech else 0.0)

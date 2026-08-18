@@ -75,7 +75,12 @@ class TranscriberEngine:
             language=language,
             beam_size=1,
             vad_filter=True,
-            vad_parameters=dict(min_silence_duration_ms=250),
+            vad_parameters=dict(
+                threshold=0.3,
+                min_speech_duration_ms=150,
+                min_silence_duration_ms=300,
+                speech_pad_ms=250
+            ),
             initial_prompt="Poniżej znajduje się polska wypowiedź dyktowana do notatek biurowych."
         )
 
@@ -99,8 +104,8 @@ class TranscriberEngine:
         """
         Transkrybuje cały plik audio i zwraca listę słów z precyzyjnymi timestampami word-level.
         Wczytuje dźwięk bezpośrednio przez soundfile (jako tablicę float32), eliminując zależność od biblioteki av.
-        Optymalizacja CPU: vad_filter=True (Silero VAD pomija ciszę z zachowaniem 100% synchronizacji czasu)
-        oraz beam_size=1 (3x szybsza inferencja na procesorze).
+        Zawiera bezpieczny fallback: jeśli Whisper nie wygeneruje word-timestamps dla danego segmentu,
+        słowa są automatycznie estymowane na osi czasu segmentu, gwarantując brak ucinania tekstu z początku nagrania.
         """
         if self._model is None:
             self.load_model()
@@ -113,13 +118,20 @@ class TranscriberEngine:
         total_duration = duration_sec if duration_sec > 0 else (len(audio_arr) / float(sr))
         mins = int(total_duration // 60)
         secs = int(total_duration % 60)
-        print(f"[WHISPER] Rozpoczeto transkrypcje (VAD filter=ON, beam_size={beam_size}): {os.path.basename(audio_path)} (Dlugosc: {mins}m {secs}s)...")
-
+        print(f"[WHISPER] Rozpoczęto transkrypcję (VAD filter=ON [czuły threshold=0.3], beam_size={beam_size}): {os.path.basename(audio_path)} (Długość: {mins}m {secs}s)...")
 
         initial_prompt = (
             "Transkrypcja oficjalnych i roboczych spotkań biznesowych, narad biurowych, "
             "dyskusji projektowych oraz ustaleń technicznych w języku polskim. "
             "Prawidłowa polska pisownia, interpunkcja, wielkie litery i podział na zdania."
+        )
+
+        # Skalibrowane, bezpieczne parametry VAD zapobiegające wycinaniu cichych wypowiedzi
+        vad_params = dict(
+            threshold=0.3,
+            min_speech_duration_ms=200,
+            min_silence_duration_ms=600,
+            speech_pad_ms=400
         )
 
         # Przekazanie tablicy numpy bezpośrednio do modelu Whisper z filtrem VAD i promptem kontekstowym
@@ -129,21 +141,58 @@ class TranscriberEngine:
             language=language,
             beam_size=beam_size,
             vad_filter=True,
-            vad_parameters=dict(min_silence_duration_ms=400),
+            vad_parameters=vad_params,
             initial_prompt=initial_prompt
         )
 
         transcript_words = []
         last_logged_pct = -1
+        first_speech_logged = False
 
         for segment in segments:
+            seg_text = segment.text.strip() if segment.text else ""
+            if not seg_text:
+                continue
+
+            # Logowanie pierwszej wykrytej mowy
+            if not first_speech_logged:
+                first_speech_logged = True
+                s_mins = int(segment.start // 60)
+                s_secs = int(segment.start % 60)
+                e_mins = int(segment.end // 60)
+                e_secs = int(segment.end % 60)
+                print(f"🎙️ [WHISPER] Pierwsza wykryta mowa: [{s_mins:02d}:{s_secs:02d} - {e_mins:02d}:{e_secs:02d}] (od {segment.start:.1f}s): \"{seg_text[:70]}...\"")
+
+            # 1. Sprawdzamy czy Whisper wygenerował dokładne znaczniki słów dla tego segmentu
+            has_valid_words = False
             if segment.words:
-                for word in segment.words:
-                    if word.word and word.start is not None and word.end is not None:
+                valid_words = [
+                    w for w in segment.words
+                    if w.word and w.start is not None and w.end is not None
+                ]
+                if valid_words:
+                    has_valid_words = True
+                    for word in valid_words:
                         transcript_words.append({
                             "word": word.word,
                             "start": word.start,
                             "end": word.end
+                        })
+
+            # 2. Bezpieczny Fallback: jeśli z powodu cichego głosu/szumu segment nie ma word-timestamps,
+            # estymujemy timestampy słów z segment.start i segment.end, aby NIGDY nie zgubić tekstu!
+            if not has_valid_words and seg_text:
+                raw_words = seg_text.split()
+                if raw_words:
+                    seg_dur = max(0.1, segment.end - segment.start)
+                    step = seg_dur / len(raw_words)
+                    for i, rw in enumerate(raw_words):
+                        w_s = segment.start + (i * step)
+                        w_e = segment.start + ((i + 1) * step)
+                        transcript_words.append({
+                            "word": (" " + rw) if i > 0 else rw,
+                            "start": round(w_s, 3),
+                            "end": round(w_e, 3)
                         })
 
             cur_time = segment.end
@@ -155,11 +204,11 @@ class TranscriberEngine:
                 last_logged_pct = pct // 10
                 c_mins = int(cur_time // 60)
                 c_secs = int(cur_time % 60)
-                print(f"   [WHISPER Postep] {pct}% ({c_mins}m {c_secs}s / {mins}m {secs}s)")
+                print(f"   [WHISPER Postęp] {pct}% ({c_mins}m {c_secs}s / {mins}m {secs}s)")
 
             if progress_callback:
                 progress_callback(ratio, cur_time)
 
-        print(f"[WHISPER] Transkrypcja zakonczona! Rozpoznano {len(transcript_words)} slow.")
+        print(f"[WHISPER] Transkrypcja zakończona! Rozpoznano łącznie {len(transcript_words)} słów.")
         return transcript_words
 
