@@ -232,16 +232,15 @@ class DiarizationEngine:
                         best_dist = dist
                         best_speaker = seg_spk
 
-            # Jeśli słowo jest blisko segmentu (do 1.5s), przypisujemy tego mówcę, w przeciwnym razie prev_speaker
-            if best_speaker and best_dist <= 1.5:
-                assigned_spk = best_speaker
-            elif best_speaker and not word_speaker_tags:
+            # Przypisanie do wykrytego mówcy (jeśli odległość jest rozsądna, w przeciwnym razie najbliższy segment)
+            if best_speaker:
                 assigned_spk = best_speaker
             else:
                 assigned_spk = prev_speaker
 
             prev_speaker = assigned_spk
             word_speaker_tags.append((w.get("word", ""), w_start, w_end, assigned_spk))
+
 
         # Naturalne grupowanie słów w tury dialogu:
         # Rozdzielamy turę gdy:

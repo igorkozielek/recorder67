@@ -114,15 +114,24 @@ class TranscriberEngine:
         secs = int(total_duration % 60)
         print(f"⏳ [WHISPER] Rozpoczęto zoptymalizowaną transkrypcję (VAD filter=ON, beam_size={beam_size}): {os.path.basename(audio_path)} (Długość: {mins}m {secs}s)...")
 
-        # Przekazanie tablicy numpy bezpośrednio do modelu Whisper z filtrem VAD
+        initial_prompt = (
+            "Transkrypcja polskiej rozmowy biznesowej i wdrożeniowej. "
+            "Uczestnicy: Łukasz (Emanager), Radek (Aldent), Szymon (Aldent). "
+            "Słownictwo: CRM, system, Aldent, Emanager, kliniki, lekarze, pacjenci, cennik, zlecenia, "
+            "korony, mosty, implanty, cyrkon, wycisk cyfrowy, skaner, Itero, Invisalign, panel admina, portal."
+        )
+
+        # Przekazanie tablicy numpy bezpośrednio do modelu Whisper z filtrem VAD i promptem kontekstowym
         segments, _ = self._model.transcribe(
             audio_arr,
             word_timestamps=True,
             language=language,
             beam_size=beam_size,
             vad_filter=True,
-            vad_parameters=dict(min_silence_duration_ms=400)
+            vad_parameters=dict(min_silence_duration_ms=400),
+            initial_prompt=initial_prompt
         )
+
 
         transcript_words = []
         last_logged_pct = -1
