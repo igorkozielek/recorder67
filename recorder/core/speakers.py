@@ -127,10 +127,12 @@ def analyze_speakers(turns: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         if not cur_spk or not text:
             continue
 
-        # --- A. SAMOPREZENTACJA W 1. OSOBIE ---
+        # --- A. SAMOPREZENTACJA W 1. OSOBIE I CYTOWANIE ZWROTÓW DO SIEBIE ---
         self_patterns = [
             r'\b(?:z\s+tej\s+strony|tu|jestem|mówi|ja\s+jestem|nazywam\s+się)\s+([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)\b',
-            r'\b(?:do\s+mnie|pytali\s+mnie|mówią\s+mi|u\s+mnie)\s+([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)\b'
+            r'\b(?:do\s+mnie|pytali\s+mnie|mówią\s+mi|mówią\s+do\s+mnie|u\s+mnie)\s+([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)\b',
+            r'\b(?:dzwonili|dzwonią|pytają|pytali|mówią)[\s\w\,]{1,30}?(?:mnie|do\s+mnie)[\s\w\,]{1,20}?([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)\b',
+            r'\b(?:dostać\s+sygnał|dostanę\s+sygnał|sygnał)[\s\,\:]+([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)\b'
         ]
         for pat in self_patterns:
             for match in re.finditer(pat, text_lower):
@@ -141,10 +143,10 @@ def analyze_speakers(turns: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
                     snippet = text[max(0, match.start()-5):min(len(text), match.end()+20)].strip()
                     evidence[cur_spk][fn] = f"Mówi o sobie w 1. os.: „{snippet}”"
 
-        # --- B. BEZPOŚREDNI ZWROT DO ROZMÓWCY (WOŁACZ / POCZĄTEK LUB KONIEC ZDANIA) ---
         # Np. "Dobra Łukasz, a o czym...", "Łukasz, słuchaj...", "Cześć Szymon...", "Słuchaj Radek..."
         vocative_patterns = [
-            r'^(?:dobra|okej|ok|no|no\s+dobra|cześć|hej|witam|słuchaj|powiedz\s+mi|zobacz|spójrz)?\s*([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)[\,\s\.\!\?]',
+            r'^(?:dobra|okej|ok|no|no\s+dobra|cześć|hej|witam|słuchaj|powiedz\s+mi|zobacz|spójrz)\s+([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)[\,\s\.\!\?]',
+            r'^([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)\,',
             r'[\,\.\!\?]\s*([a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+)[\?\!\.]$'
         ]
 

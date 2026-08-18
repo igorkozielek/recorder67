@@ -634,6 +634,7 @@ class SmartDictaphoneWindow(QMainWindow):
                 max_speakers=max_spk
             )
             self.transcription_thread.progress_signal.connect(self._on_transcription_progress)
+            self.transcription_thread.preliminary_signal.connect(self._on_preliminary_transcript)
             self.transcription_thread.finished_signal.connect(self._on_transcription_finished)
             self.transcription_thread.error_signal.connect(self._on_transcription_error)
             self.transcription_thread.start()
@@ -703,9 +704,25 @@ class SmartDictaphoneWindow(QMainWindow):
             max_speakers=max_spk
         )
         self.file_processing_worker.progress_signal.connect(self._on_file_progress)
+        self.file_processing_worker.preliminary_signal.connect(self._on_file_preliminary_transcript)
         self.file_processing_worker.finished_signal.connect(self._on_file_finished)
         self.file_processing_worker.error_signal.connect(self._on_file_error)
         self.file_processing_worker.start()
+
+    def _on_preliminary_transcript(self, html_text: str, plain_text: str, turns: list = None):
+        self.text_transcript.setHtml(html_text)
+        self.current_turns = turns or []
+        self._populate_speaker_mapping(self.current_turns)
+
+    def _on_file_preliminary_transcript(self, html_text: str, plain_text: str, prepared_wav_path: str, turns: list = None):
+        self.text_transcript.setHtml(html_text)
+        base_name = os.path.basename(prepared_wav_path)
+        file_stem = os.path.splitext(base_name)[0]
+        txt_filename = f"transkrypcja_{file_stem}.txt"
+        self.current_txt_path = os.path.join(self.transcriptions_dir, txt_filename)
+        self.current_turns = turns or []
+        self._refresh_transcriptions_list()
+        self._populate_speaker_mapping(self.current_turns)
 
     def _on_file_progress(self, value: int, text: str):
         self.progress_transcription.setValue(value)
