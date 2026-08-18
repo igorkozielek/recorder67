@@ -215,19 +215,22 @@ class CloudSyncManager:
                     self._save_segments_to_supabase(url, headers, payload["id"], payload.get("segments", []))
                     return True, "Zapisano w tabeli spotkań (meetings)"
         except urllib.error.HTTPError as http_err:
-            if http_err.code == 409:
-                # Rekord o tym ID już istnieje w bazie -> wykonujemy aktualizację (PATCH)
+                # Rekord o tym ID już istnieje w bazie -> wykonujemy bezpieczną aktualizację (PATCH)
                 logger.info(f"Spotkanie {payload['id']} już istnieje w bazie (409 Conflict), aktualizuję rekord metodą PATCH...")
+                patch_data = {
+                    "title": payload["title"],
+                    "transcript": payload.get("transcript_text", ""),
+                    "speaker_count": payload.get("speaker_count", 1),
+                    "status": "completed",
+                }
+                if int(payload.get("duration_seconds", 0)) > 0:
+                    patch_data["duration_seconds"] = int(payload["duration_seconds"])
+                if audio_url:
+                    patch_data["audio_url"] = audio_url
+
                 patch_req = urllib.request.Request(
                     f"{meetings_endpoint}?id=eq.{payload['id']}",
-                    data=json.dumps({
-                        "title": payload["title"],
-                        "duration_seconds": int(payload["duration_seconds"]),
-                        "transcript": payload.get("transcript_text", ""),
-                        "speaker_count": payload.get("speaker_count", 1),
-                        "status": "completed",
-                        "audio_url": audio_url or meeting_record.get("audio_url")
-                    }).encode("utf-8"),
+                    data=json.dumps(patch_data).encode("utf-8"),
                     headers=headers,
                     method="PATCH"
                 )
