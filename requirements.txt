@@ -1,10 +1,19 @@
-PySide6
-sounddevice
-numpy
-torch
-silero-vad
-faster-whisper
-soundfile
-imageio-ffmpeg
-huggingface_hub<0.23.0
-pyannote.audio<4.0
+# Podstawowy interfejs GUI i audio
+PySide6>=6.6.0
+sounddevice>=0.4.6
+soundfile>=0.12.1
+numpy>=1.24.0,<3.0.0
+scipy>=1.10.0
+
+# Bezpieczna ekstrakcja audio z dowolnych formatów wideo/audio (MP4, MP3, MOV, M4A)
+imageio-ffmpeg>=0.4.9
+
+# AI: Detekcja mowy (Silero VAD) oraz Transkrypcja (Faster-Whisper)
+torch>=2.0.0
+silero-vad>=5.1.0
+faster-whisper>=1.0.0
+
+# AI: Diaryzacja mówców (PyAnnote)
+# UWAGA: huggingface_hub musi być <0.23.0 ze względu na kompatybilność use_auth_token w PyAnnote 3.1
+huggingface_hub>=0.20.0,<0.23.0
+pyannote.audio>=3.1.0,<4.0.0
