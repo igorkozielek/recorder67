@@ -215,6 +215,7 @@ class CloudSyncManager:
                     self._save_segments_to_supabase(url, headers, payload["id"], payload.get("segments", []))
                     return True, "Zapisano w tabeli spotkań (meetings)"
         except urllib.error.HTTPError as http_err:
+            if http_err.code == 409:
                 # Rekord o tym ID już istnieje w bazie -> wykonujemy bezpieczną aktualizację (PATCH)
                 logger.info(f"Spotkanie {payload['id']} już istnieje w bazie (409 Conflict), aktualizuję rekord metodą PATCH...")
                 patch_data = {
