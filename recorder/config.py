@@ -15,7 +15,7 @@ SAMPLE_RATE = 16000  # Wymuszone 16000 Hz dla Silero VAD i Whisper
 AUDIO_CHANNELS = 1
 DEFAULT_AUTO_PAUSE_SEC = 5.0
 VAD_SPEECH_THRESHOLD = 0.35
-PRE_SPEECH_BUFFER_CHUNKS = 6  # ~0.2s próbek przed wyznaczoną mową
+PRE_SPEECH_BUFFER_CHUNKS = 14  # ~0.45s próbek dźwięku sprzed momentu wykrycia mowy (akustyczny pre-roll)
 RMS_SILENCE_THRESHOLD = 0.003
 
 # Stany nagrywania
