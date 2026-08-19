@@ -43,6 +43,13 @@ def main():
         "--clean",
         "--noconfirm",
         
+        # Wykluczenie konkurencyjnego pakietu PyQt6 (projekt korzysta z PySide6)
+        "--exclude-module=PyQt6",
+        "--exclude-module=PyQt6.QtCore",
+        "--exclude-module=PyQt6.QtWidgets",
+        "--exclude-module=PyQt6.QtGui",
+        "--exclude-module=PyQt6_sip",
+        
         # Zbieranie zależności i bibliotek C++/DLL
         "--collect-all=faster_whisper",
         "--collect-all=silero_vad",
