@@ -1242,10 +1242,10 @@ class SmartDictaphoneWindow(QMainWindow):
         vad_mode_str = "Silero VAD AI" if is_silero_available() else "Detekcja Energii"
         prob_pct = int(speech_prob * 100) if (speech_prob and speech_prob == speech_prob) else 0
         if is_speech:
-            self.lbl_vad_detail.setText(f"🗣️ VAD: DETEKCJA MOWY (Prawdopodobieństwo: {prob_pct}%, Tryb: {vad_mode_str})")
+            self.lbl_vad_detail.setText(f"🗣️ VAD: DETEKCJA MOWY ({prob_pct}% pewności AI, Tryb: {vad_mode_str})")
             self.lbl_vad_detail.setStyleSheet("color: #10b981; font-weight: bold; font-size: 11px;")
         else:
-            self.lbl_vad_detail.setText(f"🔇 VAD: Brak mowy / Szum tła (Tryb: {vad_mode_str})")
+            self.lbl_vad_detail.setText(f"🔇 VAD: Cisza / Szum tła ({prob_pct}% pewności AI, Tryb: {vad_mode_str})")
             self.lbl_vad_detail.setStyleSheet("color: #8d99ae; font-size: 11px;")
 
     def _on_worker_state_changed(self, state):
