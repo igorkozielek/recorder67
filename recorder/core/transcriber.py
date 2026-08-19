@@ -65,30 +65,46 @@ class TranscriberEngine:
 
     def transcribe_live_chunk(self, audio_float: np.ndarray, language: str = "pl") -> str:
         """
-        Transkrybuje krótki fragment audio (16kHz float32 mono) w locie.
+        Transkrybuje krótki fragment audio (16kHz float32 mono) w locie z pełną ochroną przed halucynacjami.
         """
         if self._model is None:
             self.load_model()
+
+        if len(audio_float) < int(0.4 * 16000):
+            return ""
 
         segments, _ = self._model.transcribe(
             audio_float,
             language=language,
             beam_size=1,
+            temperature=0.0,
+            condition_on_previous_text=False,
+            no_speech_threshold=0.5,
+            compression_ratio_threshold=2.2,
             vad_filter=True,
             vad_parameters=dict(
-                threshold=0.3,
-                min_speech_duration_ms=150,
-                min_silence_duration_ms=300,
-                speech_pad_ms=250
+                threshold=0.35,
+                min_speech_duration_ms=200,
+                min_silence_duration_ms=400,
+                speech_pad_ms=200
             ),
-            initial_prompt="Poniżej znajduje się polska wypowiedź dyktowana do notatek biurowych."
+            initial_prompt="Transkrypcja oficjalnych i roboczych rozmów w języku polskim."
         )
 
         phrase_text = "".join([segment.text for segment in segments]).strip()
         
-        # Odrzucanie artefaktów lub pustych znaków
-        ignored_phrases = {".", "...", ",", "Dziękuję.", "Śpiewa", "Napisy:", "Subtitles"}
-        if phrase_text in ignored_phrases:
+        # Filtrowanie znanych halucynacji Whispera na krótkich/cichych fragmentach
+        hallucination_triggers = [
+            "amara.org", "napisy stworzone przez", "subtitles", "dziękuję za obejrzenie",
+            "dziękuję za uwagę", "w tym filmie przeczytam", "w tym filmie", "zobaczymy gdzie tu jest",
+            "poniżej znajduje się", "to jest poniżej", "śpiewa", "muzyka"
+        ]
+        lower_txt = phrase_text.lower()
+        if any(h in lower_txt for h in hallucination_triggers):
+            return ""
+
+        # Odrzucanie pojedynczych znaków interpunkcyjnych lub pustych fraz
+        if len(phrase_text) < 2 or phrase_text in {".", "...", ",", "?", "!"}:
             return ""
 
         return phrase_text

@@ -535,6 +535,16 @@ class SmartDictaphoneWindow(QMainWindow):
         self.progress_transcription.setValue(0)
         self.progress_transcription.setFormat("Inicjalizacja transkrypcji na żywo...")
 
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.current_live_timestamp = timestamp
+        self.current_live_txt_path = os.path.join(self.transcriptions_dir, f"transkrypcja_{timestamp}.txt")
+        try:
+            with open(self.current_live_txt_path, 'w', encoding='utf-8') as f:
+                f.write(f"=== TRANSKRYPCJA NA ŻYWO (Start: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) ===\n\n")
+            self._refresh_transcriptions_list()
+        except Exception:
+            pass
+
         selected_model = self.combo_models.currentData() or DEFAULT_WHISPER_MODEL
 
         # Uruchomienie wątku transkrypcji na żywo z wybranym modelem
@@ -578,6 +588,15 @@ class SmartDictaphoneWindow(QMainWindow):
         sb = self.text_transcript.verticalScrollBar()
         sb.setValue(sb.maximum())
 
+        # Natychmiastowy zapis nowej frazy do pliku TXT na dysku
+        if hasattr(self, "current_live_txt_path") and self.current_live_txt_path:
+            try:
+                with open(self.current_live_txt_path, 'a', encoding='utf-8') as f:
+                    f.write(plain_line + "\n\n")
+                    f.flush()
+            except Exception:
+                pass
+
     def _on_live_status_changed(self, text):
         self.progress_transcription.setFormat(f"Transkrypcja na Żywo: {text}")
         self.progress_transcription.setValue(100)
@@ -593,18 +612,19 @@ class SmartDictaphoneWindow(QMainWindow):
     def _on_stop_clicked(self):
         self.timer.stop()
         self.worker.stop_recording()
-        self.worker.wait(1500)
+        self.worker.wait(2000)
 
+        # Bezpieczne zatrzymanie wątku transkrypcji na żywo
         if self.live_transcription_worker is not None:
             try:
                 self.worker.phrase_signal.disconnect(self.live_transcription_worker.add_phrase_chunk)
             except Exception:
                 pass
             self.live_transcription_worker.stop()
-            self.live_transcription_worker.wait(2000)
+            self.live_transcription_worker.wait(5000)
             self.live_transcription_worker = None
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = getattr(self, "current_live_timestamp", datetime.now().strftime("%Y%m%d_%H%M%S"))
         filename = f"inteligentne_nagranie_{timestamp}.wav"
         save_path = os.path.join(self.recordings_dir, filename)
 
@@ -637,21 +657,8 @@ class SmartDictaphoneWindow(QMainWindow):
         if saved:
             self.last_audio_save_path = save_path
             self._refresh_recordings_list()
+            self._refresh_transcriptions_list()
 
-            # Natychmiastowy zapis transkrypcji na żywo do pliku TXT
-            txt_filename = f"transkrypcja_{timestamp}.txt"
-            txt_path = os.path.join(self.transcriptions_dir, txt_filename)
-            live_text_content = "\n\n".join(self.live_plain_text_lines) if self.live_plain_text_lines else "Brak zarejestrowanej mowy."
-            try:
-                with open(txt_path, 'w', encoding='utf-8') as f:
-                    f.write(live_text_content)
-                self._refresh_transcriptions_list()
-            except Exception as e:
-                if sys.stderr:
-                    print(f"Błąd zapisu pliku TXT na żywo: {e}", file=sys.stderr)
-
-            QMessageBox.information(self, "Zapisano Nagranie", f"Pomyślnie zapisano plik audio:\n{filename}\noraz notatki z transkrypcji na żywo!")
-            
             enable_diar = self.check_enable_diarization.isChecked()
             spk_cfg = self.combo_speakers.currentData() or {}
             num_spk = spk_cfg.get("num_speakers")
