@@ -113,14 +113,13 @@ class RollingTranscriptionWorker(QThread):
             audio_float = audio_data.astype(np.float32)
 
         # Transkrypcja bloku z word-level timestamps
-        # Używamy bezpośrednio modelu transkrypcji z beam_size=1 dla optymalnej szybkości
         segments, _ = self.transcriber._model.transcribe(
             audio_float,
             word_timestamps=True,
             language="pl",
             beam_size=1,
             vad_filter=False,
-            initial_prompt="Transkrypcja oficjalnych i roboczych spotkań biznesowych w języku polskim."
+            initial_prompt="CRM, Helpdesk, Subiekt, synchronizacja, harmonogram, rejestr zmian, zgłoszenia, zamówienia."
         )
 
         transcript_words = []

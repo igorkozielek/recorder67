@@ -73,12 +73,9 @@ class TranscriberEngine:
         if len(audio_float) < int(0.4 * 16000):
             return ""
 
-        # Dynamiczny rolling context prompt
-        if context_prompt and len(context_prompt.strip()) > 3:
-            clean_ctx = context_prompt.strip()[-200:]
-            prompt = f"Poprzednio mówiono: {clean_ctx}. Prawidłowa polska pisownia i interpunkcja."
-        else:
-            prompt = "Transkrypcja oficjalnych i roboczych rozmów biurowych w języku polskim."
+        # W Whisperze initial_prompt służy WYŁĄCZNIE jako kontekst poprzednich słów mowy.
+        # Wstrzykiwanie sztucznych zdań instruktażowych powodowało ich powtarzanie przez dekoder przy ciszy.
+        prompt = context_prompt.strip()[-150:] if (context_prompt and len(context_prompt.strip()) > 3) else None
 
         segments, _ = self._model.transcribe(
             audio_float,
@@ -86,12 +83,12 @@ class TranscriberEngine:
             beam_size=1,
             temperature=0.0,
             condition_on_previous_text=False,
-            no_speech_threshold=0.5,
+            no_speech_threshold=0.6,
             compression_ratio_threshold=2.2,
             vad_filter=True,
             vad_parameters=dict(
-                threshold=0.35,
-                min_speech_duration_ms=200,
+                threshold=0.4,
+                min_speech_duration_ms=250,
                 min_silence_duration_ms=400,
                 speech_pad_ms=200
             ),
@@ -145,14 +142,9 @@ class TranscriberEngine:
 
         from recorder.config import get_env_variable
         custom_kw = get_env_variable("CUSTOM_KEYWORDS", "")
-        extra_ctx = f" Słownictwo dziedzinowe: {custom_kw}." if custom_kw else ""
+        extra_ctx = f", {custom_kw}" if custom_kw else ""
 
-        initial_prompt = (
-            "Transkrypcja oficjalnych i roboczych spotkań biznesowych, narad projektowych, "
-            "obsługi zgłoszeń i ustaleń technicznych w języku polskim. "
-            "Prawidłowa polska pisownia, interpunkcja, wielkie litery, nazewnictwo systemów, "
-            f"CRM, Helpdesk, bazy danych, synchronizacja, harmonogram, rejestr zmian, zamówienia.{extra_ctx}"
-        )
+        initial_prompt = f"CRM, Helpdesk, Subiekt, synchronizacja, harmonogram, rejestr zmian, zgłoszenia, zamówienia{extra_ctx}."
 
         # Transkrypcja całego nagrania bez wycinania przez filtr VAD (gwarancja braku ucinania początku)
         segments, _ = self._model.transcribe(
