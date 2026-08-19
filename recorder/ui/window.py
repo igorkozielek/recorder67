@@ -549,15 +549,15 @@ class SmartDictaphoneWindow(QMainWindow):
 
         selected_model = self.combo_models.currentData() or DEFAULT_WHISPER_MODEL
 
-        # Uruchomienie wątku transkrypcji na żywo z wybranym modelem (podgląd fraz)
-        self.live_transcription_worker = LiveTranscriptionWorker(model_size=selected_model)
-        self._active_threads.append(self.live_transcription_worker)
-        self.live_transcription_worker.phrase_transcribed_signal.connect(self._on_live_phrase_received)
-        self.live_transcription_worker.status_signal.connect(self._on_live_status_changed)
-        self.live_transcription_worker.error_signal.connect(self._on_live_error)
-        self.live_transcription_worker.start()
-
-        self.worker.phrase_signal.connect(self.live_transcription_worker.add_phrase_chunk)
+        # Ustawienie estetycznego komunikatu oczekiwania na pierwszy zweryfikowany blok mowy
+        self.text_transcript.setHtml(
+            "<div style='color: #4cc9f0; font-size: 13px; padding: 10px;'>"
+            "🎙️ <b>Trwa inteligentne nagrywanie spotkania...</b><br>"
+            "<span style='color: #94a3b8; font-size: 11px;'>"
+            "Mowa jest na bieżąco przetwarzana w tle z pełnym kontekstem zdań. "
+            "Zweryfikowane wypowiedzi pojawią się automatycznie po naturalnych pauzach w rozmowie."
+            "</span></div>"
+        )
 
         # Uruchomienie silnika asynchronicznego przetwarzania bloków w tle (Rolling Background Transcriber)
         self.rolling_worker = RollingTranscriptionWorker(
@@ -595,17 +595,6 @@ class SmartDictaphoneWindow(QMainWindow):
         self.input_token.setEnabled(False)
         self.slider_silence.setEnabled(False)
 
-    def _on_live_phrase_received(self, time_str, text_phrase):
-        html_line = f"<b>[{time_str}]:</b> {text_phrase}<br>"
-        plain_line = f"[{time_str}]: {text_phrase}"
-        self.live_plain_text_lines.append(plain_line)
-        
-        # Jeśli nie mamy jeszcze gotowych przetworzonych bloków w tle, wyświetlamy podgląd na żywo
-        if not getattr(self, "current_turns", None):
-            self.text_transcript.append(html_line)
-            sb = self.text_transcript.verticalScrollBar()
-            sb.setValue(sb.maximum())
-
     def _on_rolling_block_processed(self, block_idx, proc_sec, tot_sec, all_turns, full_plain, full_html):
         """Odebranie przetworzonego w tle bloku mowy z pełnymi word-level timestampami."""
         self.current_turns = all_turns or []
@@ -628,13 +617,6 @@ class SmartDictaphoneWindow(QMainWindow):
         if sys.stderr:
             print(f"Błąd transkrypcji w tle: {err_msg}", file=sys.stderr)
 
-    def _on_live_status_changed(self, text):
-        pass
-
-    def _on_live_error(self, err_msg):
-        if sys.stderr:
-            print(f"Błąd transkrypcji na żywo: {err_msg}", file=sys.stderr)
-
     def _on_pause_clicked(self):
         self.worker.toggle_manual_pause()
 
@@ -642,19 +624,6 @@ class SmartDictaphoneWindow(QMainWindow):
         self.timer.stop()
         self.worker.stop_recording()
         self.worker.wait()
-
-        # Zatrzymanie podglądu na żywo
-        if self.live_transcription_worker is not None:
-            try:
-                self.worker.phrase_signal.disconnect(self.live_transcription_worker.add_phrase_chunk)
-            except Exception:
-                pass
-            lw = self.live_transcription_worker
-            self.live_transcription_worker = None
-            lw.stop()
-            lw.wait()
-            if lw in self._active_threads:
-                self._active_threads.remove(lw)
 
         # Odłączenie sygnału bloków
         try:
