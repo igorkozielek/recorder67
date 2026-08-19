@@ -323,29 +323,103 @@ class CloudSyncManager:
         except Exception as e:
             return False, f"Błąd zapisu do voice_notes: {e}"
 
-    def _upload_audio_to_supabase(self, base_url: str, key: str, meeting_id: str, audio_path: str) -> Optional[str]:
-        """Wgrywa plik audio do bucketu Storage 'voice-notes'."""
+    def _compress_audio_for_upload(self, audio_path: str) -> Optional[str]:
+        """
+        Kompresuje plik WAV do MP3 32kbps mono przy użyciu wbudowanego ffmpeg (imageio-ffmpeg).
+        Zwraca ścieżkę do tymczasowego pliku MP3, lub None jeśli kompresja się nie powiodła.
+        Plik tymczasowy należy usunąć po uploadziei.
+        """
         try:
+            from recorder.audio.converter import get_embedded_ffmpeg_exe
+            ffmpeg_exe = get_embedded_ffmpeg_exe()
+            if not ffmpeg_exe or not os.path.exists(ffmpeg_exe):
+                logger.warning("[UPLOAD] Brak wbudowanego ffmpeg – nie można skompresować audio.")
+                return None
+
+            import sys, subprocess
+            tmp_mp3 = audio_path.rsplit(".", 1)[0] + "_upload_tmp.mp3"
+            cmd = [
+                ffmpeg_exe, "-y",
+                "-i", audio_path,
+                "-vn",
+                "-ac", "1",          # mono
+                "-ar", "16000",      # 16kHz (wystarczy dla mowy)
+                "-codec:a", "libmp3lame",
+                "-b:a", "32k",       # 32 kbps → ~25MB na 104min
+                tmp_mp3
+            ]
+            startupinfo = None
+            if sys.platform == "win32":
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                startupinfo=startupinfo,
+                timeout=120
+            )
+            if result.returncode == 0 and os.path.exists(tmp_mp3) and os.path.getsize(tmp_mp3) > 0:
+                size_mb = os.path.getsize(tmp_mp3) / (1024 * 1024)
+                logger.info(f"[UPLOAD] Skompresowano audio: {os.path.basename(audio_path)} → MP3 32kbps ({size_mb:.1f} MB)")
+                return tmp_mp3
+            else:
+                logger.warning(f"[UPLOAD] Kompresja ffmpeg nie powiodła się (returncode={result.returncode})")
+        except Exception as e:
+            logger.warning(f"[UPLOAD] Błąd podczas kompresji audio: {e}")
+        return None
+
+    def _upload_audio_to_supabase(self, base_url: str, key: str, meeting_id: str, audio_path: str) -> Optional[str]:
+        """
+        Wgrywa plik audio do bucketu Storage 'voice-notes'.
+        Jeśli plik WAV przekracza 45 MB, automatycznie kompresuje go do MP3 32kbps przed uploadem.
+        """
+        tmp_compressed: Optional[str] = None
+        try:
+            upload_path = audio_path
             ext = os.path.splitext(audio_path)[1].lstrip(".").lower() or "wav"
+
+            # Sprawdź rozmiar – limit Supabase Storage wynosi domyślnie 50MB
+            file_size_mb = os.path.getsize(audio_path) / (1024 * 1024)
+            if file_size_mb > 45:
+                logger.info(f"[UPLOAD] Plik audio {file_size_mb:.1f} MB > 45 MB – kompresja do MP3 32kbps przed uploadem...")
+                compressed = self._compress_audio_for_upload(audio_path)
+                if compressed:
+                    tmp_compressed = compressed
+                    upload_path = compressed
+                    ext = "mp3"
+                else:
+                    logger.warning("[UPLOAD] Kompresja nie powiodła się – próba uploadu oryginalnego pliku WAV.")
+
             storage_path = f"meetings/{meeting_id}.{ext}"
             upload_url = f"{base_url}/storage/v1/object/voice-notes/{storage_path}"
+            content_type = "audio/mpeg" if ext == "mp3" else "audio/wav"
 
-            with open(audio_path, "rb") as f:
+            with open(upload_path, "rb") as f:
                 data = f.read()
 
             headers = {
                 "apikey": key,
                 "Authorization": f"Bearer {key}",
-                "Content-Type": "audio/wav" if ext == "wav" else "audio/mpeg",
+                "Content-Type": content_type,
                 "x-upsert": "true"
             }
 
             req = urllib.request.Request(upload_url, data=data, headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=120) as resp:
                 if resp.status in (200, 201):
                     return storage_path
         except Exception as e:
             logger.warning(f"Nie udało się wgrać pliku audio do Storage: {e}")
+        finally:
+            # Usuń tymczasowy plik MP3 po uploadziei (niezależnie od wyniku)
+            if tmp_compressed and os.path.exists(tmp_compressed):
+                try:
+                    os.remove(tmp_compressed)
+                    logger.debug(f"[UPLOAD] Usunięto tymczasowy plik: {tmp_compressed}")
+                except Exception:
+                    pass
         return None
 
     def _send_to_generic_webhook(self, payload: Dict[str, Any]) -> tuple[bool, str]:
