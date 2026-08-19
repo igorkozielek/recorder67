@@ -143,10 +143,15 @@ class TranscriberEngine:
         secs = int(total_duration % 60)
         print(f"[WHISPER] Rozpoczęto pełną transkrypcję pliku (VAD filter=OFF [100% audio od 0.0s], beam_size={beam_size}): {os.path.basename(audio_path)} (Długość: {mins}m {secs}s)...")
 
+        from recorder.config import get_env_variable
+        custom_kw = get_env_variable("CUSTOM_KEYWORDS", "")
+        extra_ctx = f" Słownictwo dziedzinowe: {custom_kw}." if custom_kw else ""
+
         initial_prompt = (
-            "Transkrypcja oficjalnych i roboczych spotkań biznesowych, narad biurowych, "
-            "dyskusji projektowych oraz ustaleń technicznych w języku polskim. "
-            "Prawidłowa polska pisownia, interpunkcja, wielkie litery i podział na zdania."
+            "Transkrypcja oficjalnych i roboczych spotkań biznesowych, narad projektowych, "
+            "obsługi zgłoszeń i ustaleń technicznych w języku polskim. "
+            "Prawidłowa polska pisownia, interpunkcja, wielkie litery, nazewnictwo systemów, "
+            f"CRM, Helpdesk, bazy danych, synchronizacja, harmonogram, rejestr zmian, zamówienia.{extra_ctx}"
         )
 
         # Transkrypcja całego nagrania bez wycinania przez filtr VAD (gwarancja braku ucinania początku)
