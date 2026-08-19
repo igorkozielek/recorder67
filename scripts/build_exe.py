@@ -14,6 +14,14 @@ ENTRY_POINT = os.path.join(ROOT_DIR, "run.py")
 DIST_DIR = os.path.join(ROOT_DIR, "dist")
 BUILD_DIR = os.path.join(ROOT_DIR, "build")
 
+def _is_package_installed(package_name: str) -> bool:
+    try:
+        import importlib.metadata
+        importlib.metadata.distribution(package_name)
+        return True
+    except Exception:
+        return False
+
 def main():
     print("=" * 70)
     print("🚀 BUDOWANIE INTELIGENTNEGO DYKTAFONU AI DO PLIKU .EXE")
@@ -46,18 +54,24 @@ def main():
         "--collect-all=lightning",
         "--collect-all=pytorch_lightning",
         
-        # Metadane pakietów wymagane przez PyAnnote i HuggingFace
-        "--copy-metadata=faster_whisper",
-        "--copy-metadata=huggingface_hub",
-        "--copy-metadata=pyannote.audio",
-        "--copy-metadata=pyannote.core",
-        "--copy-metadata=pyannote.pipeline",
-        "--copy-metadata=torch",
-        "--copy-metadata=tqdm",
-        "--copy-metadata=regex",
-        "--copy-metadata=requests",
-        "--copy-metadata=packaging",
-        "--copy-metadata=filelock",
+        # Metadane pakietów wymagane przez PyAnnote i HuggingFace (bezpiecznie filtrowane)
+        *[
+            f"--copy-metadata={pkg}"
+            for pkg in [
+                "faster_whisper",
+                "huggingface_hub",
+                "pyannote.audio",
+                "pyannote.core",
+                "pyannote.pipeline",
+                "torch",
+                "tqdm",
+                "requests",
+                "packaging",
+                "filelock",
+                "speechbrain"
+            ]
+            if _is_package_installed(pkg)
+        ],
         
         # Dołączenie pliku .env (jeśli istnieje)
         f"--add-data={os.path.join(ROOT_DIR, '.env')};." if os.path.exists(os.path.join(ROOT_DIR, '.env')) else "",
