@@ -81,6 +81,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.speaker_inputs = {}
         self.last_plain_text = ""
         self.current_meeting_id = None
+        self._active_threads = []
 
         # Moduł Cloud Sync (Supabase / EMANAGER.PRO / Webhook)
         self.cloud_sync = CloudSyncManager()
@@ -549,6 +550,7 @@ class SmartDictaphoneWindow(QMainWindow):
 
         # Uruchomienie wątku transkrypcji na żywo z wybranym modelem
         self.live_transcription_worker = LiveTranscriptionWorker(model_size=selected_model)
+        self._active_threads.append(self.live_transcription_worker)
         self.live_transcription_worker.phrase_transcribed_signal.connect(self._on_live_phrase_received)
         self.live_transcription_worker.status_signal.connect(self._on_live_status_changed)
         self.live_transcription_worker.error_signal.connect(self._on_live_error)
@@ -612,7 +614,7 @@ class SmartDictaphoneWindow(QMainWindow):
     def _on_stop_clicked(self):
         self.timer.stop()
         self.worker.stop_recording()
-        self.worker.wait(2000)
+        self.worker.wait()
 
         # Bezpieczne zatrzymanie wątku transkrypcji na żywo
         if self.live_transcription_worker is not None:
@@ -620,9 +622,12 @@ class SmartDictaphoneWindow(QMainWindow):
                 self.worker.phrase_signal.disconnect(self.live_transcription_worker.add_phrase_chunk)
             except Exception:
                 pass
-            self.live_transcription_worker.stop()
-            self.live_transcription_worker.wait(5000)
+            lw = self.live_transcription_worker
             self.live_transcription_worker = None
+            lw.stop()
+            lw.wait()
+            if lw in self._active_threads:
+                self._active_threads.remove(lw)
 
         timestamp = getattr(self, "current_live_timestamp", datetime.now().strftime("%Y%m%d_%H%M%S"))
         filename = f"inteligentne_nagranie_{timestamp}.wav"
@@ -688,6 +693,7 @@ class SmartDictaphoneWindow(QMainWindow):
                 min_speakers=min_spk,
                 max_speakers=max_spk
             )
+            self._active_threads.append(self.transcription_thread)
             self.transcription_thread.progress_signal.connect(self._on_transcription_progress)
             self.transcription_thread.preliminary_signal.connect(self._on_preliminary_transcript)
             self.transcription_thread.finished_signal.connect(self._on_transcription_finished)
@@ -758,6 +764,7 @@ class SmartDictaphoneWindow(QMainWindow):
             min_speakers=min_spk,
             max_speakers=max_spk
         )
+        self._active_threads.append(self.file_processing_worker)
         self.file_processing_worker.progress_signal.connect(self._on_file_progress)
         self.file_processing_worker.preliminary_signal.connect(self._on_file_preliminary_transcript)
         self.file_processing_worker.finished_signal.connect(self._on_file_finished)
@@ -784,6 +791,9 @@ class SmartDictaphoneWindow(QMainWindow):
         self.progress_transcription.setFormat(f"{value}% - {text}")
 
     def _on_file_finished(self, html_text: str, plain_text: str, prepared_wav_path: str, turns: list = None):
+        if hasattr(self, "file_processing_worker") and self.file_processing_worker in self._active_threads:
+            self._active_threads.remove(self.file_processing_worker)
+
         self.progress_transcription.setValue(100)
         self.progress_transcription.setFormat("Przetwarzanie pliku zakończone!")
         self.text_transcript.setHtml(html_text)
@@ -868,6 +878,9 @@ class SmartDictaphoneWindow(QMainWindow):
         self.progress_transcription.setFormat(f"{value}% - {text}")
 
     def _on_transcription_finished(self, html_text: str, plain_text: str, turns: list = None):
+        if hasattr(self, "transcription_thread") and self.transcription_thread in self._active_threads:
+            self._active_threads.remove(self.transcription_thread)
+
         self.progress_transcription.setValue(100)
         self.progress_transcription.setFormat("Transkrypcja zakończona!")
         self.text_transcript.setHtml(html_text)

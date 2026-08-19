@@ -284,6 +284,13 @@ class LiveTranscriptionWorker(QThread):
 
     def stop(self):
         self._is_running = False
+        # Opróżnij kolejkę, aby natychmiast przerwać przetwarzanie zaległych chunków
+        while not self.audio_queue.empty():
+            try:
+                self.audio_queue.get_nowait()
+                self.audio_queue.task_done()
+            except Exception:
+                break
         self.audio_queue.put(None)
 
     def run(self):
