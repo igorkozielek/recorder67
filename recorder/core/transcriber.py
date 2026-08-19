@@ -19,6 +19,25 @@ def apply_av_patches():
         sys.modules['av.video'] = types.ModuleType('av.video')
 
 
+# Wyrażenia halucynacyjne z korpusu treningowego (np. plansze końcowe YouTube / Amara.org)
+HALLUCINATION_TRIGGERS = [
+    "amara.org", "napisy stworzone przez", "subtitles", "dziękuję za obejrzenie",
+    "dziękuję za uwagę", "w tym filmie przeczytam", "w tym filmie", "zobaczymy gdzie tu jest",
+    "poniżej znajduje się", "to jest poniżej", "śpiewa", "muzyka", "subskrybuj",
+    "do zobaczenia w kolejnym", "zostaw łapkę w górę", "miłego oglądania"
+]
+
+
+def is_hallucination(text: str) -> bool:
+    """Sprawdza czy rozpoznany tekst zawiera znane halucynacje z korpusu YouTube/napisów."""
+    if not text:
+        return True
+    lower_txt = text.lower().strip()
+    if len(lower_txt) < 2 or lower_txt in {".", "...", ",", "?", "!", "dziękuję.", "dziękuję"}:
+        return True
+    return any(h in lower_txt for h in HALLUCINATION_TRIGGERS)
+
+
 class TranscriberEngine:
     """
     Silnik transkrypcji mowy oparty na faster-whisper z bezpiecznym wczytywaniem audio przez soundfile
@@ -96,19 +115,7 @@ class TranscriberEngine:
         )
 
         phrase_text = "".join([segment.text for segment in segments]).strip()
-        
-        # Filtrowanie znanych halucynacji Whispera na krótkich/cichych fragmentach
-        hallucination_triggers = [
-            "amara.org", "napisy stworzone przez", "subtitles", "dziękuję za obejrzenie",
-            "dziękuję za uwagę", "w tym filmie przeczytam", "w tym filmie", "zobaczymy gdzie tu jest",
-            "poniżej znajduje się", "to jest poniżej", "śpiewa", "muzyka"
-        ]
-        lower_txt = phrase_text.lower()
-        if any(h in lower_txt for h in hallucination_triggers):
-            return ""
-
-        # Odrzucanie pojedynczych znaków interpunkcyjnych lub pustych fraz
-        if len(phrase_text) < 2 or phrase_text in {".", "...", ",", "?", "!"}:
+        if is_hallucination(phrase_text):
             return ""
 
         return phrase_text
@@ -162,7 +169,7 @@ class TranscriberEngine:
 
         for segment in segments:
             seg_text = segment.text.strip() if segment.text else ""
-            if not seg_text:
+            if not seg_text or is_hallucination(seg_text):
                 continue
 
             # Logowanie pierwszej wykrytej mowy

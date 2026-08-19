@@ -6,7 +6,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 from PySide6.QtCore import QThread, Signal as pyqtSignal
 
-from recorder.core.transcriber import TranscriberEngine
+from recorder.core.transcriber import TranscriberEngine, is_hallucination
 from recorder.core.diarizer import format_transcript_without_diarization
 from recorder.core.speakers import format_turns, suggest_speaker_names
 from recorder.config import DEFAULT_WHISPER_MODEL
@@ -125,7 +125,7 @@ class RollingTranscriptionWorker(QThread):
         transcript_words = []
         for segment in segments:
             seg_text = segment.text.strip() if segment.text else ""
-            if not seg_text:
+            if not seg_text or is_hallucination(seg_text):
                 continue
 
             # Jeśli segment ma dokładne słowa
