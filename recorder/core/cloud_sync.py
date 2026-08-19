@@ -325,9 +325,8 @@ class CloudSyncManager:
 
     def _compress_audio_for_upload(self, audio_path: str) -> Optional[str]:
         """
-        Kompresuje plik WAV do MP3 32kbps mono przy użyciu wbudowanego ffmpeg (imageio-ffmpeg).
+        Kompresuje plik WAV do zoptymalizowanego MP3 48kbps mono (16kHz) przy użyciu wbudowanego ffmpeg.
         Zwraca ścieżkę do tymczasowego pliku MP3, lub None jeśli kompresja się nie powiodła.
-        Plik tymczasowy należy usunąć po uploadziei.
         """
         try:
             from recorder.audio.converter import get_embedded_ffmpeg_exe
@@ -343,9 +342,9 @@ class CloudSyncManager:
                 "-i", audio_path,
                 "-vn",
                 "-ac", "1",          # mono
-                "-ar", "16000",      # 16kHz (wystarczy dla mowy)
+                "-ar", "16000",      # 16kHz
                 "-codec:a", "libmp3lame",
-                "-b:a", "32k",       # 32 kbps → ~25MB na 104min
+                "-b:a", "48k",       # 48 kbps → idealna mowa, ~36MB na 1h44m
                 tmp_mp3
             ]
             startupinfo = None
@@ -358,11 +357,11 @@ class CloudSyncManager:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 startupinfo=startupinfo,
-                timeout=120
+                timeout=180
             )
             if result.returncode == 0 and os.path.exists(tmp_mp3) and os.path.getsize(tmp_mp3) > 0:
                 size_mb = os.path.getsize(tmp_mp3) / (1024 * 1024)
-                logger.info(f"[UPLOAD] Skompresowano audio: {os.path.basename(audio_path)} → MP3 32kbps ({size_mb:.1f} MB)")
+                logger.info(f"[UPLOAD] Skompresowano audio: {os.path.basename(audio_path)} → MP3 48kbps ({size_mb:.1f} MB)")
                 return tmp_mp3
             else:
                 logger.warning(f"[UPLOAD] Kompresja ffmpeg nie powiodła się (returncode={result.returncode})")
@@ -372,18 +371,20 @@ class CloudSyncManager:
 
     def _upload_audio_to_supabase(self, base_url: str, key: str, meeting_id: str, audio_path: str) -> Optional[str]:
         """
-        Wgrywa plik audio do bucketu Storage 'voice-notes'.
-        Jeśli plik WAV przekracza 45 MB, automatycznie kompresuje go do MP3 32kbps przed uploadem.
+        Wgrywa plik audio do bucketu Storage ('meeting-recordings' lub fallback 'voice-notes').
+        Automatycznie kompresuje pliki > 30 MB do MP3 48kbps przed uploadem.
         """
         tmp_compressed: Optional[str] = None
+        bucket_name = self.config.get("supabase_bucket") or os.environ.get("SUPABASE_STORAGE_BUCKET") or "meeting-recordings"
+
         try:
             upload_path = audio_path
             ext = os.path.splitext(audio_path)[1].lstrip(".").lower() or "wav"
 
-            # Sprawdź rozmiar – limit Supabase Storage wynosi domyślnie 50MB
+            # Sprawdź rozmiar – jeśli > 30MB, kompresuj do MP3
             file_size_mb = os.path.getsize(audio_path) / (1024 * 1024)
-            if file_size_mb > 45:
-                logger.info(f"[UPLOAD] Plik audio {file_size_mb:.1f} MB > 45 MB – kompresja do MP3 32kbps przed uploadem...")
+            if file_size_mb > 30:
+                logger.info(f"[UPLOAD] Plik audio {file_size_mb:.1f} MB > 30 MB – automatyczna kompresja do MP3 48kbps...")
                 compressed = self._compress_audio_for_upload(audio_path)
                 if compressed:
                     tmp_compressed = compressed
@@ -393,7 +394,6 @@ class CloudSyncManager:
                     logger.warning("[UPLOAD] Kompresja nie powiodła się – próba uploadu oryginalnego pliku WAV.")
 
             storage_path = f"meetings/{meeting_id}.{ext}"
-            upload_url = f"{base_url}/storage/v1/object/voice-notes/{storage_path}"
             content_type = "audio/mpeg" if ext == "mp3" else "audio/wav"
 
             with open(upload_path, "rb") as f:
@@ -406,18 +406,32 @@ class CloudSyncManager:
                 "x-upsert": "true"
             }
 
-            req = urllib.request.Request(upload_url, data=data, headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                if resp.status in (200, 201):
-                    return storage_path
+            # Próba uploadu do głównego bucketu (domyślnie meeting-recordings)
+            buckets_to_try = [bucket_name]
+            if bucket_name != "voice-notes":
+                buckets_to_try.append("voice-notes")
+
+            for b in buckets_to_try:
+                upload_url = f"{base_url}/storage/v1/object/{b}/{storage_path}"
+                try:
+                    req = urllib.request.Request(upload_url, data=data, headers=headers, method="POST")
+                    with urllib.request.urlopen(req, timeout=180) as resp:
+                        if resp.status in (200, 201):
+                            logger.info(f"[UPLOAD] Pomyślnie wgrano audio do bucketu '{b}': {storage_path}")
+                            return storage_path
+                except urllib.error.HTTPError as he:
+                    logger.warning(f"[UPLOAD] Bucket '{b}' zwrócił status {he.code}. Próba alternatywna...")
+                    continue
+                except Exception as ex:
+                    logger.warning(f"[UPLOAD] Błąd zapisu do bucketu '{b}': {ex}")
+                    continue
+
         except Exception as e:
             logger.warning(f"Nie udało się wgrać pliku audio do Storage: {e}")
         finally:
-            # Usuń tymczasowy plik MP3 po uploadziei (niezależnie od wyniku)
             if tmp_compressed and os.path.exists(tmp_compressed):
                 try:
                     os.remove(tmp_compressed)
-                    logger.debug(f"[UPLOAD] Usunięto tymczasowy plik: {tmp_compressed}")
                 except Exception:
                     pass
         return None
