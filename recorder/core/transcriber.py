@@ -19,23 +19,52 @@ def apply_av_patches():
         sys.modules['av.video'] = types.ModuleType('av.video')
 
 
-# Wyrażenia halucynacyjne z korpusu treningowego (np. plansze końcowe YouTube / Amara.org)
+import re
+
+# Wyrażenia halucynacyjne z korpusu treningowego (np. plansze końcowe YouTube / Amara.org / angielskie prompty)
 HALLUCINATION_TRIGGERS = [
     "amara.org", "napisy stworzone przez", "subtitles", "dziękuję za obejrzenie",
-    "dziękuję za uwagę", "w tym filmie przeczytam", "w tym filmie", "zobaczymy gdzie tu jest",
+    "dziękuję za uwagę", "dziękuje za oglądanie", "dziękuję za oglądanie",
+    "w tym filmie przeczytam", "w tym filmie", "zobaczymy gdzie tu jest",
     "poniżej znajduje się", "to jest poniżej", "śpiewa", "muzyka", "subskrybuj",
-    "do zobaczenia w kolejnym", "zostaw łapkę w górę", "miłego oglądania"
+    "do zobaczenia w kolejnym", "zostaw łapkę w górę", "miłego oglądania",
+    "the user", "stop what you are doing", "write for the user"
 ]
 
 
+def clean_repeated_text(text: str) -> str:
+    """Usuwa zapętlenia słów (np. 'Dobra. Dobra. Dobra.' -> 'Dobra.') oraz ciągi powtarzających się liczb."""
+    if not text:
+        return ""
+    
+    # 1. Wykrywanie ciągów powtarzających się samych cyfr (np. "10 10 10 10 11 11 12 15 15 15")
+    digit_words = [w for w in text.split() if w.isdigit()]
+    if len(digit_words) >= 6 and (len(digit_words) / max(1, len(text.split()))) > 0.6:
+        return ""
+
+    # 2. Usuwanie wielokrotnie powtórzonych słów lub fraz (>= 3 powtórzenia z rzędu)
+    cleaned = re.sub(r'\b([A-Za-zĄąĆćĘęŁłŃńÓóŚśŹźŻż0-9]+(?:\.|\,)?)(?:\s+\1){2,}', r'\1', text, flags=re.IGNORECASE)
+    return cleaned.strip()
+
+
 def is_hallucination(text: str) -> bool:
-    """Sprawdza czy rozpoznany tekst zawiera znane halucynacje z korpusu YouTube/napisów."""
+    """Sprawdza czy rozpoznany tekst zawiera znane halucynacje z korpusu YouTube/napisów lub pętle."""
     if not text:
         return True
     lower_txt = text.lower().strip()
     if len(lower_txt) < 2 or lower_txt in {".", "...", ",", "?", "!", "dziękuję.", "dziękuję"}:
         return True
-    return any(h in lower_txt for h in HALLUCINATION_TRIGGERS)
+
+    # Sprawdzenie triggerów z blacklisty
+    if any(h in lower_txt for h in HALLUCINATION_TRIGGERS):
+        return True
+
+    # Sprawdzenie pętli samych liczb
+    digit_words = [w for w in lower_txt.split() if w.isdigit()]
+    if len(digit_words) >= 5 and (len(digit_words) / max(1, len(lower_txt.split()))) > 0.6:
+        return True
+
+    return False
 
 
 class TranscriberEngine:
@@ -153,12 +182,15 @@ class TranscriberEngine:
 
         initial_prompt = f"CRM, Helpdesk, Subiekt, synchronizacja, harmonogram, rejestr zmian, zgłoszenia, zamówienia{extra_ctx}."
 
-        # Transkrypcja całego nagrania bez wycinania przez filtr VAD (gwarancja braku ucinania początku)
+        # Transkrypcja całego nagrania bez wycinania przez filtr VAD i z ochroną przed pętlami powtórzeń
         segments, _ = self._model.transcribe(
             audio_arr,
             word_timestamps=True,
             language=language,
             beam_size=beam_size,
+            repetition_penalty=1.15,
+            no_repeat_ngram_size=3,
+            compression_ratio_threshold=2.0,
             vad_filter=False,
             initial_prompt=initial_prompt
         )
@@ -168,7 +200,8 @@ class TranscriberEngine:
         first_speech_logged = False
 
         for segment in segments:
-            seg_text = segment.text.strip() if segment.text else ""
+            raw_text = segment.text.strip() if segment.text else ""
+            seg_text = clean_repeated_text(raw_text)
             if not seg_text or is_hallucination(seg_text):
                 continue
 

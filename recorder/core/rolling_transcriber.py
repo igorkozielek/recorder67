@@ -6,7 +6,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 from PySide6.QtCore import QThread, Signal as pyqtSignal
 
-from recorder.core.transcriber import TranscriberEngine, is_hallucination
+from recorder.core.transcriber import TranscriberEngine, is_hallucination, clean_repeated_text
 from recorder.core.diarizer import format_transcript_without_diarization
 from recorder.core.speakers import format_turns, suggest_speaker_names
 from recorder.config import DEFAULT_WHISPER_MODEL
@@ -112,19 +112,23 @@ class RollingTranscriptionWorker(QThread):
         else:
             audio_float = audio_data.astype(np.float32)
 
-        # Transkrypcja bloku z word-level timestamps
+        # Transkrypcja bloku z word-level timestamps i ochroną przed pętlami powtórzeń
         segments, _ = self.transcriber._model.transcribe(
             audio_float,
             word_timestamps=True,
             language="pl",
             beam_size=1,
+            repetition_penalty=1.15,
+            no_repeat_ngram_size=3,
+            compression_ratio_threshold=2.0,
             vad_filter=False,
             initial_prompt="CRM, Helpdesk, Subiekt, synchronizacja, harmonogram, rejestr zmian, zgłoszenia, zamówienia."
         )
 
         transcript_words = []
         for segment in segments:
-            seg_text = segment.text.strip() if segment.text else ""
+            raw_text = segment.text.strip() if segment.text else ""
+            seg_text = clean_repeated_text(raw_text)
             if not seg_text or is_hallucination(seg_text):
                 continue
 
