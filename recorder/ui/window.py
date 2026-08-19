@@ -1255,7 +1255,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.input_token.setEnabled(is_diar)
 
     def _on_timer_tick(self):
-        if self.worker.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:
+        if self.worker.state != SmartRecordState.MANUAL_PAUSED and self.worker.state != SmartRecordState.STOPPED:
             self.recorded_seconds += 1
             hrs = self.recorded_seconds // 3600
             mins = (self.recorded_seconds % 3600) // 60

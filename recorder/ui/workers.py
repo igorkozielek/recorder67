@@ -192,7 +192,7 @@ class SmartAudioWorker(QThread):
             # 2. VAD AI (Silero VAD na próbkach 16kHz)
             is_speech, speech_prob = self.vad_detector.process_chunk(chunk_16k, samplerate=16000, rms_level=level)
 
-            # 3. Logika Auto-Pause & Auto-Resume
+            # 3. Stan VAD i liczenie ciszy
             if self.state != SmartRecordState.MANUAL_PAUSED:
                 if is_speech:
                     if self.state in [SmartRecordState.AUTO_PAUSED, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:
@@ -203,25 +203,20 @@ class SmartAudioWorker(QThread):
                     self.silence_samples_count += len(chunk_16k)
                     silence_sec = self.silence_samples_count / 16000.0
 
-                    if self.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:
-                        if silence_sec < self.auto_pause_sec:
-                            if self.state != SmartRecordState.RECORDING_SILENCE_COUNTDOWN:
-                                self.state = SmartRecordState.RECORDING_SILENCE_COUNTDOWN
-                                self.state_changed_signal.emit(self.state)
-                        else:
+                    if silence_sec < self.auto_pause_sec:
+                        if self.state != SmartRecordState.RECORDING_SILENCE_COUNTDOWN:
+                            self.state = SmartRecordState.RECORDING_SILENCE_COUNTDOWN
+                            self.state_changed_signal.emit(self.state)
+                    else:
+                        if self.state != SmartRecordState.AUTO_PAUSED:
                             self.state = SmartRecordState.AUTO_PAUSED
                             self.state_changed_signal.emit(self.state)
-
-                            if len(chunk_16k) > 0:
-                                frames_to_remove = int((self.auto_pause_sec * 16000) / len(chunk_16k))
-                                if len(self.frames) > frames_to_remove:
-                                    self.frames = self.frames[:-frames_to_remove]
 
             current_silence_sec = self.silence_samples_count / 16000.0
             self.vad_info_signal.emit(is_speech, speech_prob, current_silence_sec)
 
-            # 4. Zapis próbek 16kHz oraz buforowanie fraz mowy na żywo i bloków w tle
-            if self.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:
+            # 4. Ciągły, bezstratny zapis 100% próbek audio 16kHz oraz buforowanie bloków
+            if self.state != SmartRecordState.MANUAL_PAUSED and self.state != SmartRecordState.STOPPED:
                 audio_int16 = (chunk_16k * 32767).clip(-32768, 32767).astype(np.int16)
                 self.frames.append(audio_int16.tobytes())
 
