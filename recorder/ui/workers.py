@@ -37,7 +37,7 @@ class SmartAudioWorker(QThread):
     audio_level_signal = pyqtSignal(float)             # Poziom RMS (0 - 100)
     vad_info_signal = pyqtSignal(bool, float, float)    # (is_speech, speech_prob, silence_sec)
     state_changed_signal = pyqtSignal(int)             # SmartRecordState
-    phrase_signal = pyqtSignal(np.ndarray, int)        # Frazy audio dla transkrypcji na żywo (16kHz)
+    phrase_signal = pyqtSignal(np.ndarray, int, float)        # Frazy audio dla transkrypcji na żywo (16kHz, samplerate, start_sec)
     rolling_block_ready_signal = pyqtSignal(int, float, float, np.ndarray)  # (block_idx, start_sec, end_sec, audio_data)
     error_signal = pyqtSignal(str)
 
@@ -215,8 +215,8 @@ class SmartAudioWorker(QThread):
             current_silence_sec = self.silence_samples_count / 16000.0
             self.vad_info_signal.emit(is_speech, speech_prob, current_silence_sec)
 
-            # 4. Ciągły, bezstratny zapis 100% próbek audio 16kHz oraz buforowanie bloków
-            if self.state != SmartRecordState.MANUAL_PAUSED and self.state != SmartRecordState.STOPPED:
+            # 4. Zapis próbek mowy 16kHz do pliku oraz buforowanie bloków
+            if self.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:
                 audio_int16 = (chunk_16k * 32767).clip(-32768, 32767).astype(np.int16)
                 self.frames.append(audio_int16.tobytes())
 
@@ -256,7 +256,10 @@ class SmartAudioWorker(QThread):
                     # Jeśli mówca mówi bardzo długo bez żadnej pauzy (> 8.0s), wysyłamy bezpiecznie
                     if total_samples >= int(8.0 * 16000):
                         phrase_arr = np.concatenate(self.current_phrase_chunks)
-                        self.phrase_signal.emit(phrase_arr, 16000)
+                        tot_bytes = sum(len(f) for f in self.frames)
+                        curr_audio_sec = tot_bytes / (16000.0 * 2) if tot_bytes > 0 else 0.0
+                        phrase_start_sec = max(0.0, curr_audio_sec - (len(phrase_arr) / 16000.0))
+                        self.phrase_signal.emit(phrase_arr, 16000, phrase_start_sec)
                         self.current_phrase_chunks = []
                         self.phrase_speech_detected = False
                 else:
@@ -277,7 +280,10 @@ class SmartAudioWorker(QThread):
                         if is_sentence_boundary or is_long_phrase_break:
                             phrase_arr = np.concatenate(self.current_phrase_chunks)
                             if len(phrase_arr) >= int(0.6 * 16000):
-                                self.phrase_signal.emit(phrase_arr, 16000)
+                                tot_bytes = sum(len(f) for f in self.frames)
+                                curr_audio_sec = tot_bytes / (16000.0 * 2) if tot_bytes > 0 else 0.0
+                                phrase_start_sec = max(0.0, curr_audio_sec - (len(phrase_arr) / 16000.0))
+                                self.phrase_signal.emit(phrase_arr, 16000, phrase_start_sec)
                             self.current_phrase_chunks = []
                             self.phrase_speech_detected = False
                             self.silence_in_phrase_samples = 0
@@ -331,9 +337,9 @@ class LiveTranscriptionWorker(QThread):
         self._is_running = False
         self.transcriber = TranscriberEngine(model_size=self.model_size)
 
-    def add_phrase_chunk(self, audio_data, samplerate):
+    def add_phrase_chunk(self, audio_data, samplerate, start_sec: float = 0.0):
         if self._is_running:
-            self.audio_queue.put((audio_data, samplerate))
+            self.audio_queue.put((audio_data, samplerate, start_sec))
 
     def stop(self):
         self._is_running = False
@@ -363,7 +369,7 @@ class LiveTranscriptionWorker(QThread):
                 if item is None:
                     break
 
-                audio_data, samplerate = item
+                audio_data, samplerate, start_sec = item
                 if audio_data is None or len(audio_data) == 0:
                     self.audio_queue.task_done()
                     continue
@@ -388,7 +394,8 @@ class LiveTranscriptionWorker(QThread):
                 phrase_text = self.transcriber.transcribe_live_chunk(audio_float, language="pl", context_prompt=recent_context)
                 if phrase_text:
                     recent_context = (recent_context + " " + phrase_text).strip()[-250:]
-                    time_str = datetime.now().strftime("%H:%M:%S")
+                    m, s = int(start_sec // 60), int(start_sec % 60)
+                    time_str = f"{m:02d}:{s:02d}"
                     self.phrase_transcribed_signal.emit(time_str, phrase_text)
 
                 self.audio_queue.task_done()
