@@ -38,6 +38,8 @@ def get_hf_token() -> str:
     # 2. Sprawdzenie pliku .env w bieżącym katalogu lub w katalogu głównym projektu
     env_paths = [
         os.path.join(os.getcwd(), ".env"),
+        os.path.join(os.path.dirname(sys.executable), ".env"),
+        getattr(sys, "_MEIPASS", "") and os.path.join(getattr(sys, "_MEIPASS"), ".env"),
         os.path.join(BASE_DIR, ".env"),
         os.path.join(os.path.dirname(__file__), ".env"),
     ]
@@ -111,6 +113,8 @@ def get_env_variable(key: str, default: str = "") -> str:
 
     env_paths = [
         os.path.join(os.getcwd(), ".env"),
+        os.path.join(os.path.dirname(sys.executable), ".env"),
+        getattr(sys, "_MEIPASS", "") and os.path.join(getattr(sys, "_MEIPASS"), ".env"),
         os.path.join(BASE_DIR, ".env"),
         os.path.join(os.path.dirname(__file__), ".env"),
     ]
