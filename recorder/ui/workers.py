@@ -42,9 +42,9 @@ class SmartAudioWorker(QThread):
     error_signal = pyqtSignal(str)
 
     # Parametry okna bezpiecznego cięcia w tle (Safe VAD Boundary Handoff)
-    MIN_BLOCK_DURATION_SEC = 180.0          # Min. 3 minuty mowy przed poszukiwaniem punktu podziału
-    SAFE_SILENCE_CUT_THRESHOLD_SEC = 1.5   # Wymagane min. 1.5s ciszy potwierdzonej przez Silero VAD
-    MAX_BLOCK_DURATION_SEC = 360.0          # Maksymalny czas bloku 6 minut
+    MIN_BLOCK_DURATION_SEC = 120.0          # Min. 2 minuty mowy przed poszukiwaniem punktu podziału
+    SAFE_SILENCE_CUT_THRESHOLD_SEC = 1.2   # Wymagane min. 1.2s ciszy potwierdzonej przez Silero VAD
+    MAX_BLOCK_DURATION_SEC = 300.0          # Maksymalny czas bloku 5 minut
     OVERLAP_SAMPLES = int(0.5 * 16000)      # 0.5s nakładki akustycznej na styku
 
     def __init__(self, samplerate=SAMPLE_RATE, channels=AUDIO_CHANNELS, device_index=None, auto_pause_sec=DEFAULT_AUTO_PAUSE_SEC):
@@ -223,14 +223,16 @@ class SmartAudioWorker(QThread):
                 chunk_flat = chunk_16k.copy().flatten()
                 self.current_block_chunks.append(chunk_flat)
 
-                # Sprawdzenie warunku bezpiecznego podziału na bloki w pełnej ciszy (VAD Silence Handoff)
+            # Sprawdzenie warunku bezpiecznego podziału na bloki w pełnej ciszy (VAD Silence Handoff)
+            if self.current_block_chunks and self.state != SmartRecordState.MANUAL_PAUSED and self.state != SmartRecordState.STOPPED:
                 current_block_len = sum(len(c) for c in self.current_block_chunks)
                 current_block_dur = current_block_len / 16000.0
                 silence_dur = self.silence_samples_count / 16000.0
 
                 is_ready_for_cut = (
                     (current_block_dur >= self.MIN_BLOCK_DURATION_SEC and silence_dur >= self.SAFE_SILENCE_CUT_THRESHOLD_SEC) or
-                    (current_block_dur >= self.MAX_BLOCK_DURATION_SEC and silence_dur >= 0.8)
+                    (current_block_dur >= self.MAX_BLOCK_DURATION_SEC and silence_dur >= 0.8) or
+                    (current_block_dur >= self.MIN_BLOCK_DURATION_SEC and self.state == SmartRecordState.AUTO_PAUSED)
                 )
 
                 if is_ready_for_cut:
