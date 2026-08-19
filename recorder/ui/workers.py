@@ -200,7 +200,8 @@ class SmartAudioWorker(QThread):
                     self.silence_in_phrase_samples = 0
 
                     total_samples = sum(len(c) for c in self.current_phrase_chunks)
-                    if total_samples >= int(3.0 * 16000):
+                    # Jeśli mówca mówi bardzo długo bez żadnej pauzy (> 8.0s), wysyłamy bezpiecznie
+                    if total_samples >= int(8.0 * 16000):
                         phrase_arr = np.concatenate(self.current_phrase_chunks)
                         self.phrase_signal.emit(phrase_arr, 16000)
                         self.current_phrase_chunks = []
@@ -211,9 +212,18 @@ class SmartAudioWorker(QThread):
                     if self.phrase_speech_detected and self.current_phrase_chunks:
                         self.silence_in_phrase_samples += len(chunk_16k)
                         silence_dur = self.silence_in_phrase_samples / 16000.0
-                        if silence_dur >= 0.4:
+                        total_samples = sum(len(c) for c in self.current_phrase_chunks)
+                        phrase_dur = total_samples / 16000.0
+
+                        # Naturalny koniec zdania:
+                        # 1. Pauza >= 0.5s i fraza ma co najmniej 1.0s mowy
+                        # 2. Lub fraza trwała już > 4.5s i wystąpiła pauza >= 0.3s
+                        is_sentence_boundary = (silence_dur >= 0.5 and phrase_dur >= 1.0)
+                        is_long_phrase_break = (silence_dur >= 0.3 and phrase_dur >= 4.5)
+
+                        if is_sentence_boundary or is_long_phrase_break:
                             phrase_arr = np.concatenate(self.current_phrase_chunks)
-                            if len(phrase_arr) >= int(0.3 * 16000):
+                            if len(phrase_arr) >= int(0.6 * 16000):
                                 self.phrase_signal.emit(phrase_arr, 16000)
                             self.current_phrase_chunks = []
                             self.phrase_speech_detected = False
@@ -278,6 +288,7 @@ class LiveTranscriptionWorker(QThread):
 
     def run(self):
         self._is_running = True
+        recent_context = ""
         try:
             self.status_signal.emit(f"Ładowanie modelu Whisper ({self.model_size})...")
             self.transcriber.load_model()
@@ -313,9 +324,10 @@ class LiveTranscriptionWorker(QThread):
                     self.audio_queue.task_done()
                     continue
 
-                # 4. Transkrypcja frazy
-                phrase_text = self.transcriber.transcribe_live_chunk(audio_float, language="pl")
+                # 4. Transkrypcja frazy z pamięcią kontekstu
+                phrase_text = self.transcriber.transcribe_live_chunk(audio_float, language="pl", context_prompt=recent_context)
                 if phrase_text:
+                    recent_context = (recent_context + " " + phrase_text).strip()[-250:]
                     time_str = datetime.now().strftime("%H:%M:%S")
                     self.phrase_transcribed_signal.emit(time_str, phrase_text)
 

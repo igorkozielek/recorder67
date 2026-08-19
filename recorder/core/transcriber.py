@@ -63,15 +63,22 @@ class TranscriberEngine:
         return self._model
 
 
-    def transcribe_live_chunk(self, audio_float: np.ndarray, language: str = "pl") -> str:
+    def transcribe_live_chunk(self, audio_float: np.ndarray, language: str = "pl", context_prompt: str = "") -> str:
         """
-        Transkrybuje krótki fragment audio (16kHz float32 mono) w locie z pełną ochroną przed halucynacjami.
+        Transkrybuje krótki fragment audio (16kHz float32 mono) w locie z pamięcią kontekstu i ochroną przed halucynacjami.
         """
         if self._model is None:
             self.load_model()
 
         if len(audio_float) < int(0.4 * 16000):
             return ""
+
+        # Dynamiczny rolling context prompt
+        if context_prompt and len(context_prompt.strip()) > 3:
+            clean_ctx = context_prompt.strip()[-200:]
+            prompt = f"Poprzednio mówiono: {clean_ctx}. Prawidłowa polska pisownia i interpunkcja."
+        else:
+            prompt = "Transkrypcja oficjalnych i roboczych rozmów biurowych w języku polskim."
 
         segments, _ = self._model.transcribe(
             audio_float,
@@ -88,7 +95,7 @@ class TranscriberEngine:
                 min_silence_duration_ms=400,
                 speech_pad_ms=200
             ),
-            initial_prompt="Transkrypcja oficjalnych i roboczych rozmów w języku polskim."
+            initial_prompt=prompt
         )
 
         phrase_text = "".join([segment.text for segment in segments]).strip()
