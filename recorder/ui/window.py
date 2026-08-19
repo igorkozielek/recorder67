@@ -1114,18 +1114,22 @@ class SmartDictaphoneWindow(QMainWindow):
                 QMessageBox.warning(self, "Brak Treści", "Brak tekstu transkrypcji do wysłania.")
             return
 
-        # Inteligentne wyliczanie długości nagrania (stoper, segmenty lub plik WAV)
-        duration = float(self.recorded_seconds) if self.recorded_seconds > 0 else 0.0
-        if duration <= 0.0 and turns:
-            try:
-                duration = max(float(t.get("end", 0.0)) for t in turns)
-            except Exception:
-                pass
-        if duration <= 0.0 and audio_path and os.path.exists(audio_path):
+        # Rzeczywista długość nagrania: priorytet 1 to plik audio, priorytet 2 stoper, priorytet 3 ostatni segment
+        duration = 0.0
+        if audio_path and os.path.exists(audio_path):
             try:
                 import soundfile as sf
                 info = sf.info(audio_path)
                 duration = float(info.duration)
+            except Exception:
+                pass
+
+        if duration <= 0.0 and self.recorded_seconds > 0:
+            duration = float(self.recorded_seconds)
+
+        if duration <= 0.0 and turns:
+            try:
+                duration = max(float(t.get("end", 0.0)) for t in turns)
             except Exception:
                 pass
 
