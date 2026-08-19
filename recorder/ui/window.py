@@ -402,11 +402,12 @@ class SmartDictaphoneWindow(QMainWindow):
         lbl_spk_info.setStyleSheet("color: #4cc9f0; font-size: 11px;")
         speaker_main_layout.addWidget(lbl_spk_info)
 
-        # Przewijalny obszar dla mówców (zapewnia doskonałą widoczność nawet przy 8-10 osobach na laptopie)
+        # Przewijalny obszar dla mówców (zapewnia doskonałą widoczność dla 3-6 osób jednocześnie)
         speaker_scroll = QScrollArea()
         speaker_scroll.setWidgetResizable(True)
         speaker_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        speaker_scroll.setMaximumHeight(280)
+        speaker_scroll.setMinimumHeight(160)
+        speaker_scroll.setMaximumHeight(320)
         speaker_scroll.setStyleSheet("background: transparent;")
 
         speaker_scroll_widget = QWidget()
@@ -996,31 +997,40 @@ class SmartDictaphoneWindow(QMainWindow):
             card_frame.setStyleSheet("background-color: #1e1e2f; border: 1px solid #3d3d5c; border-radius: 6px; padding: 6px;")
             card_layout = QVBoxLayout(card_frame)
             card_layout.setContentsMargins(8, 8, 8, 8)
-            card_layout.setSpacing(4)
+            card_layout.setSpacing(6)
 
-            # Górny wiersz: ID Mówcy + Pole edycji imienia
+            # Górny wiersz: ID Mówcy + Pole Imienia + Pole Roli / Firmy
             top_row = QHBoxLayout()
+            top_row.setSpacing(8)
+
             lbl_spk = QLabel(f"🏷️ <b>{spk_id}</b>:")
             lbl_spk.setStyleSheet("color: #edf2f4; font-size: 12px; font-weight: bold;")
-            lbl_spk.setMinimumWidth(140)
-            lbl_spk.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            lbl_spk.setMinimumWidth(120)
 
             edit_name = QLineEdit()
-            edit_name.setPlaceholderText("Wpisz imię / rolę mówcy...")
-            edit_name.setText(suggested_name)
+            edit_name.setPlaceholderText("Imię / Nazwisko (np. Łukasz)...")
+            edit_name.setText(suggested_name if suggested_name != spk_id else "")
             edit_name.setStyleSheet("background-color: #2b2d42; color: #edf2f4; border: 1px solid #4cc9f0; border-radius: 4px; padding: 4px 8px; font-weight: bold; font-size: 12px;")
 
-            self.speaker_inputs[spk_id] = edit_name
+            edit_role = QLineEdit()
+            edit_role.setPlaceholderText("Rola / Firma (np. emanager, klient)...")
+            edit_role.setStyleSheet("background-color: #2b2d42; color: #f59e0b; border: 1px solid #f59e0b; border-radius: 4px; padding: 4px 8px; font-size: 11px;")
+
+            self.speaker_inputs[spk_id] = {
+                "name": edit_name,
+                "role": edit_role
+            }
 
             top_row.addWidget(lbl_spk)
-            top_row.addWidget(edit_name, stretch=1)
+            top_row.addWidget(edit_name, stretch=3)
+            top_row.addWidget(edit_role, stretch=2)
             card_layout.addLayout(top_row)
 
             # Dolny wiersz: Wskazówka kontekstowa z dowodem oraz próbka wypowiedzi
             bottom_row = QHBoxLayout()
             bottom_row.setSpacing(10)
 
-            lbl_clue = QLabel(clue)
+            lbl_clue = QLabel(f"💡 Sugestia: {clue}")
             lbl_clue.setStyleSheet("color: #4cc9f0; font-size: 11px;")
             lbl_clue.setWordWrap(True)
 
@@ -1038,15 +1048,31 @@ class SmartDictaphoneWindow(QMainWindow):
 
     def _on_apply_speakers_clicked(self):
         """
-        Zatwierdza nowe nazwy mówców wprowadzone przez użytkownika i aktualizuje podgląd oraz plik TXT.
+        Zatwierdza nowe nazwy i role mówców wprowadzone przez użytkownika i aktualizuje podgląd oraz plik TXT.
         """
         if not self.current_turns:
             return
 
         mapping = {}
-        for spk_id, edit in self.speaker_inputs.items():
-            val = edit.text().strip()
-            mapping[spk_id] = val if val else spk_id
+        for spk_id, fields in self.speaker_inputs.items():
+            if isinstance(fields, dict):
+                name_val = fields["name"].text().strip()
+                role_val = fields["role"].text().strip()
+                
+                # Scalanie: np. "Łukasz (emanager)" lub samo "Łukasz"
+                if name_val and role_val:
+                    label = f"{name_val} ({role_val})"
+                elif name_val:
+                    label = name_val
+                elif role_val:
+                    label = f"{spk_id} ({role_val})"
+                else:
+                    label = spk_id
+            else:
+                val = fields.text().strip()
+                label = val if val else spk_id
+
+            mapping[spk_id] = label
 
         # Zaktualizuj etykiety mówców w turns
         for t in self.current_turns:
