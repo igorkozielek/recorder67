@@ -38,5 +38,10 @@ transcriptions/
 *.jit
 scratch/
 
+# PyInstaller Build & Dist Folders
+build/
+dist/
+*.spec
+
 # Zmienne środowiskowe i sekrety (nie publikować na GitHubie!)
 .env
