@@ -1,23 +1,26 @@
 @echo off
-chcp 65001 > nul
-echo ==============================================================================
-echo 🚀 Rozpoczynanie budowania Inteligentnego Dyktafonu AI do pliku .EXE
-echo ==============================================================================
+rem ==============================================================================
+rem Skrypt budowania aplikacji Inteligentnego Dyktafonu AI do pliku EXE
+rem ==============================================================================
 
-if exist env\Scripts\python.exe (
-    set PYTHON_EXE=env\Scripts\python.exe
+set "PYTHON_CMD="
+if exist "env\Scripts\python.exe" (
+    set "PYTHON_CMD=env\Scripts\python.exe"
 ) else (
-    set PYTHON_EXE=python
+    set "PYTHON_CMD=python"
 )
 
-%PYTHON_EXE% scripts\build_exe.py
+echo [INFO] Uzywanie interpretera: %PYTHON_CMD%
+echo [INFO] Rozpoczynanie kompilacji PyInstaller...
+
+%PYTHON_CMD% scripts\build_exe.py
 
 if %ERRORLEVEL% equ 0 (
     echo.
-    echo ✅ Gotowe! Plik wykonywalny znajduje sie w folderze: dist\InteligentnyDyktafonAI\
-    pause
+    echo [SUKCES] Gotowe! Plik wykonywalny znajduje sie w folderze: dist\InteligentnyDyktafonAI\
 ) else (
     echo.
-    echo ❌ Wystapil blad podczas budowania.
-    pause
+    echo [BLAD] Wystapil blad podczas budowania. Kod bledu: %ERRORLEVEL%
 )
+
+pause
