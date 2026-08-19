@@ -46,6 +46,7 @@ from recorder.ui.workers import (
     TranscriptionWorker,
     FileProcessingWorker
 )
+from recorder.core.rolling_transcriber import RollingTranscriptionWorker, RollingBlock
 from recorder.core.speakers import analyze_speakers, suggest_speaker_names, format_turns, parse_txt_to_turns
 from recorder.core.cloud_sync import CloudSyncManager
 
@@ -548,7 +549,7 @@ class SmartDictaphoneWindow(QMainWindow):
 
         selected_model = self.combo_models.currentData() or DEFAULT_WHISPER_MODEL
 
-        # Uruchomienie wątku transkrypcji na żywo z wybranym modelem
+        # Uruchomienie wątku transkrypcji na żywo z wybranym modelem (podgląd fraz)
         self.live_transcription_worker = LiveTranscriptionWorker(model_size=selected_model)
         self._active_threads.append(self.live_transcription_worker)
         self.live_transcription_worker.phrase_transcribed_signal.connect(self._on_live_phrase_received)
@@ -557,6 +558,19 @@ class SmartDictaphoneWindow(QMainWindow):
         self.live_transcription_worker.start()
 
         self.worker.phrase_signal.connect(self.live_transcription_worker.add_phrase_chunk)
+
+        # Uruchomienie silnika asynchronicznego przetwarzania bloków w tle (Rolling Background Transcriber)
+        self.rolling_worker = RollingTranscriptionWorker(
+            model_size=selected_model,
+            txt_save_path=self.current_live_txt_path
+        )
+        self._active_threads.append(self.rolling_worker)
+        self.rolling_worker.block_processed_signal.connect(self._on_rolling_block_processed)
+        self.rolling_worker.finished_signal.connect(self._on_rolling_finished)
+        self.rolling_worker.error_signal.connect(self._on_rolling_error)
+        self.rolling_worker.start()
+
+        self.worker.rolling_block_ready_signal.connect(self.rolling_worker.add_block)
 
         threshold_sec = self.slider_silence.value()
         self.worker.set_auto_pause_sec(threshold_sec)
@@ -586,25 +600,38 @@ class SmartDictaphoneWindow(QMainWindow):
         plain_line = f"[{time_str}]: {text_phrase}"
         self.live_plain_text_lines.append(plain_line)
         
-        self.text_transcript.append(html_line)
-        sb = self.text_transcript.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        # Jeśli nie mamy jeszcze gotowych przetworzonych bloków w tle, wyświetlamy podgląd na żywo
+        if not getattr(self, "current_turns", None):
+            self.text_transcript.append(html_line)
+            sb = self.text_transcript.verticalScrollBar()
+            sb.setValue(sb.maximum())
 
-        # Natychmiastowy zapis nowej frazy do pliku TXT na dysku
-        if hasattr(self, "current_live_txt_path") and self.current_live_txt_path:
-            try:
-                with open(self.current_live_txt_path, 'a', encoding='utf-8') as f:
-                    f.write(plain_line + "\n\n")
-                    f.flush()
-            except Exception:
-                pass
+    def _on_rolling_block_processed(self, block_idx, proc_sec, tot_sec, all_turns, full_plain, full_html):
+        """Odebranie przetworzonego w tle bloku mowy z pełnymi word-level timestampami."""
+        self.current_turns = all_turns or []
+        self.last_plain_text = full_plain
+        self.text_transcript.setHtml(full_html)
+        self._populate_speaker_mapping(self.current_turns)
+
+        # Aktualizacja paska postępu
+        pct = int(min(98, max(5, (proc_sec / max(1.0, tot_sec)) * 100)))
+        p_min, p_sec = int(proc_sec // 60), int(proc_sec % 60)
+        t_min, t_sec = int(tot_sec // 60), int(tot_sec % 60)
+        self.progress_transcription.setValue(pct)
+        self.progress_transcription.setFormat(f"🟢 Przetworzono w tle: {p_min:02d}:{p_sec:02d} / {t_min:02d}:{t_sec:02d} (Blok #{block_idx} gotowy)")
+
+    def _on_rolling_status(self, text):
+        if self.worker.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:
+            self.progress_transcription.setFormat(f"Transkrypcja w tle: {text}")
+
+    def _on_rolling_error(self, err_msg):
+        if sys.stderr:
+            print(f"Błąd transkrypcji w tle: {err_msg}", file=sys.stderr)
 
     def _on_live_status_changed(self, text):
-        self.progress_transcription.setFormat(f"Transkrypcja na Żywo: {text}")
-        self.progress_transcription.setValue(100)
+        pass
 
     def _on_live_error(self, err_msg):
-        self.progress_transcription.setFormat("Błąd transkrypcji na żywo!")
         if sys.stderr:
             print(f"Błąd transkrypcji na żywo: {err_msg}", file=sys.stderr)
 
@@ -616,7 +643,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.worker.stop_recording()
         self.worker.wait()
 
-        # Bezpieczne zatrzymanie wątku transkrypcji na żywo
+        # Zatrzymanie podglądu na żywo
         if self.live_transcription_worker is not None:
             try:
                 self.worker.phrase_signal.disconnect(self.live_transcription_worker.add_phrase_chunk)
@@ -629,11 +656,18 @@ class SmartDictaphoneWindow(QMainWindow):
             if lw in self._active_threads:
                 self._active_threads.remove(lw)
 
+        # Odłączenie sygnału bloków
+        try:
+            self.worker.rolling_block_ready_signal.disconnect(self.rolling_worker.add_block)
+        except Exception:
+            pass
+
         timestamp = getattr(self, "current_live_timestamp", datetime.now().strftime("%Y%m%d_%H%M%S"))
         filename = f"inteligentne_nagranie_{timestamp}.wav"
         save_path = os.path.join(self.recordings_dir, filename)
 
         saved = self.worker.save_wav(save_path)
+        self.last_audio_save_path = save_path if saved else None
 
         self.progress_vu.setValue(0)
         self.progress_silence.setValue(0)
@@ -660,47 +694,63 @@ class SmartDictaphoneWindow(QMainWindow):
         self.slider_silence.setEnabled(True)
 
         if saved:
-            self.last_audio_save_path = save_path
             self._refresh_recordings_list()
             self._refresh_transcriptions_list()
 
-            enable_diar = self.check_enable_diarization.isChecked()
-            spk_cfg = self.combo_speakers.currentData() or {}
-            num_spk = spk_cfg.get("num_speakers")
-            min_spk = spk_cfg.get("min_speakers")
-            max_spk = spk_cfg.get("max_speakers")
-            selected_model = self.combo_models.currentData() or DEFAULT_WHISPER_MODEL
-            token = self.input_token.text().strip()
+            # Pobranie ostatniego nieprzetworzonego fragmentu audio
+            remaining = self.worker.get_remaining_block()
+            final_block = None
+            if remaining:
+                r_idx, r_start, r_end, r_audio = remaining
+                final_block = RollingBlock(r_idx, r_start, r_end, r_audio)
 
-            self.progress_transcription.setValue(0)
-            if enable_diar and token:
-                if num_spk:
-                    spk_info = f" (dokładnie {num_spk} os.)"
-                elif max_spk:
-                    spk_info = f" (max {max_spk} os.)"
-                else:
-                    spk_info = ""
-                self.progress_transcription.setFormat(f"Trwa analiza głosów i diaryzacja{spk_info} w tle...")
-            else:
-                self.progress_transcription.setFormat("Trwa szybka transkrypcja bez diaryzacji...")
+            self.progress_transcription.setFormat("Finalizowanie ostatniego fragmentu rozmowy w tle...")
+            self.progress_transcription.setValue(95)
+
+            # Przekazanie ostatniego fragmentu do finalizacji
+            if getattr(self, "rolling_worker", None) is not None:
+                self.rolling_worker.stop_and_finalize(final_block)
+        else:
+            QMessageBox.warning(self, "Brak Nagrania", "Nie zarejestrowano mowy do zapisu.")
+
+    def _on_rolling_finished(self, final_html: str, final_plain: str, all_turns: list):
+        """Zakończenie przetwarzania w tle po kliknięciu Stop."""
+        if hasattr(self, "rolling_worker") and self.rolling_worker in self._active_threads:
+            self._active_threads.remove(self.rolling_worker)
+
+        self.current_turns = all_turns or []
+        self.last_plain_text = final_plain
+        self.text_transcript.setHtml(final_html)
+        self._populate_speaker_mapping(self.current_turns)
+
+        enable_diar = self.check_enable_diarization.isChecked()
+        token = self.input_token.text().strip()
+        spk_cfg = self.combo_speakers.currentData() or {}
+        num_spk = spk_cfg.get("num_speakers")
+        min_spk = spk_cfg.get("min_speakers")
+        max_spk = spk_cfg.get("max_speakers")
+
+        # Jeśli użytkownik zażądał diaryzacji mówców PyAnnote
+        if enable_diar and token and self.last_audio_save_path and self.current_turns:
+            self.progress_transcription.setFormat("Trwa analiza głosów i podział na mówców (PyAnnote)...")
+            self.progress_transcription.setValue(96)
 
             self.transcription_thread = TranscriptionWorker(
-                save_path,
+                self.last_audio_save_path,
                 token,
-                model_size=selected_model,
-                enable_diarization=enable_diar,
+                model_size=self.combo_models.currentData() or DEFAULT_WHISPER_MODEL,
+                enable_diarization=True,
                 num_speakers=num_spk,
                 min_speakers=min_spk,
                 max_speakers=max_spk
             )
             self._active_threads.append(self.transcription_thread)
             self.transcription_thread.progress_signal.connect(self._on_transcription_progress)
-            self.transcription_thread.preliminary_signal.connect(self._on_preliminary_transcript)
             self.transcription_thread.finished_signal.connect(self._on_transcription_finished)
             self.transcription_thread.error_signal.connect(self._on_transcription_error)
             self.transcription_thread.start()
         else:
-            QMessageBox.warning(self, "Brak Nagrania", "Nie zarejestrowano mowy do zapisu.")
+            self._on_transcription_finished(final_html, final_plain, self.current_turns)
 
 
     def _on_upload_file_clicked(self):
@@ -1211,6 +1261,16 @@ class SmartDictaphoneWindow(QMainWindow):
             mins = (self.recorded_seconds % 3600) // 60
             secs = self.recorded_seconds % 60
             self.lbl_timer.setText(f"{hrs:02d}:{mins:02d}:{secs:02d}")
+
+            if getattr(self, "rolling_worker", None) is not None:
+                self.rolling_worker.update_session_time(self.recorded_seconds)
+                proc_sec = self.rolling_worker.total_processed_seconds
+                if proc_sec > 0:
+                    pct = int(min(98, max(5, (proc_sec / max(1.0, float(self.recorded_seconds))) * 100)))
+                    p_min, p_sec = int(proc_sec // 60), int(proc_sec % 60)
+                    t_min, t_sec = int(self.recorded_seconds // 60), int(self.recorded_seconds % 60)
+                    self.progress_transcription.setValue(pct)
+                    self.progress_transcription.setFormat(f"🟢 Przetworzono w tle: {p_min:02d}:{p_sec:02d} / {t_min:02d}:{t_sec:02d} ({pct}%)")
 
     def _update_audio_level(self, level):
         try:

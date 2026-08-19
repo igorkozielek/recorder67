@@ -38,7 +38,14 @@ class SmartAudioWorker(QThread):
     vad_info_signal = pyqtSignal(bool, float, float)    # (is_speech, speech_prob, silence_sec)
     state_changed_signal = pyqtSignal(int)             # SmartRecordState
     phrase_signal = pyqtSignal(np.ndarray, int)        # Frazy audio dla transkrypcji na żywo (16kHz)
+    rolling_block_ready_signal = pyqtSignal(int, float, float, np.ndarray)  # (block_idx, start_sec, end_sec, audio_data)
     error_signal = pyqtSignal(str)
+
+    # Parametry okna bezpiecznego cięcia w tle (Safe VAD Boundary Handoff)
+    MIN_BLOCK_DURATION_SEC = 180.0          # Min. 3 minuty mowy przed poszukiwaniem punktu podziału
+    SAFE_SILENCE_CUT_THRESHOLD_SEC = 1.5   # Wymagane min. 1.5s ciszy potwierdzonej przez Silero VAD
+    MAX_BLOCK_DURATION_SEC = 360.0          # Maksymalny czas bloku 6 minut
+    OVERLAP_SAMPLES = int(0.5 * 16000)      # 0.5s nakładki akustycznej na styku
 
     def __init__(self, samplerate=SAMPLE_RATE, channels=AUDIO_CHANNELS, device_index=None, auto_pause_sec=DEFAULT_AUTO_PAUSE_SEC):
         super().__init__()
@@ -55,11 +62,17 @@ class SmartAudioWorker(QThread):
         self.silence_samples_count = 0
         self._is_running = False
 
-        # Buforowanie fraz mowy z pre-bufferingiem (0.2s pre-padding)
+        # Buforowanie fraz mowy z pre-bufferingiem (0.45s pre-padding)
         self.current_phrase_chunks = []
         self.pre_speech_buffer = collections.deque(maxlen=PRE_SPEECH_BUFFER_CHUNKS)
         self.silence_in_phrase_samples = 0
         self.phrase_speech_detected = False
+
+        # Asynchroniczne bloki w tle (Rolling Blocks)
+        self.block_index = 1
+        self.block_start_samples = 0
+        self.current_block_chunks = []
+        self.last_block_tail = None
 
     def set_auto_pause_sec(self, seconds: float):
         try:
@@ -75,10 +88,32 @@ class SmartAudioWorker(QThread):
         self.pre_speech_buffer.clear()
         self.silence_in_phrase_samples = 0
         self.phrase_speech_detected = False
+
+        self.block_index = 1
+        self.block_start_samples = 0
+        self.current_block_chunks = []
+        self.last_block_tail = None
+
         self.state = SmartRecordState.RECORDING_SPEECH
         self._is_running = True
         self.state_changed_signal.emit(self.state)
         self.start()
+
+    def get_remaining_block(self) -> Optional[tuple]:
+        """Zwraca ostatni, nieprzetworzony jeszcze blok nagrania po kliknięciu Stop."""
+        if not self.current_block_chunks:
+            return None
+        try:
+            block_arr = np.concatenate(self.current_block_chunks)
+            if len(block_arr) < int(0.5 * 16000):
+                return None
+            start_sec = round(self.block_start_samples / 16000.0, 2)
+            end_sec = round((self.block_start_samples + len(block_arr)) / 16000.0, 2)
+            idx = self.block_index
+            self.current_block_chunks = []
+            return (idx, start_sec, end_sec, block_arr)
+        except Exception:
+            return None
 
     def toggle_manual_pause(self):
         if self.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN, SmartRecordState.AUTO_PAUSED]:
@@ -185,12 +220,35 @@ class SmartAudioWorker(QThread):
             current_silence_sec = self.silence_samples_count / 16000.0
             self.vad_info_signal.emit(is_speech, speech_prob, current_silence_sec)
 
-            # 4. Zapis próbek 16kHz oraz buforowanie fraz mowy na żywo (z 0.2s pre-bufferingiem)
+            # 4. Zapis próbek 16kHz oraz buforowanie fraz mowy na żywo i bloków w tle
             if self.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:
                 audio_int16 = (chunk_16k * 32767).clip(-32768, 32767).astype(np.int16)
                 self.frames.append(audio_int16.tobytes())
 
                 chunk_flat = chunk_16k.copy().flatten()
+                self.current_block_chunks.append(chunk_flat)
+
+                # Sprawdzenie warunku bezpiecznego podziału na bloki w pełnej ciszy (VAD Silence Handoff)
+                current_block_len = sum(len(c) for c in self.current_block_chunks)
+                current_block_dur = current_block_len / 16000.0
+                silence_dur = self.silence_samples_count / 16000.0
+
+                is_ready_for_cut = (
+                    (current_block_dur >= self.MIN_BLOCK_DURATION_SEC and silence_dur >= self.SAFE_SILENCE_CUT_THRESHOLD_SEC) or
+                    (current_block_dur >= self.MAX_BLOCK_DURATION_SEC and silence_dur >= 0.8)
+                )
+
+                if is_ready_for_cut:
+                    block_arr = np.concatenate(self.current_block_chunks)
+                    start_sec = round(self.block_start_samples / 16000.0, 2)
+                    end_sec = round((self.block_start_samples + len(block_arr)) / 16000.0, 2)
+                    idx = self.block_index
+
+                    self.rolling_block_ready_signal.emit(idx, start_sec, end_sec, block_arr)
+                    self.block_start_samples += len(block_arr)
+                    self.block_index += 1
+                    self.current_block_chunks = []
+
                 if is_speech:
                     if not self.phrase_speech_detected:
                         self.current_phrase_chunks.extend(list(self.pre_speech_buffer))
