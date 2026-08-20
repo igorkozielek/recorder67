@@ -2,6 +2,9 @@ import os
 import sys
 from pathlib import Path
 
+# Wyciszenie ostrzeżeń o symlinkach HuggingFace na Windowsie
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+
 # Ścieżki główne
 BASE_DIR = Path(__file__).resolve().parent.parent
 RECORDINGS_DIR = os.path.join(os.getcwd(), "recordings")

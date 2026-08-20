@@ -179,6 +179,8 @@ class SmartAudioWorker(QThread):
             if len(chunk_16k) == 0:
                 return
 
+            chunk_flat = chunk_16k.copy().flatten()
+
             # 1. Poziom głośności RMS z zabezpieczeniem NaN
             norm_factor = float(np.linalg.norm(chunk_16k))
             if np.isnan(norm_factor) or np.isinf(norm_factor):
@@ -219,8 +221,6 @@ class SmartAudioWorker(QThread):
             if self.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:
                 audio_int16 = (chunk_16k * 32767).clip(-32768, 32767).astype(np.int16)
                 self.frames.append(audio_int16.tobytes())
-
-                chunk_flat = chunk_16k.copy().flatten()
                 self.current_block_chunks.append(chunk_flat)
 
             # Sprawdzenie warunku bezpiecznego podziału na bloki w pełnej ciszy (VAD Silence Handoff)
