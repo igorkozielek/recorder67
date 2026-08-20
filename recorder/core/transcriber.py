@@ -48,11 +48,22 @@ def clean_repeated_text(text: str) -> str:
 
 
 def is_hallucination(text: str) -> bool:
-    """Sprawdza czy rozpoznany tekst zawiera znane halucynacje z korpusu YouTube/napisów lub pętle."""
+    """Sprawdza czy rozpoznany tekst zawiera znane halucynacje z korpusu YouTube/napisów, pętle lub samotny szum."""
     if not text:
         return True
     lower_txt = text.lower().strip()
-    if len(lower_txt) < 2 or lower_txt in {".", "...", ",", "?", "!", "dziękuję.", "dziękuję"}:
+    if len(lower_txt) < 2 or lower_txt in {".", "...", ",", "?", "!"}:
+        return True
+
+    # Odrzucanie samotnych, krótkich powitań i podziękowań generowanych z szumu mikrofonu w ciszy
+    isolated_noise_greetings = {
+        "dzień dobry", "dzień dobry.", "dzień dobry!", "dzień dobry?",
+        "dzień dobry dzień dobry", "dzień dobry dzień dobry.", "dzień dobry dzień dobry!",
+        "dziękuję", "dziękuję.", "dziękuję!", "dzięki", "dzięki.", "dzięki!",
+        "dzięki za oglądanie", "dzięki za oglądanie.", "dziękuję za oglądanie", "dziękuję za oglądanie.",
+        "dziękuję za uwagę", "dziękuję za uwagę.", "do widzenia", "do widzenia."
+    }
+    if lower_txt in isolated_noise_greetings:
         return True
 
     # Sprawdzenie triggerów z blacklisty
