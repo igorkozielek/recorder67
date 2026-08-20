@@ -1280,7 +1280,10 @@ class SmartDictaphoneWindow(QMainWindow):
         self.input_token.setEnabled(is_diar)
 
     def _on_timer_tick(self):
-        if self.worker.state != SmartRecordState.MANUAL_PAUSED and self.worker.state != SmartRecordState.STOPPED:
+        # Czas nagrania (stoper i pasek) nalicza się TYLKO gdy mowa jest aktywnie nagrywana
+        is_active_recording = self.worker.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]
+
+        if is_active_recording:
             self.recorded_seconds += 1
             hrs = self.recorded_seconds // 3600
             mins = (self.recorded_seconds % 3600) // 60
@@ -1306,6 +1309,15 @@ class SmartDictaphoneWindow(QMainWindow):
                     else:
                         self.progress_transcription.setValue(95)
                         self.progress_transcription.setFormat(f"🎙️ Nagrywanie: {t_min:02d}:{t_sec:02d} (Oczekiwanie na pauzę w mowie na cięcie bloku)...")
+        elif self.worker.state == SmartRecordState.AUTO_PAUSED:
+            # W stanie Auto-Pauzy stoper stoi w miejscu i pasek nie ucieka do przodu
+            t_min, t_sec = int(self.recorded_seconds // 60), int(self.recorded_seconds % 60)
+            proc_sec = getattr(self.rolling_worker, "total_processed_seconds", 0.0) if getattr(self, "rolling_worker", None) else 0.0
+            if proc_sec > 0:
+                p_min, p_sec = int(proc_sec // 60), int(proc_sec % 60)
+                self.progress_transcription.setFormat(f"⏸️ Auto-Pauza (Cisza): {p_min:02d}:{p_sec:02d} / {t_min:02d}:{t_sec:02d}")
+            else:
+                self.progress_transcription.setFormat(f"⏸️ Auto-Pauza (Cisza): {t_min:02d}:{t_sec:02d} nagrania")
 
     def _update_audio_level(self, level):
         try:
