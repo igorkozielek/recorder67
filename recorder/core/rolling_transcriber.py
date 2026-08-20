@@ -101,36 +101,43 @@ class RollingTranscriptionWorker(QThread):
     def _process_single_block(self, block: RollingBlock):
         """Transkrybuje pojedynczy blok i mapuje jego słowa na globalną oś czasu."""
         audio_data = block.audio_float
-        if audio_data is None or len(audio_data) < int(0.5 * 16000):
+        if audio_data is None or len(audio_data) < int(1.0 * 16000):
             block.is_processed = True
             self.processed_blocks.append(block)
             return
 
-        # Dźwięk w formacie float32 mono 16kHz
+        # Dźwięk w formacie float32 mono 16kHz (zawsze 1D)
         if audio_data.dtype == np.int16:
-            audio_float = audio_data.astype(np.float32) / 32768.0
+            audio_float = (audio_data.astype(np.float32) / 32768.0).flatten()
         else:
-            audio_float = audio_data.astype(np.float32)
+            audio_float = audio_data.astype(np.float32).flatten()
 
-        # Transkrypcja bloku z word-level timestamps i ochroną przed pętlami powtórzeń
-        segments, _ = self.transcriber._model.transcribe(
-            audio_float,
-            word_timestamps=True,
-            language="pl",
-            beam_size=1,
-            repetition_penalty=1.15,
-            no_repeat_ngram_size=3,
-            compression_ratio_threshold=2.0,
-            vad_filter=False,
-            initial_prompt="CRM, Helpdesk, Subiekt, synchronizacja, harmonogram, rejestr zmian, zgłoszenia, zamówienia."
-        )
+        if len(audio_float) < int(1.0 * 16000):
+            block.is_processed = True
+            self.processed_blocks.append(block)
+            return
 
         transcript_words = []
-        for segment in segments:
-            raw_text = segment.text.strip() if segment.text else ""
-            seg_text = clean_repeated_text(raw_text)
-            if not seg_text or is_hallucination(seg_text):
-                continue
+
+        try:
+            # Transkrypcja bloku z word-level timestamps i ochroną przed pętlami powtórzeń
+            segments, _ = self.transcriber._model.transcribe(
+                audio_float,
+                word_timestamps=True,
+                language="pl",
+                beam_size=1,
+                repetition_penalty=1.15,
+                no_repeat_ngram_size=3,
+                compression_ratio_threshold=2.0,
+                vad_filter=False,
+                initial_prompt="CRM, Helpdesk, Subiekt, synchronizacja, harmonogram, rejestr zmian, zgłoszenia, zamówienia."
+            )
+
+            for segment in segments:
+                raw_text = segment.text.strip() if segment.text else ""
+                seg_text = clean_repeated_text(raw_text)
+                if not seg_text or is_hallucination(seg_text):
+                    continue
 
             # Jeśli segment ma dokładne słowa
             if segment.words:
@@ -160,6 +167,8 @@ class RollingTranscriptionWorker(QThread):
                             "end": w_end,
                             "probability": 0.9
                         })
+        except Exception as trans_err:
+            print(f"[ROLLING] Pominięto fragment bloku #{block.index}: {trans_err}")
 
         # Formatowanie słów tego bloku do turnów
         if transcript_words:
