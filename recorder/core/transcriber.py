@@ -48,32 +48,40 @@ def clean_repeated_text(text: str) -> str:
 
 
 def is_hallucination(text: str) -> bool:
-    """Sprawdza czy rozpoznany tekst zawiera znane halucynacje z korpusu YouTube/napisów, pętle lub samotny szum."""
+    """Sprawdza czy krótki fragment tekstu to znana halucynacja z plansz YouTube lub pętla."""
     if not text:
         return True
     lower_txt = text.lower().strip()
+    words = lower_txt.split()
     if len(lower_txt) < 2 or lower_txt in {".", "...", ",", "?", "!"}:
         return True
+
+    # Prawdziwe, długie wypowiedzi (powyżej 6 słów) nigdy nie są w całości odrzucane jako halucynacja!
+    if len(words) > 6:
+        # Sprawdzamy jedynie czy to nie jest pętla samych liczb (np. "10 10 10 10 11 11 12 15 15 15")
+        digit_words = [w for w in words if w.isdigit()]
+        if len(digit_words) >= 6 and (len(digit_words) / len(words)) > 0.6:
+            return True
+        return False
 
     # Odrzucanie samotnych, krótkich powitań i podziękowań generowanych z szumu mikrofonu w ciszy
     isolated_noise_greetings = {
         "dzień dobry", "dzień dobry.", "dzień dobry!", "dzień dobry?",
         "dzień dobry dzień dobry", "dzień dobry dzień dobry.", "dzień dobry dzień dobry!",
         "dziękuję", "dziękuję.", "dziękuję!", "dzięki", "dzięki.", "dzięki!",
-        "dzięki za oglądanie", "dzięki za oglądanie.", "dziękuję za oglądanie", "dziękuję za oglądanie.",
-        "dziękuję za uwagę", "dziękuję za uwagę.", "do widzenia", "do widzenia."
+        "dzięki za oglądanie", "dzięki za oglądanie.", "dzięki za oglądanie!",
+        "dziękuję za oglądanie", "dziękuję za oglądanie.", "dziękuję za oglądanie!",
+        "dziękuję za uwagę", "dziękuję za uwagę.", "dziękuje za uwagę.", "dziękuje za uwagę",
+        "do widzenia", "do widzenia.", "do widzenia!",
+        "mmm", "mmm.", "uhm", "uhm."
     }
     if lower_txt in isolated_noise_greetings:
         return True
 
-    # Sprawdzenie triggerów z blacklisty
-    if any(h in lower_txt for h in HALLUCINATION_TRIGGERS):
-        return True
-
-    # Sprawdzenie pętli samych liczb
-    digit_words = [w for w in lower_txt.split() if w.isdigit()]
-    if len(digit_words) >= 5 and (len(digit_words) / max(1, len(lower_txt.split()))) > 0.6:
-        return True
+    # Sprawdzenie triggerów z blacklisty dla krótkich fragmentów
+    for h in HALLUCINATION_TRIGGERS:
+        if h in lower_txt:
+            return True
 
     return False
 
@@ -193,15 +201,12 @@ class TranscriberEngine:
 
         initial_prompt = f"CRM, Helpdesk, Subiekt, synchronizacja, harmonogram, rejestr zmian, zgłoszenia, zamówienia{extra_ctx}."
 
-        # Transkrypcja całego nagrania bez wycinania przez filtr VAD i z ochroną przed pętlami powtórzeń
+        # Transkrypcja całego nagrania bez wycinania przez filtr VAD (gwarancja 100% audio od 0.0s)
         segments, _ = self._model.transcribe(
             audio_arr,
             word_timestamps=True,
             language=language,
             beam_size=beam_size,
-            repetition_penalty=1.15,
-            no_repeat_ngram_size=3,
-            compression_ratio_threshold=2.0,
             vad_filter=False,
             initial_prompt=initial_prompt
         )

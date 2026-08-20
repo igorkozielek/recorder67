@@ -120,15 +120,12 @@ class RollingTranscriptionWorker(QThread):
         transcript_words = []
 
         try:
-            # Transkrypcja bloku z word-level timestamps i ochroną przed pętlami powtórzeń
+            # Transkrypcja bloku z word-level timestamps (czysty Whisper jak przy plikach z dysku)
             segments, _ = self.transcriber._model.transcribe(
                 audio_float,
                 word_timestamps=True,
                 language="pl",
                 beam_size=1,
-                repetition_penalty=1.15,
-                no_repeat_ngram_size=3,
-                compression_ratio_threshold=2.0,
                 vad_filter=False,
                 initial_prompt="CRM, Helpdesk, Subiekt, synchronizacja, harmonogram, rejestr zmian, zgłoszenia, zamówienia."
             )
@@ -139,34 +136,34 @@ class RollingTranscriptionWorker(QThread):
                 if not seg_text or is_hallucination(seg_text):
                     continue
 
-            # Jeśli segment ma dokładne słowa
-            if segment.words:
-                for w in segment.words:
-                    w_text = w.word.strip()
-                    if w_text:
-                        # Globalne timestampy: start_sec całego bloku + lokalny start słowa
-                        g_start = round(block.start_sec + float(w.start), 2)
-                        g_end = round(block.start_sec + float(w.end), 2)
-                        transcript_words.append({
-                            "word": w.word,
-                            "start": g_start,
-                            "end": g_end,
-                            "probability": getattr(w, "probability", 1.0)
-                        })
-            else:
-                # Fallback estymacji słów
-                words = seg_text.split()
-                if words:
-                    w_dur = (segment.end - segment.start) / max(1, len(words))
-                    for i, w_str in enumerate(words):
-                        w_start = round(block.start_sec + segment.start + (i * w_dur), 2)
-                        w_end = round(w_start + w_dur, 2)
-                        transcript_words.append({
-                            "word": (" " + w_str if i > 0 else w_str),
-                            "start": w_start,
-                            "end": w_end,
-                            "probability": 0.9
-                        })
+                # Jeśli segment ma dokładne słowa
+                if segment.words:
+                    for w in segment.words:
+                        w_text = w.word.strip()
+                        if w_text:
+                            # Globalne timestampy: start_sec całego bloku + lokalny start słowa
+                            g_start = round(block.start_sec + float(w.start), 2)
+                            g_end = round(block.start_sec + float(w.end), 2)
+                            transcript_words.append({
+                                "word": w.word,
+                                "start": g_start,
+                                "end": g_end,
+                                "probability": getattr(w, "probability", 1.0)
+                            })
+                else:
+                    # Fallback estymacji słów
+                    words = seg_text.split()
+                    if words:
+                        w_dur = (segment.end - segment.start) / max(1, len(words))
+                        for i, w_str in enumerate(words):
+                            w_start = round(block.start_sec + segment.start + (i * w_dur), 2)
+                            w_end = round(w_start + w_dur, 2)
+                            transcript_words.append({
+                                "word": (" " + w_str if i > 0 else w_str),
+                                "start": w_start,
+                                "end": w_end,
+                                "probability": 0.9
+                            })
         except Exception as trans_err:
             print(f"[ROLLING] Pominięto fragment bloku #{block.index}: {trans_err}")
 
