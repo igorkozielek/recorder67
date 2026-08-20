@@ -216,19 +216,23 @@ class DiarizationEngine:
             w_end = float(w.get("end", w_start + 0.1))
             mid = (w_start + w_end) / 2.0
 
-            assigned_spk = None
+            # 1. Znalezienie segmentu PyAnnote o największym nakładaniu się czasowym ze słowem
+            best_spk = None
+            max_overlap = 0.0
 
-            # 1. Sprawdzenie czy słowo nakłada się bezpośrednio z segmentem PyAnnote
             for seg_start, seg_end, seg_spk in diar_segments:
-                if not (w_end < seg_start or w_start > seg_end):
-                    assigned_spk = seg_spk
-                    break
+                overlap = max(0.0, min(w_end, seg_end) - max(w_start, seg_start))
+                if overlap > max_overlap:
+                    max_overlap = overlap
+                    best_spk = seg_spk
 
-            # 2. Jeśli słowo padło w mikro-pauzie poza segmentami PyAnnote,
-            # szukamy najbliższego segmentu w promieniu do 1.5 sekundy
-            if assigned_spk is None:
+            if best_spk is not None and max_overlap >= 0.04:
+                assigned_spk = best_spk
+            else:
+                # 2. Jeśli słowo padło w mikro-pauzie poza segmentami PyAnnote,
+                # szukamy najbliższego segmentu w promieniu do 1.2 sekundy
                 nearest_spk = None
-                nearest_dist = 1.5
+                nearest_dist = 1.2
                 for seg_start, seg_end, seg_spk in diar_segments:
                     dist = min(abs(mid - seg_start), abs(mid - seg_end))
                     if dist < nearest_dist:
@@ -236,10 +240,8 @@ class DiarizationEngine:
                         nearest_spk = seg_spk
                 if nearest_spk:
                     assigned_spk = nearest_spk
-
-            # 3. Fallback: jeśli brak segmentu w pobliżu, kontynuujemy mówcę z poprzedniego słowa
-            if assigned_spk is None:
-                assigned_spk = prev_speaker
+                else:
+                    assigned_spk = prev_speaker
 
             prev_speaker = assigned_spk
             word_speaker_tags.append((w.get("word", ""), w_start, w_end, assigned_spk))

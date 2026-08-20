@@ -35,10 +35,15 @@ POLISH_NAMES_MAP = {
     "patryk": "Patryk", "patryku": "Patryk", "patryka": "Patryk",
     "dominik": "Dominik", "dominiku": "Dominik",
     "kacper": "Kacper", "kacprze": "Kacper", "kacpra": "Kacper",
+    "rafał": "Rafał", "rafała": "Rafał", "rafale": "Rafał", "rafałem": "Rafał",
 
     # Żeńskie
     "kasia": "Kasia", "kasiu": "Kasia", "kasię": "Kasia", "katarzyna": "Katarzyna", "kasi": "Kasia",
     "ania": "Ania", "aniu": "Ania", "anię": "Ania", "anna": "Anna",
+    "jola": "Jola", "jolu": "Jola", "jolę": "Jola", "jolka": "Jola", "jolku": "Jola", "jolkę": "Jola", "jolanta": "Jolanta",
+    "iza": "Iza", "izo": "Iza", "izę": "Iza", "izabela": "Izabela",
+    "daria": "Daria", "dario": "Daria", "darię": "Daria",
+    "gabriela": "Gabriela", "gabrysiu": "Gabriela", "gabrysia": "Gabriela", "gabrysię": "Gabriela",
     "ola": "Ola", "olu": "Ola", "olę": "Ola", "aleksandra": "Aleksandra",
     "magda": "Magda", "magdo": "Magda", "magdę": "Magda", "magdalena": "Magdalena",
     "monika": "Monika", "moniko": "Monika", "monikę": "Monika",
@@ -67,11 +72,12 @@ MALE_NAMES = {
     "Paweł", "Piotr", "Michał", "Krzysztof", "Marcin", "Marek", "Kuba", "Jakub",
     "Adam", "Bartek", "Bartosz", "Mateusz", "Przemek", "Przemysław", "Dawid",
     "Kamil", "Grzegorz", "Wojtek", "Wojciech", "Robert", "Igor", "Maciek", "Maciej",
-    "Artur", "Sebastian", "Damian", "Patryk", "Dominik", "Kacper"
+    "Artur", "Sebastian", "Damian", "Patryk", "Dominik", "Kacper", "Rafał"
 }
 
 FEMALE_NAMES = {
-    "Kasia", "Katarzyna", "Ania", "Anna", "Ola", "Aleksandra", "Magda", "Magdalena",
+    "Kasia", "Katarzyna", "Ania", "Anna", "Jola", "Jolanta", "Iza", "Izabela", "Daria", "Gabriela",
+    "Ola", "Aleksandra", "Magda", "Magdalena",
     "Monika", "Natalia", "Karolina", "Paulina", "Justyna", "Agnieszka", "Julia",
     "Weronika", "Marta", "Klaudia", "Patrycja", "Sylwia", "Dorota", "Ewa",
     "Joanna", "Asia", "Alicja", "Zuzanna", "Maja"
@@ -276,15 +282,31 @@ def analyze_speakers(turns: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
 
 
 
+def format_speaker_stats(count: int, total_duration_sec: float) -> str:
+    """Zwraca czytelny ciąg statystyk mówcy, np. '42 wypowiedzi · 14m 20s'."""
+    mins = int(total_duration_sec // 60)
+    secs = int(total_duration_sec % 60)
+    time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
+    w_str = f"{count} wypowiedź" if count == 1 else f"{count} wypowiedzi"
+    return f"{w_str} · ⏱️ {time_str}"
+
+
 def suggest_speaker_names(turns: List[Dict[str, Any]]) -> Dict[str, str]:
     """
-    Zwraca prosty słownik mapowania {SPEAKER_XX: 'Imię'}.
+    Zwraca słownik unikalnego mapowania {SPEAKER_XX: 'Imię'}.
+    Gwarantuje, że to samo imię nigdy nie zostanie przypisane dwóm różnym mówcom.
     """
     analysis = analyze_speakers(turns)
     mapping = {}
+    used_names = set()
+
     for spk, data in analysis.items():
         sug = data.get("suggested_name", "")
-        mapping[spk] = sug if sug else spk
+        if sug and sug not in used_names:
+            mapping[spk] = sug
+            used_names.add(sug)
+        else:
+            mapping[spk] = spk
     return mapping
 
 

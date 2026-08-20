@@ -47,7 +47,13 @@ from recorder.ui.workers import (
     FileProcessingWorker
 )
 from recorder.core.rolling_transcriber import RollingTranscriptionWorker, RollingBlock
-from recorder.core.speakers import analyze_speakers, suggest_speaker_names, format_turns, parse_txt_to_turns
+from recorder.core.speakers import (
+    analyze_speakers,
+    suggest_speaker_names,
+    format_turns,
+    parse_txt_to_turns,
+    format_speaker_stats
+)
 from recorder.core.cloud_sync import CloudSyncManager
 
 
@@ -926,14 +932,21 @@ class SmartDictaphoneWindow(QMainWindow):
         self.current_txt_path = txt_path
         self.current_turns = turns or []
 
-        # Wypełnienie panelu mapowania mówców
-        self._populate_speaker_mapping(self.current_turns)
+        # Sprawdzenie czy w wynikach są klastry diaryzacji (SPEAKER_XX)
+        has_diarization = any(t.get("speaker", "").startswith("SPEAKER_") for t in self.current_turns)
 
-        suggestions = suggest_speaker_names(self.current_turns) if self.current_turns else {}
-        if suggestions and any(k != v for k, v in suggestions.items()):
-            auto_html, auto_plain = format_turns(self.current_turns, suggestions)
-            self.text_transcript.setHtml(auto_html)
-            plain_text = auto_plain
+        if has_diarization:
+            # Wypełnienie panelu mapowania mówców
+            self._populate_speaker_mapping(self.current_turns)
+
+            suggestions = suggest_speaker_names(self.current_turns) if self.current_turns else {}
+            if suggestions and any(k != v for k, v in suggestions.items()):
+                auto_html, auto_plain = format_turns(self.current_turns, suggestions)
+                self.text_transcript.setHtml(auto_html)
+                plain_text = auto_plain
+        else:
+            # Gdy diaryzacja jest wyłączona: panel mapowania jest ukryty, a w transkrypcji pozostaje neutralny 'Mówca'
+            self.speaker_box.setVisible(False)
 
         try:
             with open(txt_path, 'w', encoding='utf-8') as f:
@@ -992,45 +1005,57 @@ class SmartDictaphoneWindow(QMainWindow):
             ev = evidence.get(spk_id, {})
             clue = ev.get("clue", "Brak jednoznacznego dowodu w tekście")
             sample_text = ev.get("sample", "")
+            spk_count = ev.get("count", 0)
+            spk_dur = ev.get("total_duration", 0.0)
+            stats_text = format_speaker_stats(spk_count, spk_dur)
 
             card_frame = QFrame()
-            card_frame.setStyleSheet("background-color: #1e1e2f; border: 1px solid #3d3d5c; border-radius: 6px; padding: 6px;")
+            card_frame.setStyleSheet("background-color: #1a1a2e; border: 1px solid #3d3d5c; border-radius: 8px; padding: 6px;")
             card_layout = QVBoxLayout(card_frame)
-            card_layout.setContentsMargins(8, 8, 8, 8)
+            card_layout.setContentsMargins(10, 8, 10, 8)
             card_layout.setSpacing(6)
 
-            # Górny wiersz: ID Mówcy + Pole Imienia + Pole Roli / Firmy
-            top_row = QHBoxLayout()
-            top_row.setSpacing(8)
-
-            lbl_spk = QLabel(f"🏷️ <b>{spk_id}</b>:")
+            # Nagłówek karty: ID Mówcy + Licznik wypowiedzi i łączny czas mowy
+            header_row = QHBoxLayout()
+            lbl_spk = QLabel(f"🏷️ <b>{spk_id}</b>")
             lbl_spk.setStyleSheet("color: #edf2f4; font-size: 12px; font-weight: bold;")
-            lbl_spk.setMinimumWidth(120)
+
+            lbl_stats = QLabel(f"📊 {stats_text}")
+            lbl_stats.setStyleSheet("color: #10b981; font-size: 11px; font-weight: bold;")
+            lbl_stats.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+            header_row.addWidget(lbl_spk)
+            header_row.addStretch(1)
+            header_row.addWidget(lbl_stats)
+            card_layout.addLayout(header_row)
+
+            # Wiersz inputów: Pole Imienia + Pole Roli / Firmy
+            input_row = QHBoxLayout()
+            input_row.setSpacing(8)
 
             edit_name = QLineEdit()
-            edit_name.setPlaceholderText("Imię / Nazwisko (np. Łukasz)...")
+            edit_name.setPlaceholderText("Imię / Nazwisko (np. Ania, Bartek)...")
             edit_name.setText(suggested_name if suggested_name != spk_id else "")
-            edit_name.setStyleSheet("background-color: #2b2d42; color: #edf2f4; border: 1px solid #4cc9f0; border-radius: 4px; padding: 4px 8px; font-weight: bold; font-size: 12px;")
+            edit_name.setStyleSheet("background-color: #2b2d42; color: #edf2f4; border: 1px solid #4cc9f0; border-radius: 4px; padding: 5px 8px; font-weight: bold; font-size: 12px;")
 
             edit_role = QLineEdit()
-            edit_role.setPlaceholderText("Rola / Firma (np. emanager, klient)...")
-            edit_role.setStyleSheet("background-color: #2b2d42; color: #f59e0b; border: 1px solid #f59e0b; border-radius: 4px; padding: 4px 8px; font-size: 11px;")
+            edit_role.setPlaceholderText("Rola / Firma (np. PINUP, EMANAGER)...")
+            edit_role.setStyleSheet("background-color: #2b2d42; color: #f59e0b; border: 1px solid #f59e0b; border-radius: 4px; padding: 5px 8px; font-size: 11px;")
 
             self.speaker_inputs[spk_id] = {
                 "name": edit_name,
                 "role": edit_role
             }
 
-            top_row.addWidget(lbl_spk)
-            top_row.addWidget(edit_name, stretch=3)
-            top_row.addWidget(edit_role, stretch=2)
-            card_layout.addLayout(top_row)
+            input_row.addWidget(edit_name, stretch=3)
+            input_row.addWidget(edit_role, stretch=2)
+            card_layout.addLayout(input_row)
 
             # Dolny wiersz: Wskazówka kontekstowa z dowodem oraz próbka wypowiedzi
             bottom_row = QHBoxLayout()
             bottom_row.setSpacing(10)
 
-            lbl_clue = QLabel(f"💡 Sugestia: {clue}")
+            lbl_clue = QLabel(f"💡 {clue}")
             lbl_clue.setStyleSheet("color: #4cc9f0; font-size: 11px;")
             lbl_clue.setWordWrap(True)
 
