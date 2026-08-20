@@ -1,0 +1,257 @@
+import os
+import sys
+import json
+import tempfile
+from typing import List, Dict, Any, Optional, Tuple
+from datetime import datetime
+
+
+class TranscriptionSession:
+    """
+    Struktura danych reprezentująca kompletną sesję transkrypcji i diaryzacji.
+    Zapisywana jako plik .json na dysku obok pliku .txt i nagrania .wav.
+    Umożliwia niezależne, modułowe uruchamianie diaryzacji PyAnnote bez konieczności
+    ponownego przetwarzania audio przez Whisper.
+    """
+    def __init__(
+        self,
+        source_audio: str = "",
+        prepared_wav: str = "",
+        duration_sec: float = 0.0,
+        created_at: Optional[str] = None,
+        whisper_model: str = "",
+        has_transcription: bool = False,
+        has_diarization: bool = False,
+        speakers_detected: Optional[List[str]] = None,
+        speaker_mapping: Optional[Dict[str, str]] = None,
+        words: Optional[List[Dict[str, Any]]] = None,
+        turns: Optional[List[Dict[str, Any]]] = None,
+        meeting_id: Optional[str] = None,
+        version: int = 1
+    ):
+        self.version = version
+        self.meeting_id = meeting_id
+        self.source_audio = source_audio
+        self.prepared_wav = prepared_wav
+        self.duration_sec = duration_sec
+        self.created_at = created_at or datetime.now().isoformat()
+        self.whisper_model = whisper_model
+        self.has_transcription = has_transcription
+        self.has_diarization = has_diarization
+        self.speakers_detected = speakers_detected or []
+        self.speaker_mapping = speaker_mapping or {}
+        self.words = words or []
+        self.turns = turns or []
+
+    @property
+    def speakers_count(self) -> int:
+        if self.speakers_detected:
+            return len(self.speakers_detected)
+        spks = set()
+        for t in self.turns:
+            spk = t.get("speaker")
+            if spk and spk != "Mówca":
+                spks.add(spk)
+        return len(spks)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "version": self.version,
+            "meeting_id": self.meeting_id,
+            "source_audio": self.source_audio,
+            "prepared_wav": self.prepared_wav,
+            "created_at": self.created_at,
+            "duration_sec": round(self.duration_sec, 2),
+            "status": {
+                "has_transcription": self.has_transcription,
+                "has_diarization": self.has_diarization,
+                "whisper_model": self.whisper_model,
+                "speakers_count": self.speakers_count,
+                "speakers_detected": self.speakers_detected
+            },
+            "speaker_mapping": self.speaker_mapping,
+            "words": self.words,
+            "turns": self.turns
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TranscriptionSession":
+        status = data.get("status", {})
+        return cls(
+            meeting_id=data.get("meeting_id"),
+            source_audio=data.get("source_audio", ""),
+            prepared_wav=data.get("prepared_wav", ""),
+            duration_sec=data.get("duration_sec", 0.0),
+            created_at=data.get("created_at"),
+            whisper_model=status.get("whisper_model", ""),
+            has_transcription=status.get("has_transcription", False),
+            has_diarization=status.get("has_diarization", False),
+            speakers_detected=status.get("speakers_detected", []),
+            speaker_mapping=data.get("speaker_mapping", {}),
+            words=data.get("words", []),
+            turns=data.get("turns", []),
+            version=data.get("version", 1)
+        )
+
+    def save_to_json(self, json_path: str) -> bool:
+        """
+        Atomowy i bezpieczny zapis danych sesji do pliku JSON w kodowaniu UTF-8.
+        """
+        try:
+            parent_dir = os.path.dirname(os.path.abspath(json_path))
+            os.makedirs(parent_dir, exist_ok=True)
+
+            data = self.to_dict()
+            json_text = json.dumps(data, ensure_ascii=False, indent=2)
+
+            temp_fd, temp_path = tempfile.mkstemp(dir=parent_dir, prefix="session_", suffix=".tmp")
+            with open(temp_fd, "w", encoding="utf-8") as f:
+                f.write(json_text)
+
+            if os.path.exists(json_path):
+                os.replace(temp_path, json_path)
+            else:
+                os.rename(temp_path, json_path)
+
+            return True
+        except Exception as e:
+            print(f"⚠️ [SESJA] Błąd zapisu pliku sesji JSON '{json_path}': {e}")
+            return False
+
+    @classmethod
+    def load_from_json(cls, json_path: str) -> Optional["TranscriptionSession"]:
+        """
+        Wczytuje sesję z pliku JSON. Zwraca obiekt TranscriptionSession lub None przy błędzie.
+        """
+        if not os.path.exists(json_path):
+            return None
+
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return cls.from_dict(data)
+        except Exception as e:
+            print(f"⚠️ [SESJA] Błąd odczytu pliku sesji JSON '{json_path}': {e}")
+            return None
+
+    def export_to_plain_text(self, speaker_mapping: Optional[Dict[str, str]] = None) -> str:
+        """
+        Generuje czytelny tekst sformatowany z timestampami i nazwami mówców.
+        """
+        mapping = dict(self.speaker_mapping)
+        if speaker_mapping:
+            mapping.update(speaker_mapping)
+
+        lines = []
+        for t in self.turns:
+            spk = t.get("speaker", "Mówca")
+            display_spk = mapping.get(spk, spk)
+            st = t.get("start", 0.0)
+            en = t.get("end", 0.0)
+            txt = t.get("text", "").strip()
+            if self.has_diarization and spk != "Mówca":
+                lines.append(f"[{st:.1f}s - {en:.1f}s] {display_spk}: {txt}\n")
+            else:
+                lines.append(f"[{st:.1f}s - {en:.1f}s]: {txt}\n")
+
+        return "\n".join(lines).strip()
+
+    def export_to_html(self, speaker_mapping: Optional[Dict[str, str]] = None) -> str:
+        """
+        Generuje sformatowany kod HTML do wyświetlenia w QTextEdit.
+        """
+        mapping = dict(self.speaker_mapping)
+        if speaker_mapping:
+            mapping.update(speaker_mapping)
+
+        html_blocks = []
+        for t in self.turns:
+            spk = t.get("speaker", "Mówca")
+            display_spk = mapping.get(spk, spk)
+            st = t.get("start", 0.0)
+            en = t.get("end", 0.0)
+            txt = t.get("text", "").strip()
+
+            if self.has_diarization and spk != "Mówca":
+                html_blocks.append(f"<b>[{st:.1f}s - {en:.1f}s] {display_spk}:</b> {txt}<br><br>")
+            else:
+                html_blocks.append(f"<b>[{st:.1f}s - {en:.1f}s]:</b> {txt}<br><br>")
+
+        return "".join(html_blocks)
+
+    def update_speaker_mapping(self, new_mapping: Dict[str, str]):
+        """
+        Aktualizuje słownik mapowania mówców i synchronizuje go w sesji.
+        """
+        if not self.speaker_mapping:
+            self.speaker_mapping = {}
+        for spk_id, name in new_mapping.items():
+            if name and name.strip():
+                self.speaker_mapping[spk_id] = name.strip()
+            else:
+                self.speaker_mapping[spk_id] = spk_id
+
+    def get_status_badge(self) -> str:
+        """
+        Zwraca etykietę statusu sesji, np. '[👥 Mówcy (3 os.)]' lub '[📝 Tylko tekst]'.
+        """
+        if self.has_diarization:
+            cnt = self.speakers_count
+            return f"[👥 Mówcy ({cnt} os.)]" if cnt > 0 else "[👥 Mówcy]"
+        elif self.has_transcription:
+            return "[📝 Tylko tekst]"
+        return "[⏳ W toku]"
+
+
+def get_session_path_for_txt(txt_path: str) -> str:
+    """Zwraca ścieżkę do pliku .json odpowiadającego danemu plikowi .txt."""
+    base, _ = os.path.splitext(txt_path)
+    return f"{base}.json"
+
+
+def get_session_path_for_audio(audio_path: str, transcriptions_dir: str) -> str:
+    """Zwraca ścieżkę do pliku .json dla podanego pliku audio."""
+    base_name = os.path.basename(audio_path)
+    file_stem = os.path.splitext(base_name)[0]
+    clean_stem = file_stem.replace("inteligentne_nagranie_", "")
+    return os.path.join(transcriptions_dir, f"transkrypcja_{clean_stem}.json")
+
+
+def get_txt_path_for_audio(audio_path: str, transcriptions_dir: str) -> str:
+    """Zwraca ścieżkę do pliku .txt dla podanego pliku audio."""
+    base_name = os.path.basename(audio_path)
+    file_stem = os.path.splitext(base_name)[0]
+    clean_stem = file_stem.replace("inteligentne_nagranie_", "")
+    return os.path.join(transcriptions_dir, f"transkrypcja_{clean_stem}.txt")
+
+
+def find_existing_session_for_audio(audio_path: str, transcriptions_dir: str) -> Optional[Tuple[str, TranscriptionSession]]:
+    """
+    Sprawdza, czy dla podanego pliku audio istnieje już gotowy plik sesji .json z transkrypcją.
+    Zwraca (json_path, session) lub None.
+    """
+    if not os.path.exists(transcriptions_dir):
+        return None
+
+    base_name = os.path.basename(audio_path)
+    file_stem = os.path.splitext(base_name)[0]
+    clean_stem = file_stem.replace("inteligentne_nagranie_", "").replace("_16k", "")
+
+    # 1. Sprawdzenie bezpośredniej ścieżki
+    direct_path = get_session_path_for_audio(audio_path, transcriptions_dir)
+    if os.path.exists(direct_path):
+        session = TranscriptionSession.load_from_json(direct_path)
+        if session and session.has_transcription and session.words:
+            return direct_path, session
+
+    # 2. Przeszukiwanie katalogu
+    for fname in os.listdir(transcriptions_dir):
+        if fname.endswith(".json"):
+            json_stem = fname.replace("transkrypcja_", "").replace(".json", "")
+            if clean_stem in json_stem or json_stem in clean_stem or base_name in fname:
+                full_json_path = os.path.join(transcriptions_dir, fname)
+                session = TranscriptionSession.load_from_json(full_json_path)
+                if session and session.has_transcription and session.words:
+                    return full_json_path, session
+
+    return None

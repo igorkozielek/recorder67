@@ -168,6 +168,7 @@ class RollingTranscriptionWorker(QThread):
             print(f"[ROLLING] Pominięto fragment bloku #{block.index}: {trans_err}")
 
         # Formatowanie słów tego bloku do turnów
+        block.words = transcript_words
         if transcript_words:
             _, _, block_turns = format_transcript_without_diarization(transcript_words)
             block.turns = block_turns
@@ -180,8 +181,9 @@ class RollingTranscriptionWorker(QThread):
         full_html, full_plain, all_turns = self._compile_full_transcript()
         self.all_turns = all_turns
 
-        # Zapis do pliku TXT w czasie rzeczywistym
+        # Zapis do pliku TXT oraz sesji JSON w czasie rzeczywistym
         self._save_to_txt_file(full_plain)
+        self._save_to_session_file(all_turns)
 
         # Emitowanie sygnału aktualizacji do UI
         self.block_processed_signal.emit(
@@ -228,5 +230,28 @@ class RollingTranscriptionWorker(QThread):
             with open(self.txt_save_path, "w", encoding="utf-8") as f:
                 f.write(content)
                 f.flush()
+        except Exception:
+            pass
+
+    def _save_to_session_file(self, turns: list):
+        """Automatycznie tworzy i zapisuje plik sesji JSON z kompletem słów z Whispera."""
+        if not self.txt_save_path:
+            return
+        try:
+            from recorder.core.session import TranscriptionSession, get_session_path_for_txt
+            json_path = get_session_path_for_txt(self.txt_save_path)
+
+            all_words = []
+            for b in sorted(self.processed_blocks, key=lambda x: x.start_sec):
+                if hasattr(b, "words") and b.words:
+                    all_words.extend(b.words)
+
+            session = TranscriptionSession.load_from_json(json_path) or TranscriptionSession()
+            session.has_transcription = True
+            session.whisper_model = self.model_size
+            session.duration_sec = self.total_processed_seconds
+            session.turns = turns or []
+            session.words = all_words
+            session.save_to_json(json_path)
         except Exception:
             pass
