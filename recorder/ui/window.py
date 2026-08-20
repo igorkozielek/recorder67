@@ -573,6 +573,7 @@ class SmartDictaphoneWindow(QMainWindow):
         )
         self._active_threads.append(self.rolling_worker)
         self.rolling_worker.block_processed_signal.connect(self._on_rolling_block_processed)
+        self.rolling_worker.status_signal.connect(self._on_rolling_status)
         self.rolling_worker.finished_signal.connect(self._on_rolling_finished)
         self.rolling_worker.error_signal.connect(self._on_rolling_error)
         self.rolling_worker.start()
@@ -1295,6 +1296,16 @@ class SmartDictaphoneWindow(QMainWindow):
                     t_min, t_sec = int(self.recorded_seconds // 60), int(self.recorded_seconds % 60)
                     self.progress_transcription.setValue(pct)
                     self.progress_transcription.setFormat(f"🟢 Przetworzono w tle: {p_min:02d}:{p_sec:02d} / {t_min:02d}:{t_sec:02d} ({pct}%)")
+                else:
+                    # Informacja o aktywnym buforowaniu mowy przed zamknięciem pierwszego bloku (min. 2 min)
+                    t_min, t_sec = int(self.recorded_seconds // 60), int(self.recorded_seconds % 60)
+                    if self.recorded_seconds < 120:
+                        pct = int((self.recorded_seconds / 120.0) * 100)
+                        self.progress_transcription.setValue(min(95, max(5, pct)))
+                        self.progress_transcription.setFormat(f"🎙️ Zbieranie mowy do bloku #1: {t_min:02d}:{t_sec:02d} / 02:00...")
+                    else:
+                        self.progress_transcription.setValue(95)
+                        self.progress_transcription.setFormat(f"🎙️ Nagrywanie: {t_min:02d}:{t_sec:02d} (Oczekiwanie na pauzę w mowie na cięcie bloku)...")
 
     def _update_audio_level(self, level):
         try:
