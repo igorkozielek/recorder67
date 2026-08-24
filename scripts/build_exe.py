@@ -58,6 +58,10 @@ def main():
         "--collect-all=faster_whisper",
         "--collect-all=silero_vad",
         "--collect-all=pyannote.audio",
+        "--collect-all=pyannote.core",
+        "--collect-all=pyannote.pipeline",
+        "--collect-all=pyannote.metrics",
+        "--collect-all=pyannote.database",
         "--collect-all=ctranslate2",
         "--collect-all=sounddevice",
         "--collect-all=imageio_ffmpeg",
@@ -77,6 +81,8 @@ def main():
                 "pyannote.audio",
                 "pyannote.core",
                 "pyannote.pipeline",
+                "pyannote.metrics",
+                "pyannote.database",
                 "torch",
                 "tqdm",
                 "requests",
@@ -87,7 +93,9 @@ def main():
                 "lightning_fabric",
                 "lightning_utilities",
                 "pytorch_lightning",
-                "torchmetrics"
+                "torchmetrics",
+                "pandas",
+                "scipy"
             ]
             if _is_package_installed(pkg)
         ],
