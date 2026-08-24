@@ -69,7 +69,11 @@ class CloudSyncManager:
         """
         self.reload_config()
         if not meeting_id:
-            meeting_id = str(uuid.uuid4())
+            if audio_path:
+                audio_stem = os.path.splitext(os.path.basename(audio_path))[0].replace("_16k", "").replace("inteligentne_nagranie_", "")
+                meeting_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"recorder67_{audio_stem}"))
+            else:
+                meeting_id = str(uuid.uuid4())
 
         payload = self._build_payload(
             meeting_id=meeting_id,

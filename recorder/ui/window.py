@@ -1228,6 +1228,16 @@ class SmartDictaphoneWindow(QMainWindow):
             meeting_id=self.current_meeting_id
         )
 
+        # Zapisz meeting_id do pliku sesji JSON, aby późniejsze operacje (np. modułowa diaryzacja) aktualizowały dokładnie ten sam rekord
+        if getattr(self, "current_txt_path", None):
+            try:
+                json_path = get_session_path_for_txt(self.current_txt_path)
+                sess = TranscriptionSession.load_from_json(json_path) or TranscriptionSession()
+                sess.meeting_id = self.current_meeting_id
+                sess.save_to_json(json_path)
+            except Exception:
+                pass
+
     def _on_manual_sync_clicked(self):
         """Ręczne wywołanie wysyłki z przycisku w UI."""
         if not self.last_plain_text:
@@ -1388,6 +1398,11 @@ class SmartDictaphoneWindow(QMainWindow):
 
         self.current_txt_path = target_txt
         self.last_audio_save_path = wav_path
+        if session and getattr(session, "meeting_id", None):
+            self.current_meeting_id = session.meeting_id
+        elif wav_path:
+            stem = os.path.splitext(os.path.basename(wav_path))[0].replace("inteligentne_nagranie_", "")
+            self.current_meeting_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"recorder67_{stem}"))
 
         self.diarization_thread = DiarizationOnlyWorker(
             audio_path=wav_path,
@@ -1431,13 +1446,13 @@ class SmartDictaphoneWindow(QMainWindow):
         self.btn_run_diarization.setEnabled(True)
         self.btn_manual_sync.setEnabled(True)
 
-        # Bezpieczna synchronizacja z chmurą / EMANAGER.PRO (aktualizacja rekordów mówców)
+        # Bezpieczna synchronizacja z chmurą / EMANAGER.PRO (aktualizacja rekordów mówców metodą PATCH)
         if self.cloud_sync.config.get("auto_sync"):
             self._trigger_cloud_sync(
                 plain_text=plain_text,
                 turns=self.current_turns,
                 audio_path=self.last_audio_save_path,
-                title=f"Nagranie: {os.path.basename(self.current_txt_path or 'spotkanie')}",
+                title=None,
                 silent=True
             )
 
@@ -1460,7 +1475,19 @@ class SmartDictaphoneWindow(QMainWindow):
                 self.current_turns = turns or []
                 self.last_plain_text = content
                 self.current_txt_path = file_path
-                self.current_meeting_id = None
+
+                # Odczytaj meeting_id z sesji JSON lub wylicz deterministyczny identyfikator
+                json_path = get_session_path_for_txt(file_path)
+                sess = TranscriptionSession.load_from_json(json_path) if os.path.exists(json_path) else None
+                if sess and getattr(sess, "meeting_id", None):
+                    self.current_meeting_id = sess.meeting_id
+                elif sess and getattr(sess, "prepared_wav", None):
+                    self.last_audio_save_path = sess.prepared_wav
+                    stem = os.path.splitext(os.path.basename(sess.prepared_wav))[0].replace("inteligentne_nagranie_", "")
+                    self.current_meeting_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"recorder67_{stem}"))
+                else:
+                    txt_stem = os.path.splitext(os.path.basename(file_path))[0].replace("transkrypcja_", "")
+                    self.current_meeting_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"recorder67_{txt_stem}"))
 
                 if turns:
                     self._populate_speaker_mapping(turns)
