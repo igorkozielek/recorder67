@@ -20,7 +20,11 @@ def _is_package_installed(package_name: str) -> bool:
         importlib.metadata.distribution(package_name)
         return True
     except Exception:
-        return False
+        try:
+            import importlib.util
+            return importlib.util.find_spec(package_name) is not None
+        except Exception:
+            return False
 
 def main():
     print("=" * 70)
@@ -55,22 +59,32 @@ def main():
         
         # PySide6 jest ładowane przez standardowe hooki PyInstaller; nie kolekcjonujemy wszystkich modułów Qt.
         # Zbieranie zależności i bibliotek C++/DLL
-        "--collect-all=faster_whisper",
-        "--collect-all=silero_vad",
-        "--collect-all=pyannote.audio",
-        "--collect-all=pyannote.core",
-        "--collect-all=pyannote.pipeline",
-        "--collect-all=pyannote.metrics",
-        "--collect-all=pyannote.database",
-        "--collect-all=ctranslate2",
-        "--collect-all=sounddevice",
-        "--collect-all=imageio_ffmpeg",
-        "--collect-all=speechbrain",
-        "--collect-all=lightning",
-        "--collect-all=lightning_fabric",
-        "--collect-all=lightning_utilities",
-        "--collect-all=pytorch_lightning",
-        "--collect-all=torchmetrics",
+        *[
+            f"--collect-all={pkg}"
+            for pkg in [
+                "faster_whisper",
+                "silero_vad",
+                "pyannote.audio",
+                "pyannote.core",
+                "pyannote.pipeline",
+                "pyannote.metrics",
+                "pyannote.database",
+                "pytorch_metric_learning",
+                "ctranslate2",
+                "sounddevice",
+                "imageio_ffmpeg",
+                "speechbrain",
+                "lightning",
+                "lightning_fabric",
+                "lightning_utilities",
+                "pytorch_lightning",
+                "torchmetrics",
+                "safetensors",
+                "huggingface_hub",
+                "optuna"
+            ]
+            if _is_package_installed(pkg.split('.')[0])
+        ],
         
         # Metadane pakietów wymagane przez PyAnnote, Lightning i HuggingFace (bezpiecznie filtrowane)
         *[
@@ -83,6 +97,7 @@ def main():
                 "pyannote.pipeline",
                 "pyannote.metrics",
                 "pyannote.database",
+                "pytorch_metric_learning",
                 "torch",
                 "tqdm",
                 "requests",
@@ -95,7 +110,9 @@ def main():
                 "pytorch_lightning",
                 "torchmetrics",
                 "pandas",
-                "scipy"
+                "scipy",
+                "safetensors",
+                "optuna"
             ]
             if _is_package_installed(pkg)
         ],
