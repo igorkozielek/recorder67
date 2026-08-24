@@ -14,17 +14,22 @@ ENTRY_POINT = os.path.join(ROOT_DIR, "run.py")
 DIST_DIR = os.path.join(ROOT_DIR, "dist")
 BUILD_DIR = os.path.join(ROOT_DIR, "build")
 
-def _is_package_installed(package_name: str) -> bool:
+def _has_metadata(package_name: str) -> bool:
     try:
         import importlib.metadata
         importlib.metadata.distribution(package_name)
         return True
     except Exception:
-        try:
-            import importlib.util
-            return importlib.util.find_spec(package_name) is not None
-        except Exception:
-            return False
+        return False
+
+
+def _is_module_available(module_name: str) -> bool:
+    try:
+        import importlib.util
+        return importlib.util.find_spec(module_name) is not None
+    except Exception:
+        return False
+
 
 def main():
     print("=" * 70)
@@ -83,10 +88,10 @@ def main():
                 "huggingface_hub",
                 "optuna"
             ]
-            if _is_package_installed(pkg.split('.')[0])
+            if _is_module_available(pkg.split('.')[0])
         ],
         
-        # Metadane pakietów wymagane przez PyAnnote, Lightning i HuggingFace (bezpiecznie filtrowane)
+        # Metadane pakietów wymagane przez PyAnnote, Lightning i HuggingFace (tylko istniejące dystrybucje)
         *[
             f"--copy-metadata={pkg}"
             for pkg in [
@@ -99,22 +104,22 @@ def main():
                 "pyannote.database",
                 "pytorch_metric_learning",
                 "torch",
+                "torchaudio",
                 "tqdm",
                 "requests",
                 "packaging",
                 "filelock",
                 "speechbrain",
                 "lightning",
-                "lightning_fabric",
-                "lightning_utilities",
                 "pytorch_lightning",
                 "torchmetrics",
+                "lightning_utilities",
                 "pandas",
                 "scipy",
                 "safetensors",
                 "optuna"
             ]
-            if _is_package_installed(pkg)
+            if _has_metadata(pkg)
         ],
         
         # Dołączenie pliku .env (jeśli istnieje)
