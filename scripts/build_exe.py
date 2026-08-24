@@ -63,9 +63,12 @@ def main():
         "--collect-all=imageio_ffmpeg",
         "--collect-all=speechbrain",
         "--collect-all=lightning",
+        "--collect-all=lightning_fabric",
+        "--collect-all=lightning_utilities",
         "--collect-all=pytorch_lightning",
+        "--collect-all=torchmetrics",
         
-        # Metadane pakietów wymagane przez PyAnnote i HuggingFace (bezpiecznie filtrowane)
+        # Metadane pakietów wymagane przez PyAnnote, Lightning i HuggingFace (bezpiecznie filtrowane)
         *[
             f"--copy-metadata={pkg}"
             for pkg in [
@@ -79,7 +82,12 @@ def main():
                 "requests",
                 "packaging",
                 "filelock",
-                "speechbrain"
+                "speechbrain",
+                "lightning",
+                "lightning_fabric",
+                "lightning_utilities",
+                "pytorch_lightning",
+                "torchmetrics"
             ]
             if _is_package_installed(pkg)
         ],
