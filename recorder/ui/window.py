@@ -1,28 +1,18 @@
 import os
 import sys
+import uuid
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
-try:
-    from PySide6.QtCore import Qt, QTimer, QUrl
-    from PySide6.QtGui import QFont, QDesktopServices
-    from PySide6.QtWidgets import (
-        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-        QPushButton, QLabel, QComboBox, QProgressBar, QListWidget,
-        QListWidgetItem, QGroupBox, QMessageBox, QFrame,
-        QSlider, QLineEdit, QTextEdit, QScrollArea, QFileDialog, QCheckBox,
-        QSizePolicy
-    )
-except ImportError:
-    from PyQt6.QtCore import Qt, QTimer, QUrl
-    from PyQt6.QtGui import QFont, QDesktopServices
-    from PyQt6.QtWidgets import (
-        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-        QPushButton, QLabel, QComboBox, QProgressBar, QListWidget,
-        QListWidgetItem, QGroupBox, QMessageBox, QFrame,
-        QSlider, QLineEdit, QTextEdit, QScrollArea, QFileDialog, QCheckBox,
-        QSizePolicy
-    )
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QFont, QDesktopServices
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QLabel, QComboBox, QProgressBar, QListWidget,
+    QListWidgetItem, QGroupBox, QMessageBox, QFrame,
+    QSlider, QLineEdit, QTextEdit, QScrollArea, QFileDialog, QCheckBox,
+    QSizePolicy
+)
 
 from recorder.config import (
     SmartRecordState,
@@ -42,9 +32,9 @@ from recorder.core.vad import is_silero_available
 from recorder.ui.theme import DARK_THEME_QSS, setup_dark_palette
 from recorder.ui.workers import (
     SmartAudioWorker,
-    LiveTranscriptionWorker,
     TranscriptionWorker,
-    FileProcessingWorker
+    FileProcessingWorker,
+    DiarizationOnlyWorker
 )
 from recorder.core.rolling_transcriber import RollingTranscriptionWorker, RollingBlock
 from recorder.core.speakers import (
@@ -53,6 +43,12 @@ from recorder.core.speakers import (
     format_turns,
     parse_txt_to_turns,
     format_speaker_stats
+)
+from recorder.core.session import (
+    TranscriptionSession,
+    get_session_path_for_txt,
+    get_session_path_for_audio,
+    find_existing_session_for_audio
 )
 from recorder.core.cloud_sync import CloudSyncManager
 
@@ -389,9 +385,22 @@ class SmartDictaphoneWindow(QMainWindow):
         self.list_transcriptions.itemDoubleClicked.connect(self._on_transcription_double_clicked)
         right_layout.addWidget(self.list_transcriptions)
 
-        btn_open_txt_folder = QPushButton("📁 Otwórz folder transkrypcji")
+        txt_actions_layout = QHBoxLayout()
+        txt_actions_layout.setSpacing(6)
+
+        btn_open_txt_folder = QPushButton("📁 Folder")
+        btn_open_txt_folder.setFixedHeight(32)
         btn_open_txt_folder.clicked.connect(self._on_open_txt_folder_clicked)
-        right_layout.addWidget(btn_open_txt_folder)
+
+        self.btn_run_diarization = QPushButton("👥 Rozpoznaj Mówców (PyAnnote)")
+        self.btn_run_diarization.setFixedHeight(32)
+        self.btn_run_diarization.setStyleSheet("background-color: #7209b7; color: #ffffff; font-weight: bold; border-radius: 4px; padding: 0 10px;")
+        self.btn_run_diarization.setToolTip("Uruchamia analizę mówców PyAnnote w tle dla zaznaczonego nagrania bez ponownej transkrypcji Whispera")
+        self.btn_run_diarization.clicked.connect(self._on_run_diarization_clicked)
+
+        txt_actions_layout.addWidget(btn_open_txt_folder, stretch=1)
+        txt_actions_layout.addWidget(self.btn_run_diarization, stretch=2)
+        right_layout.addLayout(txt_actions_layout)
 
         columns_layout.addWidget(right_box, stretch=1)
 
@@ -860,6 +869,21 @@ class SmartDictaphoneWindow(QMainWindow):
         try:
             with open(txt_path, 'w', encoding='utf-8') as f:
                 f.write(plain_text)
+
+            # Zapis / Aktualizacja pliku sesji JSON
+            json_path = get_session_path_for_txt(txt_path)
+            try:
+                has_diar = any(t.get("speaker", "").startswith("SPEAKER_") for t in (turns or []))
+                session = TranscriptionSession.load_from_json(json_path) or TranscriptionSession()
+                session.has_transcription = True
+                session.has_diarization = has_diar
+                session.prepared_wav = prepared_wav_path
+                session.source_audio = prepared_wav_path
+                session.turns = self.current_turns
+                session.save_to_json(json_path)
+            except Exception:
+                pass
+
             self._refresh_transcriptions_list()
         except Exception as e:
             if sys.stderr:
@@ -952,6 +976,21 @@ class SmartDictaphoneWindow(QMainWindow):
         try:
             with open(txt_path, 'w', encoding='utf-8') as f:
                 f.write(plain_text)
+
+            # Zapis / Aktualizacja pliku sesji JSON
+            json_path = get_session_path_for_txt(txt_path)
+            try:
+                session = TranscriptionSession.load_from_json(json_path) or TranscriptionSession()
+                session.has_transcription = True
+                session.has_diarization = has_diarization
+                if self.last_audio_save_path:
+                    session.prepared_wav = self.last_audio_save_path
+                    session.source_audio = self.last_audio_save_path
+                session.turns = self.current_turns
+                session.save_to_json(json_path)
+            except Exception:
+                pass
+
             self._refresh_transcriptions_list()
         except Exception as e:
             if sys.stderr:
@@ -1040,7 +1079,7 @@ class SmartDictaphoneWindow(QMainWindow):
             edit_name.setStyleSheet("background-color: #2b2d42; color: #edf2f4; border: 1px solid #4cc9f0; border-radius: 4px; padding: 5px 8px; font-weight: bold; font-size: 12px;")
 
             edit_role = QLineEdit()
-            edit_role.setPlaceholderText("Rola / Firma (np. PINUP, EMANAGER)...")
+            edit_role.setPlaceholderText("Rola / Dział (np. Kierownik, Sprzedaż, IT)...")
             edit_role.setStyleSheet("background-color: #2b2d42; color: #f59e0b; border: 1px solid #f59e0b; border-radius: 4px; padding: 5px 8px; font-size: 11px;")
 
             self.speaker_inputs[spk_id] = {
@@ -1179,6 +1218,16 @@ class SmartDictaphoneWindow(QMainWindow):
             meeting_id=self.current_meeting_id
         )
 
+        # Zapisz meeting_id do pliku sesji JSON, aby późniejsze operacje (np. modułowa diaryzacja) aktualizowały dokładnie ten sam rekord
+        if getattr(self, "current_txt_path", None):
+            try:
+                json_path = get_session_path_for_txt(self.current_txt_path)
+                sess = TranscriptionSession.load_from_json(json_path) or TranscriptionSession()
+                sess.meeting_id = self.current_meeting_id
+                sess.save_to_json(json_path)
+            except Exception:
+                pass
+
     def _on_manual_sync_clicked(self):
         """Ręczne wywołanie wysyłki z przycisku w UI."""
         if not self.last_plain_text:
@@ -1227,9 +1276,183 @@ class SmartDictaphoneWindow(QMainWindow):
             size_kb = os.path.getsize(full_path) / 1024
             mtime = datetime.fromtimestamp(os.path.getmtime(full_path)).strftime("%Y-%m-%d %H:%M:%S")
 
-            item = QListWidgetItem(f"📄 {filename}  ({size_kb:.1f} KB, {mtime})")
+            json_path = get_session_path_for_txt(full_path)
+            badge = ""
+            if os.path.exists(json_path):
+                sess = TranscriptionSession.load_from_json(json_path)
+                if sess:
+                    badge = f"  {sess.get_status_badge()}"
+
+            item = QListWidgetItem(f"📄 {filename}{badge}  ({size_kb:.1f} KB, {mtime})")
             item.setData(Qt.ItemDataRole.UserRole, full_path)
             self.list_transcriptions.addItem(item)
+
+    def _on_run_diarization_clicked(self):
+        """Uruchamia modułową analizę mówców (PyAnnote) dla zaznaczonego nagrania bez ponownego uruchamiania Whispera."""
+        target_txt = None
+        current_item = self.list_transcriptions.currentItem()
+        if current_item:
+            target_txt = current_item.data(Qt.ItemDataRole.UserRole)
+        elif self.current_txt_path and os.path.exists(self.current_txt_path):
+            target_txt = self.current_txt_path
+
+        if not target_txt or not os.path.exists(target_txt):
+            QMessageBox.warning(self, "Wybierz Transkrypcję", "Wybierz z listy po prawej stronie transkrypcję, dla której chcesz wykonać podział na mówców.")
+            return
+
+        token = self.input_token.text().strip()
+        if not token:
+            QMessageBox.warning(
+                self,
+                "Wymagany Token HuggingFace",
+                "Do uruchomienia modułu diaryzacji PyAnnote wymagany jest bezpłatny token HuggingFace.\n\n"
+                "Wklej swój token w polu 'HuggingFace Token' i spróbuj ponownie."
+            )
+            self.input_token.setFocus()
+            return
+
+        # Poszukiwanie odpowiadającego pliku audio WAV i sesji JSON
+        json_path = get_session_path_for_txt(target_txt)
+        session = TranscriptionSession.load_from_json(json_path) if os.path.exists(json_path) else None
+
+        wav_path = None
+        if session and session.prepared_wav and os.path.exists(session.prepared_wav):
+            wav_path = session.prepared_wav
+        elif session and session.source_audio and os.path.exists(session.source_audio):
+            wav_path = session.source_audio
+        else:
+            # Dopasowanie po nazwie pliku w katalogu recordings/
+            txt_basename = os.path.basename(target_txt)
+            clean_stem = txt_basename.replace("transkrypcja_", "").replace(".txt", "")
+            for rec_name in os.listdir(self.recordings_dir):
+                if clean_stem in rec_name and rec_name.endswith(".wav"):
+                    wav_path = os.path.join(self.recordings_dir, rec_name)
+                    break
+
+        if not wav_path or not os.path.exists(wav_path):
+            # Użytkownik może wskazać plik audio ręcznie
+            QMessageBox.information(
+                self,
+                "Wskaż Plik Audio",
+                f"Nie odnaleziono automatycznie pliku nagrania dla:\n{os.path.basename(target_txt)}\n\n"
+                "Wskaż plik audio (.wav, .mp3, .m4a) odpowiadający tej transkrypcji."
+            )
+            wav_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Wybierz plik audio do diaryzacji",
+                self.recordings_dir,
+                "Pliki Audio (*.wav *.mp3 *.m4a *.flac *.ogg);;Wszystkie (*.*)"
+            )
+            if not wav_path:
+                return
+
+        # Pobranie słów z sesji JSON lub estymacja z pliku TXT
+        words = []
+        if session and session.words:
+            words = session.words
+        else:
+            try:
+                with open(target_txt, 'r', encoding='utf-8') as f:
+                    txt_content = f.read()
+                parsed_turns = parse_txt_to_turns(txt_content)
+                for t in parsed_turns:
+                    t_words = t.get("text", "").split()
+                    st = t.get("start", 0.0)
+                    en = t.get("end", st + 1.0)
+                    dur = (en - st) / max(1, len(t_words))
+                    for i, w_str in enumerate(t_words):
+                        words.append({
+                            "word": (" " + w_str if i > 0 else w_str),
+                            "start": round(st + (i * dur), 2),
+                            "end": round(st + ((i + 1) * dur), 2),
+                            "probability": 0.95
+                        })
+            except Exception:
+                pass
+
+        if not words:
+            QMessageBox.warning(self, "Brak Treści", "Nie udało się odczytać słów z wybranej transkrypcji.")
+            return
+
+        spk_cfg = self.combo_speakers.currentData() or {}
+        num_spk = spk_cfg.get("num_speakers")
+        min_spk = spk_cfg.get("min_speakers")
+        max_spk = spk_cfg.get("max_speakers")
+
+        # Blokowanie kontrolek
+        self.btn_start.setEnabled(False)
+        self.btn_upload.setEnabled(False)
+        self.btn_run_diarization.setEnabled(False)
+        self.progress_transcription.setValue(5)
+        self.progress_transcription.setFormat("Uruchamianie analizy osób PyAnnote (w tle)...")
+
+        self.current_txt_path = target_txt
+        self.last_audio_save_path = wav_path
+        if session and getattr(session, "meeting_id", None):
+            self.current_meeting_id = session.meeting_id
+        elif wav_path:
+            stem = os.path.splitext(os.path.basename(wav_path))[0].replace("inteligentne_nagranie_", "")
+            self.current_meeting_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"recorder67_{stem}"))
+
+        self.diarization_thread = DiarizationOnlyWorker(
+            audio_path=wav_path,
+            transcript_words=words,
+            hf_token=token,
+            session_json_path=json_path,
+            num_speakers=num_spk,
+            min_speakers=min_spk,
+            max_speakers=max_spk
+        )
+        self._active_threads.append(self.diarization_thread)
+        self.diarization_thread.progress_signal.connect(self._on_file_progress)
+        self.diarization_thread.finished_signal.connect(self._on_diarization_only_finished)
+        self.diarization_thread.error_signal.connect(self._on_transcription_error)
+        self.diarization_thread.start()
+
+    def _on_diarization_only_finished(self, html_text: str, plain_text: str, turns: list, session_path: str):
+        if hasattr(self, "diarization_thread") and self.diarization_thread in self._active_threads:
+            self._active_threads.remove(self.diarization_thread)
+
+        self.progress_transcription.setValue(100)
+        self.progress_transcription.setFormat("Diaryzacja mówców zakończona pomyślnie!")
+        self.text_transcript.setHtml(html_text)
+        self.current_turns = turns or []
+        self.last_plain_text = plain_text
+
+        # Aktualizacja pliku TXT
+        if self.current_txt_path:
+            try:
+                with open(self.current_txt_path, 'w', encoding='utf-8') as f:
+                    f.write(plain_text)
+            except Exception:
+                pass
+
+        # Odświeżenie UI i panelu weryfikacji
+        self._refresh_transcriptions_list()
+        self._populate_speaker_mapping(self.current_turns)
+
+        self.btn_start.setEnabled(True)
+        self.btn_upload.setEnabled(True)
+        self.btn_run_diarization.setEnabled(True)
+        self.btn_manual_sync.setEnabled(True)
+
+        # Bezpieczna synchronizacja z chmurą / EMANAGER.PRO (aktualizacja rekordów mówców metodą PATCH)
+        if self.cloud_sync.config.get("auto_sync"):
+            self._trigger_cloud_sync(
+                plain_text=plain_text,
+                turns=self.current_turns,
+                audio_path=self.last_audio_save_path,
+                title=None,
+                silent=True
+            )
+
+        QMessageBox.information(
+            self,
+            "Diaryzacja Zakończona",
+            f"Pomyślnie wykonano podział na mówców!\n\n"
+            f"Wykryto osób: {len(set(t.get('speaker') for t in turns if t.get('speaker')))}\n"
+            f"Zaktualizowano plik:\n{os.path.basename(self.current_txt_path or '')}"
+        )
 
     def _on_transcription_double_clicked(self, item):
         file_path = item.data(Qt.ItemDataRole.UserRole)
@@ -1242,7 +1465,19 @@ class SmartDictaphoneWindow(QMainWindow):
                 self.current_turns = turns or []
                 self.last_plain_text = content
                 self.current_txt_path = file_path
-                self.current_meeting_id = None
+
+                # Odczytaj meeting_id z sesji JSON lub wylicz deterministyczny identyfikator
+                json_path = get_session_path_for_txt(file_path)
+                sess = TranscriptionSession.load_from_json(json_path) if os.path.exists(json_path) else None
+                if sess and getattr(sess, "meeting_id", None):
+                    self.current_meeting_id = sess.meeting_id
+                elif sess and getattr(sess, "prepared_wav", None):
+                    self.last_audio_save_path = sess.prepared_wav
+                    stem = os.path.splitext(os.path.basename(sess.prepared_wav))[0].replace("inteligentne_nagranie_", "")
+                    self.current_meeting_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"recorder67_{stem}"))
+                else:
+                    txt_stem = os.path.splitext(os.path.basename(file_path))[0].replace("transkrypcja_", "")
+                    self.current_meeting_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"recorder67_{txt_stem}"))
 
                 if turns:
                     self._populate_speaker_mapping(turns)

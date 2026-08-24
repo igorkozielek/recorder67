@@ -19,7 +19,7 @@ from recorder.audio.devices import get_working_input_devices
 from recorder.audio.converter import resample_to_16k
 from recorder.audio.capture import save_wav_file
 
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication
 
 
 from recorder.ui.theme import setup_dark_palette, DARK_THEME_QSS

@@ -1,5 +1,5 @@
 """
-Moduł interfejsu graficznego PyQt6 dla aplikacji Recorder67.
+Moduł interfejsu graficznego PySide6 dla aplikacji Recorder67.
 """
 
 from .window import SmartDictaphoneWindow

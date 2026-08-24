@@ -3,14 +3,11 @@ import sys
 import queue
 import collections
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Dict, Any, Tuple
 import numpy as np
 import sounddevice as sd
 
-try:
-    from PySide6.QtCore import QThread, Signal as pyqtSignal
-except ImportError:
-    from PyQt6.QtCore import QThread, pyqtSignal
+from PySide6.QtCore import QThread, Signal as pyqtSignal
 
 from recorder.config import (
     SmartRecordState,
@@ -105,7 +102,7 @@ class SmartAudioWorker(QThread):
             return None
         try:
             block_arr = np.concatenate(self.current_block_chunks)
-            if len(block_arr) < int(0.5 * 16000):
+            if len(block_arr) < int(0.3 * 16000):
                 return None
             start_sec = round(self.block_start_samples / 16000.0, 2)
             end_sec = round((self.block_start_samples + len(block_arr)) / 16000.0, 2)
@@ -628,5 +625,90 @@ class FileProcessingWorker(QThread):
 
         except Exception as e:
             print(f"❌ [BŁĄD PRZETWARZANIA]: {e}", file=sys.stderr)
+            self.error_signal.emit(str(e))
+
+
+class DiarizationOnlyWorker(QThread):
+    """
+    Dedykowany wątek do asynchronicznego uruchamiania diaryzacji PyAnnote na istniejącym pliku audio i sesji JSON.
+    Nie uruchamia Whispera – wykorzystuje gotowe słowa z zapisanego pliku sesji!
+    """
+    progress_signal = pyqtSignal(int, str)
+    finished_signal = pyqtSignal(str, str, list, str)  # (final_html, final_plain, turns, session_path)
+    error_signal = pyqtSignal(str)
+
+    def __init__(
+        self,
+        audio_path: str,
+        transcript_words: List[Dict[str, Any]],
+        hf_token: str,
+        session_json_path: Optional[str] = None,
+        num_speakers: Optional[int] = None,
+        min_speakers: Optional[int] = None,
+        max_speakers: Optional[int] = None
+    ):
+        super().__init__()
+        self.audio_path = audio_path
+        self.transcript_words = transcript_words
+        self.hf_token = hf_token
+        self.session_json_path = session_json_path
+        self.num_speakers = num_speakers
+        self.min_speakers = min_speakers
+        self.max_speakers = max_speakers
+
+    def run(self):
+        try:
+            if not os.path.exists(self.audio_path):
+                self.error_signal.emit("Plik audio dla tej sesji nie istnieje na dysku.")
+                return
+
+            if not self.transcript_words:
+                self.error_signal.emit("Brak słów transkrypcji w sesji. Najpierw wykonaj transkrypcję.")
+                return
+
+            self.progress_signal.emit(5, "Inicjalizacja modułu diaryzacji PyAnnote...")
+            from recorder.core.diarizer import DiarizationEngine
+            from recorder.core.session import TranscriptionSession, get_session_path_for_audio
+            from recorder.config import TRANSCRIPTIONS_DIR
+
+            speaker_info = ""
+            if self.num_speakers:
+                speaker_info = f" (dokładnie {self.num_speakers} os.)"
+            elif self.min_speakers and self.max_speakers:
+                speaker_info = f" ({self.min_speakers}-{self.max_speakers} os.)"
+            elif self.max_speakers:
+                speaker_info = f" (max {self.max_speakers} os.)"
+
+            self.progress_signal.emit(15, f"Ładowanie modelu PyAnnote{speaker_info}...")
+            diarizer = DiarizationEngine(hf_token=self.hf_token.strip())
+
+            def on_diar_progress(pct: int, msg: str):
+                self.progress_signal.emit(pct, msg)
+
+            self.progress_signal.emit(30, f"Rozpoznawanie osób i łączenie z gotowym tekstem{speaker_info}...")
+            final_html, final_plain, turns = diarizer.process(
+                self.audio_path,
+                self.transcript_words,
+                batch_size=32,
+                num_speakers=self.num_speakers,
+                min_speakers=self.min_speakers,
+                max_speakers=self.max_speakers,
+                progress_callback=on_diar_progress
+            )
+
+            # Aktualizacja pliku sesji JSON
+            json_path = self.session_json_path or get_session_path_for_audio(self.audio_path, TRANSCRIPTIONS_DIR)
+            session = TranscriptionSession.load_from_json(json_path) if os.path.exists(json_path) else None
+            if session:
+                session.has_diarization = True
+                session.turns = turns
+                session.speakers_detected = sorted(list(set(t.get("speaker") for t in turns if t.get("speaker"))))
+                session.save_to_json(json_path)
+
+            self.progress_signal.emit(100, "Diaryzacja zakończona pomyślnie!")
+            self.finished_signal.emit(final_html, final_plain, turns, json_path or "")
+
+        except Exception as e:
+            print(f"❌ [BŁĄD DIARYZACJI]: {e}", file=sys.stderr)
             self.error_signal.emit(str(e))
 

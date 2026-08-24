@@ -3,12 +3,8 @@ Style QSS oraz definicje wizualne dla aplikacji Recorder67.
 Wymusza spójny, profesjonalny ciemny motyw niezależnie od ustawień motywu w systemie Windows.
 """
 
-try:
-    from PySide6.QtGui import QPalette, QColor
-    from PySide6.QtWidgets import QApplication
-except ImportError:
-    from PyQt6.QtGui import QPalette, QColor
-    from PyQt6.QtWidgets import QApplication
+from PySide6.QtGui import QPalette, QColor
+from PySide6.QtWidgets import QApplication
 
 DARK_THEME_QSS = """
 /* Główne okna i kontenery bazowe */

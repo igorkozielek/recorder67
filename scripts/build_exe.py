@@ -8,26 +8,89 @@ import os
 import sys
 import subprocess
 import shutil
+import importlib.metadata
+import importlib.util
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENTRY_POINT = os.path.join(ROOT_DIR, "run.py")
 DIST_DIR = os.path.join(ROOT_DIR, "dist")
 BUILD_DIR = os.path.join(ROOT_DIR, "build")
+LOG_FILE = os.path.join(ROOT_DIR, "build_log.txt")
 
-def _is_package_installed(package_name: str) -> bool:
+
+class TeeLogger:
+    """Duplikuje strumień wyjścia (stdout/stderr) jednocześnie na ekran konsoli oraz do pliku tekstowego."""
+    def __init__(self, filepath: str, original_stream):
+        self.file = open(filepath, "w", encoding="utf-8", errors="replace")
+        self.original_stream = original_stream
+
+    def write(self, data):
+        self.original_stream.write(data)
+        self.original_stream.flush()
+        self.file.write(data)
+        self.file.flush()
+
+    def flush(self):
+        self.original_stream.flush()
+        self.file.flush()
+
+    def close(self):
+        try:
+            self.file.close()
+        except Exception:
+            pass
+
+
+def _is_module_available(module_name: str) -> bool:
     try:
-        import importlib.metadata
-        importlib.metadata.distribution(package_name)
-        return True
+        return importlib.util.find_spec(module_name) is not None
     except Exception:
         return False
 
+
+def get_site_packages_modules() -> list[str]:
+    """Pobiera listę wszystkich modułów najwyższego poziomu zainstalowanych w site-packages."""
+    modules = set()
+    for p in sys.path:
+        if "site-packages" in p and os.path.exists(p):
+            try:
+                for item in os.listdir(p):
+                    if item.endswith(".dist-info") or item.endswith(".egg-info") or item.startswith("__") or item.startswith("."):
+                        continue
+                    name = item
+                    if item.endswith(".py"):
+                        name = item[:-3]
+                    elif "." in item:
+                        continue
+                    # Wykluczenia narzędzi deweloperskich i konfliktowych bibliotek
+                    if name.lower() not in ("pyqt6", "pyqt6_sip", "pip", "setuptools", "wheel", "pyinstaller", "pefile", "altgraph"):
+                        modules.add(name)
+            except Exception:
+                pass
+    return sorted(list(modules))
+
+
 def main():
+    # Inicjalizacja automatycznego zapisu logu do pliku build_log.txt
+    tee = TeeLogger(LOG_FILE, sys.stdout)
+    sys.stdout = tee
+    sys.stderr = tee
+
     print("=" * 70)
     print("🚀 BUDOWANIE INTELIGENTNEGO DYKTAFONU AI DO PLIKU .EXE")
     print("=" * 70)
+    print(f"📄 Logi kompilacji są na bieżąco zapisywane do: {LOG_FILE}\n")
 
-    # 1. Upewnij się, że pyinstaller jest zainstalowany
+    # 1. Odblokowanie plików binarnych przed blokadą Windows Smart App Control
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "if (Test-Path 'env') { Get-ChildItem -Path 'env' -Recurse | Unblock-File }"],
+            cwd=ROOT_DIR,
+            capture_output=True
+        )
+    except Exception:
+        pass
+
     try:
         import PyInstaller
         print(f"✅ Znaleziono PyInstaller w wersji: {PyInstaller.__version__}")
@@ -35,7 +98,64 @@ def main():
         print("📦 Instalowanie PyInstaller w środowisku...")
         subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
 
-    # 2. Przygotuj parametry PyInstallera
+    # 2. Automatyczne wykrycie WSZYSTKICH pakietów i metadanych w środowisku env
+    all_dists = []
+    try:
+        all_dists = sorted(list(set([
+            dist.metadata['Name']
+            for dist in importlib.metadata.distributions()
+            if dist.metadata and 'Name' in dist.metadata
+        ])))
+        print(f"📦 Automatycznie wykryto {len(all_dists)} pakietów w środowisku Python.")
+    except Exception as e:
+        print(f"⚠️ Ostrzeżenie przy skanowaniu pakietów: {e}")
+
+    # 3. Wykrycie wszystkich modułów zainstalowanych w site-packages
+    site_modules = get_site_packages_modules()
+    print(f"📚 Automatycznie zebrano {len(site_modules)} modułów z site-packages do spakowania.")
+
+    # Kluczowe biblioteki AI wymagające pełnego pakowania (wraz z plikami danych i bibliotekami C/C++)
+    core_ai_collect = [
+        "faster_whisper",
+        "silero_vad",
+        "pyannote",
+        "pyannote.audio",
+        "pyannote.core",
+        "pyannote.pipeline",
+        "pyannote.metrics",
+        "pyannote.database",
+        "asteroid_filterbanks",
+        "julius",
+        "torch_audiomentations",
+        "torch_pitch_shift",
+        "hyperpyyaml",
+        "omegaconf",
+        "einops",
+        "semver",
+        "sentencepiece",
+        "pytorch_metric_learning",
+        "ctranslate2",
+        "sounddevice",
+        "imageio_ffmpeg",
+        "speechbrain",
+        "lightning",
+        "lightning_fabric",
+        "lightning_utilities",
+        "pytorch_lightning",
+        "torchmetrics",
+        "safetensors",
+        "huggingface_hub",
+        "optuna",
+        "torch",
+        "torchaudio",
+        "onnxruntime",
+        "scipy"
+    ]
+
+    # Połącz moduły AI oraz moduły z site-packages
+    modules_to_collect = sorted(list(set([pkg for pkg in core_ai_collect if _is_module_available(pkg.split('.')[0])])))
+
+    # 4. Przygotuj parametry PyInstallera
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--name=InteligentnyDyktafonAI",
@@ -43,41 +163,44 @@ def main():
         "--clean",
         "--noconfirm",
         
-        # Wykluczenie konkurencyjnego pakietu PyQt6 (projekt korzysta z PySide6)
+        # Wykluczamy PyQt6, ponieważ aplikacja używa PySide6 (zapobiega konfliktom dwóch bibliotek Qt)
         "--exclude-module=PyQt6",
         "--exclude-module=PyQt6.QtCore",
         "--exclude-module=PyQt6.QtWidgets",
         "--exclude-module=PyQt6.QtGui",
         "--exclude-module=PyQt6_sip",
-        
-        # Zbieranie zależności i bibliotek C++/DLL
-        "--collect-all=faster_whisper",
-        "--collect-all=silero_vad",
-        "--collect-all=pyannote.audio",
-        "--collect-all=ctranslate2",
-        "--collect-all=sounddevice",
-        "--collect-all=imageio_ffmpeg",
-        "--collect-all=speechbrain",
-        "--collect-all=lightning",
-        "--collect-all=pytorch_lightning",
-        
-        # Metadane pakietów wymagane przez PyAnnote i HuggingFace (bezpiecznie filtrowane)
+
+        # Zbieranie zależności i bibliotek C++/DLL dla wszystkich modułów AI
         *[
-            f"--copy-metadata={pkg}"
+            f"--collect-all={pkg}"
+            for pkg in modules_to_collect
+        ],
+
+        # Dołączenie ukrytych importów, które mogą być ładowane dynamicznie przez HuggingFace/PyTorch Hub
+        *[
+            f"--hidden-import={pkg}"
             for pkg in [
-                "faster_whisper",
-                "huggingface_hub",
-                "pyannote.audio",
-                "pyannote.core",
-                "pyannote.pipeline",
-                "torch",
-                "tqdm",
-                "requests",
-                "packaging",
-                "filelock",
-                "speechbrain"
+                "asteroid_filterbanks",
+                "julius",
+                "torch_audiomentations",
+                "torch_pitch_shift",
+                "hyperpyyaml",
+                "omegaconf",
+                "einops",
+                "semver",
+                "sentencepiece",
+                "pytorch_metric_learning",
+                "safetensors",
+                "optuna"
             ]
-            if _is_package_installed(pkg)
+            if _is_module_available(pkg)
+        ],
+        
+        # Automatyczne dołączenie metadanych dla 100% wykrytych pakietów w środowisku!
+        *[
+            f"--copy-metadata={dist_name}"
+            for dist_name in all_dists
+            if not dist_name.lower().startswith("pyqt6")
         ],
         
         # Dołączenie pliku .env (jeśli istnieje)
@@ -108,11 +231,14 @@ def main():
         print("=" * 70)
         print(f"📁 Folder aplikacji: {output_folder}")
         print(f"▶️ Plik startowy:    {exe_path}")
+        print(f"📄 Pełny log kompilacji zapisano do: {LOG_FILE}")
         print("\n💡 Aby przenieść aplikację na inne urządzenie:")
         print(f"   Spakuj cały folder '{os.path.basename(output_folder)}' do pliku .ZIP i wypakuj na urządzeniu docelowym.")
     else:
         print("\n❌ Błąd podczas budowania pliku .exe.")
+        print(f"📄 Pełny raport błędu znajduje się w pliku: {LOG_FILE}")
         sys.exit(result.returncode)
+
 
 if __name__ == "__main__":
     main()

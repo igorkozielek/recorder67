@@ -4,7 +4,6 @@ Moduł Core AI - Czyste przetwarzanie modeli VAD, Faster-Whisper oraz PyAnnote b
 
 from .vad import SileroVADDetector, is_silero_available
 from .transcriber import TranscriberEngine
-from .diarizer import DiarizationEngine
 
 __all__ = [
     "SileroVADDetector",
@@ -12,3 +11,10 @@ __all__ = [
     "TranscriberEngine",
     "DiarizationEngine",
 ]
+
+
+def __getattr__(name):
+    if name == "DiarizationEngine":
+        from .diarizer import DiarizationEngine
+        return DiarizationEngine
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
