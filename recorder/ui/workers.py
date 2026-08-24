@@ -3,7 +3,7 @@ import sys
 import queue
 import collections
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Dict, Any, Tuple
 import numpy as np
 import sounddevice as sd
 
