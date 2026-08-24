@@ -8,24 +8,17 @@ import os
 import sys
 import subprocess
 import shutil
+import importlib.metadata
+import importlib.util
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENTRY_POINT = os.path.join(ROOT_DIR, "run.py")
 DIST_DIR = os.path.join(ROOT_DIR, "dist")
 BUILD_DIR = os.path.join(ROOT_DIR, "build")
 
-def _has_metadata(package_name: str) -> bool:
-    try:
-        import importlib.metadata
-        importlib.metadata.distribution(package_name)
-        return True
-    except Exception:
-        return False
-
 
 def _is_module_available(module_name: str) -> bool:
     try:
-        import importlib.util
         return importlib.util.find_spec(module_name) is not None
     except Exception:
         return False
@@ -36,9 +29,8 @@ def main():
     print("🚀 BUDOWANIE INTELIGENTNEGO DYKTAFONU AI DO PLIKU .EXE")
     print("=" * 70)
 
-    # 1. Upewnij się, że pyinstaller jest zainstalowany i pliki są odblokowane
+    # 1. Odblokowanie plików binarnych przed blokadą Windows Smart App Control
     try:
-        # Odblokowanie plików binarnych przed Smart App Control
         subprocess.run(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "if (Test-Path 'env') { Get-ChildItem -Path 'env' -Recurse | Unblock-File }"],
             cwd=ROOT_DIR,
@@ -54,7 +46,19 @@ def main():
         print("📦 Instalowanie PyInstaller w środowisku...")
         subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
 
-    # 2. Przygotuj parametry PyInstallera
+    # 2. Automatyczne wykrycie WSZYSTKICH pakietów zainstalowanych w środowisku env
+    all_dists = []
+    try:
+        all_dists = sorted(list(set([
+            dist.metadata['Name']
+            for dist in importlib.metadata.distributions()
+            if dist.metadata and 'Name' in dist.metadata
+        ])))
+        print(f"📦 Automatycznie wykryto {len(all_dists)} pakietów w środowisku Python.")
+    except Exception as e:
+        print(f"⚠️ Ostrzeżenie przy skanowaniu pakietów: {e}")
+
+    # 3. Przygotuj parametry PyInstallera
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--name=InteligentnyDyktafonAI",
@@ -62,13 +66,20 @@ def main():
         "--clean",
         "--noconfirm",
         
-        # PySide6 jest ładowane przez standardowe hooki PyInstaller; nie kolekcjonujemy wszystkich modułów Qt.
-        # Zbieranie zależności i bibliotek C++/DLL
+        # Wykluczamy PyQt6, ponieważ aplikacja używa PySide6 (zapobiega konfliktom dwóch bibliotek Qt)
+        "--exclude-module=PyQt6",
+        "--exclude-module=PyQt6.QtCore",
+        "--exclude-module=PyQt6.QtWidgets",
+        "--exclude-module=PyQt6.QtGui",
+        "--exclude-module=PyQt6_sip",
+
+        # Zbieranie zależności i bibliotek C++/DLL dla wszystkich modułów AI
         *[
             f"--collect-all={pkg}"
             for pkg in [
                 "faster_whisper",
                 "silero_vad",
+                "pyannote",
                 "pyannote.audio",
                 "pyannote.core",
                 "pyannote.pipeline",
@@ -86,40 +97,20 @@ def main():
                 "torchmetrics",
                 "safetensors",
                 "huggingface_hub",
-                "optuna"
+                "optuna",
+                "torch",
+                "torchaudio",
+                "onnxruntime",
+                "scipy"
             ]
             if _is_module_available(pkg.split('.')[0])
         ],
         
-        # Metadane pakietów wymagane przez PyAnnote, Lightning i HuggingFace (tylko istniejące dystrybucje)
+        # Automatyczne dołączenie metadanych dla 100% wykrytych pakietów w środowisku!
         *[
-            f"--copy-metadata={pkg}"
-            for pkg in [
-                "faster_whisper",
-                "huggingface_hub",
-                "pyannote.audio",
-                "pyannote.core",
-                "pyannote.pipeline",
-                "pyannote.metrics",
-                "pyannote.database",
-                "pytorch_metric_learning",
-                "torch",
-                "torchaudio",
-                "tqdm",
-                "requests",
-                "packaging",
-                "filelock",
-                "speechbrain",
-                "lightning",
-                "pytorch_lightning",
-                "torchmetrics",
-                "lightning_utilities",
-                "pandas",
-                "scipy",
-                "safetensors",
-                "optuna"
-            ]
-            if _has_metadata(pkg)
+            f"--copy-metadata={dist_name}"
+            for dist_name in all_dists
+            if not dist_name.lower().startswith("pyqt6")
         ],
         
         # Dołączenie pliku .env (jeśli istnieje)
@@ -155,6 +146,7 @@ def main():
     else:
         print("\n❌ Błąd podczas budowania pliku .exe.")
         sys.exit(result.returncode)
+
 
 if __name__ == "__main__":
     main()
