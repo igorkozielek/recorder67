@@ -8,9 +8,9 @@ import numpy as np
 import sounddevice as sd
 
 try:
-    from PyQt6.QtCore import QThread, pyqtSignal
-except ImportError:
     from PySide6.QtCore import QThread, Signal as pyqtSignal
+except ImportError:
+    from PyQt6.QtCore import QThread, pyqtSignal
 
 from recorder.config import (
     SmartRecordState,

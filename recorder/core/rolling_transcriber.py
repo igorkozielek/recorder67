@@ -3,10 +3,8 @@ import sys
 import queue
 import numpy as np
 from typing import List, Dict, Any, Optional
-try:
-    from PyQt6.QtCore import QThread, pyqtSignal
-except ImportError:
-    from PySide6.QtCore import QThread, Signal as pyqtSignal
+from datetime import datetime
+from PySide6.QtCore import QThread, Signal as pyqtSignal
 
 from recorder.core.transcriber import TranscriberEngine, is_hallucination, clean_repeated_text
 from recorder.core.diarizer import format_transcript_without_diarization
