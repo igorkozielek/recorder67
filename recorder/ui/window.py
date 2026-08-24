@@ -1362,7 +1362,7 @@ class SmartDictaphoneWindow(QMainWindow):
                     dur = (en - st) / max(1, len(t_words))
                     for i, w_str in enumerate(t_words):
                         words.append({
-                            "word": w_str,
+                            "word": (" " + w_str if i > 0 else w_str),
                             "start": round(st + (i * dur), 2),
                             "end": round(st + ((i + 1) * dur), 2),
                             "probability": 0.95
