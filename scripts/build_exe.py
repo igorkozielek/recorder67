@@ -24,6 +24,28 @@ def _is_module_available(module_name: str) -> bool:
         return False
 
 
+def get_site_packages_modules() -> list[str]:
+    """Pobiera listę wszystkich modułów najwyższego poziomu zainstalowanych w site-packages."""
+    modules = set()
+    for p in sys.path:
+        if "site-packages" in p and os.path.exists(p):
+            try:
+                for item in os.listdir(p):
+                    if item.endswith(".dist-info") or item.endswith(".egg-info") or item.startswith("__") or item.startswith("."):
+                        continue
+                    name = item
+                    if item.endswith(".py"):
+                        name = item[:-3]
+                    elif "." in item:
+                        continue
+                    # Wykluczenia narzędzi deweloperskich i konfliktowych bibliotek
+                    if name.lower() not in ("pyqt6", "pyqt6_sip", "pip", "setuptools", "wheel", "pyinstaller", "pefile", "altgraph"):
+                        modules.add(name)
+            except Exception:
+                pass
+    return sorted(list(modules))
+
+
 def main():
     print("=" * 70)
     print("🚀 BUDOWANIE INTELIGENTNEGO DYKTAFONU AI DO PLIKU .EXE")
@@ -46,7 +68,7 @@ def main():
         print("📦 Instalowanie PyInstaller w środowisku...")
         subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
 
-    # 2. Automatyczne wykrycie WSZYSTKICH pakietów zainstalowanych w środowisku env
+    # 2. Automatyczne wykrycie WSZYSTKICH pakietów i metadanych w środowisku env
     all_dists = []
     try:
         all_dists = sorted(list(set([
@@ -58,7 +80,52 @@ def main():
     except Exception as e:
         print(f"⚠️ Ostrzeżenie przy skanowaniu pakietów: {e}")
 
-    # 3. Przygotuj parametry PyInstallera
+    # 3. Wykrycie wszystkich modułów zainstalowanych w site-packages
+    site_modules = get_site_packages_modules()
+    print(f"📚 Automatycznie zebrano {len(site_modules)} modułów z site-packages do spakowania.")
+
+    # Kluczowe biblioteki AI wymagające pełnego pakowania (wraz z plikami danych i bibliotekami C/C++)
+    core_ai_collect = [
+        "faster_whisper",
+        "silero_vad",
+        "pyannote",
+        "pyannote.audio",
+        "pyannote.core",
+        "pyannote.pipeline",
+        "pyannote.metrics",
+        "pyannote.database",
+        "asteroid_filterbanks",
+        "julius",
+        "torch_audiomentations",
+        "torch_pitch_shift",
+        "hyperpyyaml",
+        "omegaconf",
+        "einops",
+        "semver",
+        "sentencepiece",
+        "pytorch_metric_learning",
+        "ctranslate2",
+        "sounddevice",
+        "imageio_ffmpeg",
+        "speechbrain",
+        "lightning",
+        "lightning_fabric",
+        "lightning_utilities",
+        "pytorch_lightning",
+        "torchmetrics",
+        "safetensors",
+        "huggingface_hub",
+        "optuna",
+        "torch",
+        "torchaudio",
+        "onnxruntime",
+        "scipy"
+    ]
+
+    # Połącz moduły AI oraz moduły z site-packages
+    modules_to_collect = sorted(list(set([pkg for pkg in core_ai_collect if _is_module_available(pkg.split('.')[0])])))
+
+    # 4. Przygotuj parametry PyInstallera
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--name=InteligentnyDyktafonAI",
@@ -76,34 +143,27 @@ def main():
         # Zbieranie zależności i bibliotek C++/DLL dla wszystkich modułów AI
         *[
             f"--collect-all={pkg}"
+            for pkg in modules_to_collect
+        ],
+
+        # Dołączenie ukrytych importów, które mogą być ładowane dynamicznie przez HuggingFace/PyTorch Hub
+        *[
+            f"--hidden-import={pkg}"
             for pkg in [
-                "faster_whisper",
-                "silero_vad",
-                "pyannote",
-                "pyannote.audio",
-                "pyannote.core",
-                "pyannote.pipeline",
-                "pyannote.metrics",
-                "pyannote.database",
+                "asteroid_filterbanks",
+                "julius",
+                "torch_audiomentations",
+                "torch_pitch_shift",
+                "hyperpyyaml",
+                "omegaconf",
+                "einops",
+                "semver",
+                "sentencepiece",
                 "pytorch_metric_learning",
-                "ctranslate2",
-                "sounddevice",
-                "imageio_ffmpeg",
-                "speechbrain",
-                "lightning",
-                "lightning_fabric",
-                "lightning_utilities",
-                "pytorch_lightning",
-                "torchmetrics",
                 "safetensors",
-                "huggingface_hub",
-                "optuna",
-                "torch",
-                "torchaudio",
-                "onnxruntime",
-                "scipy"
+                "optuna"
             ]
-            if _is_module_available(pkg.split('.')[0])
+            if _is_module_available(pkg)
         ],
         
         # Automatyczne dołączenie metadanych dla 100% wykrytych pakietów w środowisku!
