@@ -27,7 +27,17 @@ def main():
     print("🚀 BUDOWANIE INTELIGENTNEGO DYKTAFONU AI DO PLIKU .EXE")
     print("=" * 70)
 
-    # 1. Upewnij się, że pyinstaller jest zainstalowany
+    # 1. Upewnij się, że pyinstaller jest zainstalowany i pliki są odblokowane
+    try:
+        # Odblokowanie plików binarnych przed Smart App Control
+        subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "if (Test-Path 'env') { Get-ChildItem -Path 'env' -Recurse | Unblock-File }"],
+            cwd=ROOT_DIR,
+            capture_output=True
+        )
+    except Exception:
+        pass
+
     try:
         import PyInstaller
         print(f"✅ Znaleziono PyInstaller w wersji: {PyInstaller.__version__}")
@@ -43,12 +53,8 @@ def main():
         "--clean",
         "--noconfirm",
         
-        # Wykluczenie konkurencyjnego pakietu PyQt6 (projekt korzysta z PySide6)
-        "--exclude-module=PyQt6",
-        "--exclude-module=PyQt6.QtCore",
-        "--exclude-module=PyQt6.QtWidgets",
-        "--exclude-module=PyQt6.QtGui",
-        "--exclude-module=PyQt6_sip",
+        # Zbieranie GUI (PyQt6)
+        "--collect-all=PyQt6",
         
         # Zbieranie zależności i bibliotek C++/DLL
         "--collect-all=faster_whisper",
