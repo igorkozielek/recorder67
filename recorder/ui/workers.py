@@ -105,7 +105,7 @@ class SmartAudioWorker(QThread):
             return None
         try:
             block_arr = np.concatenate(self.current_block_chunks)
-            if len(block_arr) < int(0.5 * 16000):
+            if len(block_arr) < int(0.3 * 16000):
                 return None
             start_sec = round(self.block_start_samples / 16000.0, 2)
             end_sec = round((self.block_start_samples + len(block_arr)) / 16000.0, 2)

@@ -33,7 +33,7 @@ HALLUCINATION_TRIGGERS = [
 
 
 def clean_repeated_text(text: str) -> str:
-    """Usuwa zapętlenia słów (np. 'Dobra. Dobra. Dobra.' -> 'Dobra.') oraz ciągi powtarzających się liczb."""
+    """Usuwa zapętlenia słów (np. 'Dobra. Dobra. Dobra.' -> 'Dobra.') oraz ciągi powtarzających się liczb i wielokropków."""
     if not text:
         return ""
     
@@ -42,8 +42,14 @@ def clean_repeated_text(text: str) -> str:
     if len(digit_words) >= 6 and (len(digit_words) / max(1, len(text.split()))) > 0.6:
         return ""
 
-    # 2. Usuwanie wielokrotnie powtórzonych słów lub fraz (>= 3 powtórzenia z rzędu)
-    cleaned = re.sub(r'\b([A-Za-zĄąĆćĘęŁłŃńÓóŚśŹźŻż0-9]+(?:\.|\,)?)(?:\s+\1){2,}', r'\1', text, flags=re.IGNORECASE)
+    # 2. Usuwanie zapętleń słów z wielokropkami (np. '...pośle... ...pośle... ...pośle...')
+    cleaned = re.sub(r'(?:\.{2,}\s*)?([A-Za-zĄąĆćĘęŁłŃńÓóŚśŹźŻż0-9]+)(?:\.{2,})?(?:\s*(?:\.{2,}\s*)?\1(?:\.{2,})?){2,}', r'\1', text, flags=re.IGNORECASE)
+
+    # 3. Usuwanie wielokrotnie powtórzonych słów lub fraz (>= 3 powtórzenia z rzędu)
+    cleaned = re.sub(r'\b([A-Za-zĄąĆćĘęŁłŃńÓóŚśŹźŻż0-9]+(?:\.|\,)?)(?:\s+\1){2,}', r'\1', cleaned, flags=re.IGNORECASE)
+
+    # 4. Czyszczenie zwielokrotnionych wielokropków
+    cleaned = re.sub(r'(\s*\.{2,}\s*){2,}', ' ... ', cleaned)
     return cleaned.strip()
 
 
