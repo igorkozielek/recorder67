@@ -1,7 +1,42 @@
 import os
 import sys
 import gc
+import types
+import importlib.util
 from typing import List, Dict, Any, Tuple, Optional, Callable
+
+
+def patch_torch_dynamo():
+    """
+    Automatyczny monkeypatch w locie omijający błędy cyklicznego importu i brakującego NP_SUPPORTED_MODULES
+    w PyTorch 2.6+ / 2.13 bez konieczności jakichkolwiek ręcznych zmian w site-packages.
+    """
+    try:
+        if "torch._dynamo.utils" not in sys.modules:
+            spec = importlib.util.find_spec("torch._dynamo.utils")
+            if spec and spec.loader:
+                mod = importlib.util.module_from_spec(spec)
+                mod.NP_SUPPORTED_MODULES = ()
+                mod.NP_TO_TNP_MODULE = {}
+                sys.modules["torch._dynamo.utils"] = mod
+                try:
+                    spec.loader.exec_module(mod)
+                except Exception:
+                    pass
+                mod.NP_SUPPORTED_MODULES = ()
+                mod.NP_TO_TNP_MODULE = {}
+        else:
+            mod = sys.modules.get("torch._dynamo.utils")
+            if mod:
+                if not hasattr(mod, "NP_SUPPORTED_MODULES"):
+                    mod.NP_SUPPORTED_MODULES = ()
+                if not hasattr(mod, "NP_TO_TNP_MODULE"):
+                    mod.NP_TO_TNP_MODULE = {}
+    except Exception:
+        pass
+
+
+patch_torch_dynamo()
 
 
 def apply_torchaudio_patches():
@@ -9,18 +44,9 @@ def apply_torchaudio_patches():
     Kompleksowe łatki dla torchaudio, PyTorch 2.6+ i TorchDynamo omijające błędy brakujących bibliotek C/FFmpeg
     oraz wymuszające kompatybilność weights_only.
     """
+    patch_torch_dynamo()
     import torch
     import torchaudio
-
-    # Łatka na brakujący NP_SUPPORTED_MODULES w torch._dynamo.utils (w PyTorch 2.6+ / 2.13)
-    try:
-        import torch._dynamo.utils as dynamo_utils
-        if not hasattr(dynamo_utils, "NP_SUPPORTED_MODULES"):
-            dynamo_utils.NP_SUPPORTED_MODULES = ()
-        if not hasattr(dynamo_utils, "NP_TO_TNP_MODULE"):
-            dynamo_utils.NP_TO_TNP_MODULE = {}
-    except Exception:
-        pass
 
     if not hasattr(torchaudio, 'list_audio_backends'):
         torchaudio.list_audio_backends = lambda: ["soundfile", "sox"]
