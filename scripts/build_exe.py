@@ -15,6 +15,30 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENTRY_POINT = os.path.join(ROOT_DIR, "run.py")
 DIST_DIR = os.path.join(ROOT_DIR, "dist")
 BUILD_DIR = os.path.join(ROOT_DIR, "build")
+LOG_FILE = os.path.join(ROOT_DIR, "build_log.txt")
+
+
+class TeeLogger:
+    """Duplikuje strumień wyjścia (stdout/stderr) jednocześnie na ekran konsoli oraz do pliku tekstowego."""
+    def __init__(self, filepath: str, original_stream):
+        self.file = open(filepath, "w", encoding="utf-8", errors="replace")
+        self.original_stream = original_stream
+
+    def write(self, data):
+        self.original_stream.write(data)
+        self.original_stream.flush()
+        self.file.write(data)
+        self.file.flush()
+
+    def flush(self):
+        self.original_stream.flush()
+        self.file.flush()
+
+    def close(self):
+        try:
+            self.file.close()
+        except Exception:
+            pass
 
 
 def _is_module_available(module_name: str) -> bool:
@@ -47,9 +71,15 @@ def get_site_packages_modules() -> list[str]:
 
 
 def main():
+    # Inicjalizacja automatycznego zapisu logu do pliku build_log.txt
+    tee = TeeLogger(LOG_FILE, sys.stdout)
+    sys.stdout = tee
+    sys.stderr = tee
+
     print("=" * 70)
     print("🚀 BUDOWANIE INTELIGENTNEGO DYKTAFONU AI DO PLIKU .EXE")
     print("=" * 70)
+    print(f"📄 Logi kompilacji są na bieżąco zapisywane do: {LOG_FILE}\n")
 
     # 1. Odblokowanie plików binarnych przed blokadą Windows Smart App Control
     try:
@@ -201,10 +231,12 @@ def main():
         print("=" * 70)
         print(f"📁 Folder aplikacji: {output_folder}")
         print(f"▶️ Plik startowy:    {exe_path}")
+        print(f"📄 Pełny log kompilacji zapisano do: {LOG_FILE}")
         print("\n💡 Aby przenieść aplikację na inne urządzenie:")
         print(f"   Spakuj cały folder '{os.path.basename(output_folder)}' do pliku .ZIP i wypakuj na urządzeniu docelowym.")
     else:
         print("\n❌ Błąd podczas budowania pliku .exe.")
+        print(f"📄 Pełny raport błędu znajduje się w pliku: {LOG_FILE}")
         sys.exit(result.returncode)
 
 

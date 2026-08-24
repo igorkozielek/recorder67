@@ -18,9 +18,11 @@ echo [INFO] Rozpoczynanie kompilacji PyInstaller...
 if %ERRORLEVEL% equ 0 (
     echo.
     echo [SUKCES] Gotowe! Plik wykonywalny znajduje sie w folderze: dist\InteligentnyDyktafonAI\
+    echo [INFO] Pelny log z budowania zapisano w: build_log.txt
 ) else (
     echo.
     echo [BLAD] Wystapil blad podczas budowania. Kod bledu: %ERRORLEVEL%
+    echo [INFO] Raport bledu zostal zapisany w: build_log.txt
 )
 
 pause
