@@ -18,7 +18,7 @@ import urllib.request
 import urllib.parse
 import urllib.error
 
-from PyQt6.QtCore import QObject, pyqtSignal
+from PySide6.QtCore import QObject, Signal as pyqtSignal
 
 from recorder.config import get_cloud_sync_config, SYNC_QUEUE_DIR
 

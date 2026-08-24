@@ -7,10 +7,7 @@ from typing import Optional, List, Dict, Any, Tuple
 import numpy as np
 import sounddevice as sd
 
-try:
-    from PySide6.QtCore import QThread, Signal as pyqtSignal
-except ImportError:
-    from PyQt6.QtCore import QThread, pyqtSignal
+from PySide6.QtCore import QThread, Signal as pyqtSignal
 
 from recorder.config import (
     SmartRecordState,

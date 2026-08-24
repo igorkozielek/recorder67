@@ -2,41 +2,23 @@ import os
 import sys
 import gc
 import types
-import importlib.util
 from typing import List, Dict, Any, Tuple, Optional, Callable
 
 
 def patch_torch_dynamo():
     """
-    Automatyczny monkeypatch w locie omijający błędy cyklicznego importu i brakującego NP_SUPPORTED_MODULES
-    w PyTorch 2.6+ / 2.13 bez konieczności jakichkolwiek ręcznych zmian w site-packages.
+    Ustawia bezpieczne atrybuty pomocnicze tylko wtedy, gdy moduł TorchDynamo jest już obecny.
+    Nie inicjuje importu `torch._dynamo`, żeby nie uruchamiać ciężkiej kaskady importów przy starcie.
     """
     try:
-        if "torch._dynamo.utils" not in sys.modules:
-            spec = importlib.util.find_spec("torch._dynamo.utils")
-            if spec and spec.loader:
-                mod = importlib.util.module_from_spec(spec)
+        mod = sys.modules.get("torch._dynamo.utils")
+        if mod:
+            if not hasattr(mod, "NP_SUPPORTED_MODULES"):
                 mod.NP_SUPPORTED_MODULES = ()
+            if not hasattr(mod, "NP_TO_TNP_MODULE"):
                 mod.NP_TO_TNP_MODULE = {}
-                sys.modules["torch._dynamo.utils"] = mod
-                try:
-                    spec.loader.exec_module(mod)
-                except Exception:
-                    pass
-                mod.NP_SUPPORTED_MODULES = ()
-                mod.NP_TO_TNP_MODULE = {}
-        else:
-            mod = sys.modules.get("torch._dynamo.utils")
-            if mod:
-                if not hasattr(mod, "NP_SUPPORTED_MODULES"):
-                    mod.NP_SUPPORTED_MODULES = ()
-                if not hasattr(mod, "NP_TO_TNP_MODULE"):
-                    mod.NP_TO_TNP_MODULE = {}
     except Exception:
         pass
-
-
-patch_torch_dynamo()
 
 
 def apply_torchaudio_patches():

@@ -53,9 +53,7 @@ def main():
         "--clean",
         "--noconfirm",
         
-        # Zbieranie GUI (PyQt6)
-        "--collect-all=PyQt6",
-        
+        # PySide6 jest ładowane przez standardowe hooki PyInstaller; nie kolekcjonujemy wszystkich modułów Qt.
         # Zbieranie zależności i bibliotek C++/DLL
         "--collect-all=faster_whisper",
         "--collect-all=silero_vad",

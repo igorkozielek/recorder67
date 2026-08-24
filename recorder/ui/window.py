@@ -3,26 +3,15 @@ import sys
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
-try:
-    from PySide6.QtCore import Qt, QTimer, QUrl
-    from PySide6.QtGui import QFont, QDesktopServices
-    from PySide6.QtWidgets import (
-        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-        QPushButton, QLabel, QComboBox, QProgressBar, QListWidget,
-        QListWidgetItem, QGroupBox, QMessageBox, QFrame,
-        QSlider, QLineEdit, QTextEdit, QScrollArea, QFileDialog, QCheckBox,
-        QSizePolicy
-    )
-except ImportError:
-    from PyQt6.QtCore import Qt, QTimer, QUrl
-    from PyQt6.QtGui import QFont, QDesktopServices
-    from PyQt6.QtWidgets import (
-        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-        QPushButton, QLabel, QComboBox, QProgressBar, QListWidget,
-        QListWidgetItem, QGroupBox, QMessageBox, QFrame,
-        QSlider, QLineEdit, QTextEdit, QScrollArea, QFileDialog, QCheckBox,
-        QSizePolicy
-    )
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QFont, QDesktopServices
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QLabel, QComboBox, QProgressBar, QListWidget,
+    QListWidgetItem, QGroupBox, QMessageBox, QFrame,
+    QSlider, QLineEdit, QTextEdit, QScrollArea, QFileDialog, QCheckBox,
+    QSizePolicy
+)
 
 from recorder.config import (
     SmartRecordState,
