@@ -6,11 +6,21 @@ from typing import List, Dict, Any, Tuple, Optional, Callable
 
 def apply_torchaudio_patches():
     """
-    Kompleksowe łatki dla torchaudio i PyTorch 2.6+ omijające błędy brakujących bibliotek C/FFmpeg
+    Kompleksowe łatki dla torchaudio, PyTorch 2.6+ i TorchDynamo omijające błędy brakujących bibliotek C/FFmpeg
     oraz wymuszające kompatybilność weights_only.
     """
     import torch
     import torchaudio
+
+    # Łatka na brakujący NP_SUPPORTED_MODULES w torch._dynamo.utils (w PyTorch 2.6+ / 2.13)
+    try:
+        import torch._dynamo.utils as dynamo_utils
+        if not hasattr(dynamo_utils, "NP_SUPPORTED_MODULES"):
+            dynamo_utils.NP_SUPPORTED_MODULES = ()
+        if not hasattr(dynamo_utils, "NP_TO_TNP_MODULE"):
+            dynamo_utils.NP_TO_TNP_MODULE = {}
+    except Exception:
+        pass
 
     if not hasattr(torchaudio, 'list_audio_backends'):
         torchaudio.list_audio_backends = lambda: ["soundfile", "sox"]
