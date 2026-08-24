@@ -1089,7 +1089,7 @@ class SmartDictaphoneWindow(QMainWindow):
             edit_name.setStyleSheet("background-color: #2b2d42; color: #edf2f4; border: 1px solid #4cc9f0; border-radius: 4px; padding: 5px 8px; font-weight: bold; font-size: 12px;")
 
             edit_role = QLineEdit()
-            edit_role.setPlaceholderText("Rola / Firma (np. PINUP, EMANAGER)...")
+            edit_role.setPlaceholderText("Rola / Dział (np. Kierownik, Sprzedaż, IT)...")
             edit_role.setStyleSheet("background-color: #2b2d42; color: #f59e0b; border: 1px solid #f59e0b; border-radius: 4px; padding: 5px 8px; font-size: 11px;")
 
             self.speaker_inputs[spk_id] = {
