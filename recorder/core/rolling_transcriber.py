@@ -6,7 +6,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 from PySide6.QtCore import QThread, Signal as pyqtSignal
 
-from recorder.core.transcriber import TranscriberEngine, is_hallucination, clean_repeated_text
+from recorder.core.transcriber import TranscriberEngine, is_hallucination, clean_repeated_text, filter_repeated_words_list
 from recorder.core.diarizer import format_transcript_without_diarization
 from recorder.core.speakers import format_turns, suggest_speaker_names
 from recorder.config import (
@@ -179,23 +179,32 @@ class RollingTranscriptionWorker(QThread):
             for segment in segments:
                 raw_text = segment.text.strip() if segment.text else ""
                 seg_text = clean_repeated_text(raw_text)
-                if not seg_text or is_hallucination(seg_text):
+
+                if not seg_text or is_hallucination(raw_text, seg_text):
                     continue
 
                 # Jeśli segment ma dokładne słowa
                 if segment.words:
-                    for w in segment.words:
-                        w_text = w.word.strip()
-                        if w_text:
-                            # Globalne timestampy: start_sec całego bloku + lokalny start słowa
-                            g_start = round(block.start_sec + float(w.start), 2)
-                            g_end = round(block.start_sec + float(w.end), 2)
-                            transcript_words.append({
-                                "word": w.word,
-                                "start": g_start,
-                                "end": g_end,
-                                "probability": getattr(w, "probability", 1.0)
-                            })
+                    valid_words = [
+                        w for w in segment.words
+                        if w.word and w.start is not None and w.end is not None
+                    ]
+                    filtered_valid = filter_repeated_words_list(valid_words, max_consecutive=2)
+                    for w in filtered_valid:
+                        w_text = w.word if hasattr(w, "word") else w.get("word", "")
+                        w_start = float(w.start if hasattr(w, "start") else w.get("start", 0.0))
+                        w_end = float(w.end if hasattr(w, "end") else w.get("end", 0.0))
+                        prob = float(getattr(w, "probability", 1.0)) if hasattr(w, "probability") else float(w.get("probability", 1.0))
+
+                        # Globalne timestampy: start_sec całego bloku + lokalny start słowa
+                        g_start = round(block.start_sec + w_start, 2)
+                        g_end = round(block.start_sec + w_end, 2)
+                        transcript_words.append({
+                            "word": w_text,
+                            "start": g_start,
+                            "end": g_end,
+                            "probability": prob
+                        })
                 else:
                     # Fallback estymacji słów
                     words = seg_text.split()
@@ -211,13 +220,16 @@ class RollingTranscriptionWorker(QThread):
                                 "probability": 0.9
                             })
         except Exception as trans_err:
-            print(f"[ROLLING] Pominięto fragment bloku #{block.index}: {trans_err}")
+            print(f"[ROLLING] Pominięto fragment bloku #{block.block_index}: {trans_err}")
 
         # Formatowanie słów tego bloku do turnów
         block.words = transcript_words
         if transcript_words:
             _, _, block_turns = format_transcript_without_diarization(transcript_words)
             block.turns = block_turns
+
+        # ZWALNIANIE PAMIĘCI RAM: usuwamy referencję do surowych danych audio, których już nie potrzebujemy
+        block.audio_float = None
 
         block.is_processed = True
         self.processed_blocks.append(block)

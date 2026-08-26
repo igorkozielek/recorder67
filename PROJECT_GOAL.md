@@ -5,77 +5,75 @@
 ---
 
 ## 1. Główny Cel Projektu (Objective)
-Budowa systemu **Ambient AI** dla biura, który w sposób ciągły i inteligentny:
-1. Rejestruje mowę z mikrofonów w biurze (z automatycznym pomijaniem ciszy / VAD oraz fizycznym wyłącznikiem prywatności).
-2. Rozpoznaje kto co mówi (diaryzacja mówców / dedykowane kanały audio na osobę).
-3. Transkrybuje mowę lokalnie (za darmo, szybko i prywatnie przez Whisper / Faster-Whisper).
-4. Przesyła dane do bazy danych (Supabase) z zachowaniem ścisłych ról dostępu (tylko administrator).
-5. Wykorzystuje zaawansowane modele AI (np. przez automatyzację n8n -> GPT-4o / Claude 3.5 Sonnet) do ciągłej analizy rozmów biznesowych:
-   - Wyciąganie zadań i deklaracji z przypisaniem do osób.
-   - Identyfikacja wąskich gardeł i problemów procesowych.
-   - Sugestie optymalizacji pracy biura.
-   - Prezentacja wniosków na dedykowanym dashboardzie.
+Budowa systemu **Ambient AI** dla biura, który w sposób ciągły, inteligentny i zoptymalizowany pod kątem zasobów:
+1. Rejestruje mowę z mikrofonów w biurze (z automatycznym pomijaniem ciszy przez Silero VAD i natychmiastowym strumieniowaniem WAV na dysk).
+2. Transkrybuje mowę na żywo w tle (asynchroniczny Rolling Transcriber oparty na `faster-whisper` z buforem mowy, deduplikacją słów i filtrami anty-halucynacyjnymi).
+3. Opcjonalnie separuje mówców (diaryzacja PyAnnote + autosugestia imion na podstawie kontekstu rozmów).
+4. Przesyła dane na żywo (Live Streaming) do bazy danych Supabase / REST API / CRM z odpornością na brak internetu (kolejka offline).
+5. Zasila moduł **Asystenta AI Biura w systemie CRM**, który na bieżąco generuje:
+   - Podgląd transkrypcji na żywo z podziałem na role i sygnaturami czasowymi.
+   - Podsumowanie wykonawcze (Executive Summary) i kluczowe ustalenia spotkania.
+   - Listę zadań do wykonania (Action Items) z automatycznym przypisaniem priorytetów (Krytyczny, Wysoki, Średni) oraz osób odpowiedzialnych.
+6. Automatycznie dzieli sesje po zadanym czasie ciągłej ciszy (Smart Session Splitting, np. 15 minut) bez przerywania nasłuchu.
 
 ---
 
-## 2. Aktualny Sprzęt Testowy
-- **Mikrofony:** **Hollyland LARK MAX 2 Combo (4-person)** (bezprzewodowy zestaw wielomikrofonowy z przypięciem do osób).
-- **Zastosowanie sprzętu:** Pozwala na przypisanie fizycznego mikrofonu/kanału do konkretnego pracownika, co umożliwia bezbłędną separację mówców (Hardware-based Diarization) oraz doskonałą jakość dźwięku bez pogłosu pomieszczenia.
-
----
-
-## 3. Architektura Systemu i Komponenty
+## 2. Architektura Systemu i Komponenty
 
 ```mermaid
 graph TD
-    A[Hollyland LARK MAX 2 / Mikrofony] --> B[Aplikacja Python / PyQt6 Recorder]
-    B -->|Silero VAD| C[Voice Activity Detection]
-    B -->|Hardware Channels / PyAnnote| D[Diarization - Rozpoznanie osób]
-    B -->|Faster-Whisper lokalnie| E[Transkrypcja Audio -> Tekst]
-    E --> F[(Baza Danych Supabase)]
-    G[Stream Deck / Fizyczny Kill-Switch] -->|Mute / Pauza| B
-    F --> H[n8n Workflow Automation]
-    H --> I[LLM: GPT-4o / Claude 3.5 Sonnet]
-    I --> J[Wnioski biznesowe / Zadania / Optymalizacje]
-    J --> K[Dashboard React / Lovable dla Admina]
+    A[Mikrofony biurowe / Zestaw wielomikrofonowy] --> B[Aplikacja Desktopowa PySide6]
+    B -->|Silero VAD AI| C[Voice Activity Detection & Auto-Pauza]
+    B -->|StreamingWavWriter| D[Strumieniowy zapis WAV na dysk]
+    B -->|Rolling Transcriber| E[Faster-Whisper na żywo w tle]
+    E -->|Filtry 1-gram / 2-gram| F[Deduplikacja i ochrona zdań]
+    F -->|Opcjonalnie PyAnnote| G[Diaryzacja i autosugestia mówców]
+    F -->|CloudSyncManager| H[Asynchroniczny Ingest na żywo]
+    H -->|Brak sieci| I[(Lokalna kolejka offline)]
+    H -->|Połączenie online| J[(Baza Danych Supabase / REST API)]
+    J --> K[Asystent AI Biura w CRM]
+    K --> L[Transkrypcja i Mówcy]
+    K --> M[Podsumowanie Wykonawcze]
+    K --> N[Automatyczne Zadania z Priorytetami]
 ```
 
 ---
 
-## 4. Status Realizacji: Co jest ZROBIONE vs Co jest DO ZROBIENIA
+## 3. Status Realizacji: Co jest ZROBIONE vs Roadmapa
 
 ### ✅ ZROBIONE (Stan obecny w repozytorium):
-- [x] **Aplikacja Desktopowa GUI (PyQt6)**: Nowoczesny interfejs, wskaźniki poziomu VU meter, zegar nagrywania, zarządzanie plikami nagrań i transkrypcji.
-- [x] **Silero VAD (Voice Activity Detection)**: Detekcja mowy AI w czasie rzeczywistym, bufor 0.2s pre-padding (brak ucinania słów), regulowany suwak odcinania ciszy (1–10s, domyślnie 5s), auto-pauza i auto-wznawianie.
-- [x] **Lokalna Transkrypcja na Żywo i po nagraniu**: Silnik `faster-whisper` z możliwością wyboru modelu w UI (`small`, `medium`, `large-v3-turbo`, `large-v3`, `base`), automatycznym wykrywaniem akceleracji sprzętowej (CUDA `float16` lub CPU `int8` z przydziałem wątków), zoptymalizowanymi parametrami Silero VAD (`threshold=0.3`, `speech_pad_ms=400`) oraz bezpiecznym fallbackiem słów zapobiegającym utracie wypowiedzi z początku nagrania.
-- [x] **Transkrypcja i Diaryzacja po zakończeniu nagrania**: Integracja z `pyannote.audio` (model `pyannote/speaker-diarization-3.1`) + `faster-whisper`, łączenie segmentów słów z etykietami mówców.
-- [x] **Filtrowanie i selekcja urządzeń wejściowych**: Wykrywanie sprawnych mikrofonów w Windows z pomijaniem niestabilnych sterowników WDM-KS.
-- [x] **Wgrywanie Gotowych Plików Audio (WAV / MP3 / M4A / FLAC / OGG / AAC)**: Wgrywanie zewnętrznych nagrań ze spotkań lub dyktafonów, inteligentny miks kanałów stereo i normalizacja głośności (Peak Normalization), automatyczna konwersja do 16kHz mono bez potrzeby systemowego FFmpeg, asynchroniczna transkrypcja Whisper + diaryzacja PyAnnote (`batch_size=32`), podgląd w oknie i zapis do `.txt`.
-- [x] **Panel Mapowania i Autosugestii Mówców (Speaker Mapping & Verification)**: Automatyczna analiza kontekstu dialogów w celu sugerowania imion (np. Jan, Piotr, Tomasz), wbudowany panel weryfikacji z próbkami wypowiedzi, możliwość szybkiej korekty w GUI oraz natychmiastowe przemapowanie w tekście i pliku `.txt`.
-- [x] **Eksport lokalny**: Automatyczny zapis nagrań `.wav` i plików transkrypcji `.txt`.
+- [x] **Aplikacja Desktopowa GUI (PySide6)**: Nowoczesny interfejs, wskaźniki VU meter poziomu głośności, zegar nagrywania, zarządzanie plikami nagrań i transkrypcji.
+- [x] **Silero VAD (Voice Activity Detection)**: Detekcja mowy AI w czasie rzeczywistym, pre-padding zapobiegający ucinaniu słów, regulacja progu ciszy i auto-wznawianie.
+- [x] **Asynchroniczna Transkrypcja na Żywo (Rolling Transcriber)**: Silnik `faster-whisper` (`small`, `medium`, `large-v3-turbo`) przetwarzający bloki mowy w tle, z automatycznym doborem akceleracji CUDA `float16` lub CPU `int8`.
+- [x] **Zaawansowane Filtry Anty-Halucynacyjne i Deduplikacja**:
+  - Eliminacja patologicznych pętli 1-słownych i 2-słownych (`1-gram` i `2-gram`, np. zacięcia na słowach *„nie”*, *„tak”*, *„nie ma”*, *„KONIEC”*, *„ha, ha”*).
+  - Ochrona zdań mieszanych (zachowanie wartościowego początku zdania, odcięcie zapętlonej końcówki).
+  - Wycinanie plansz YouTube i halucynacji systemowych.
+  - Prawidłowa synchronizacja obiektów `Word` ze znacznikami czasu na osi czasu.
+- [x] **Optymalizacja Pamięci RAM**:
+  - Natychmiastowe zwalnianie buforów audio `block.audio_float = None` po przetworzeniu.
+  - Strumieniowy zapis na dysk (`StreamingWavWriter`) bez akumulacji pamięci w długich sesjach.
+- [x] **Smart Session Splitting (Auto-podział sesji biurowych)**:
+  - Automatyczne domykanie i finalizacja spotkania po 15 min ciągłej ciszy.
+  - Płynne otwieranie nowego pliku nagrania i nowej sesji w CRM bez konieczności ponownego ładowania modelu Whisper (0 ms opóźnienia).
+- [x] **Integracja Chmurowa i CRM (Cloud Sync)**:
+  - Asynchroniczny przesył segmentów na żywo do Supabase / Webhooka.
+  - Obsługa kolejki offline z automatycznym dosłaniem danych po powrocie internetu.
+- [x] **Separacja i Autosugestia Mówców (Diarization)**:
+  - Integracja z `pyannote.audio` (model `speaker-diarization-3.1`) z możliwością uruchomienia wyłącznie diaryzacji na gotowych słowach sesji JSON bez ponownego uruchamiania Whispera.
+  - Panel autosugestii imion na podstawie kontekstu wypowiedzi.
+- [x] **Kontrola Prywatności w GUI (Manual Pause / Stop)**: Dedykowane przyciski *„Wstrzymaj Ręcznie”* oraz *„Stop i Zapisz”* pozwalające na natychmiastowe zatrzymanie nasłuchu mikrofonu i transmisji danych w dowolnym momencie.
+- [x] **Wgrywanie Gotowych Plików Audio/Wideo**: Obsługa formatów WAV, MP3, M4A, FLAC, OGG, AAC, MP4, MKV z normalizacją 16kHz mono i natychmiastowym autozapisem TXT/JSON.
+- [x] **Budowanie wersji instalacyjnej**: Skrypty PyInstaller (`build_exe.ps1`) do generowania gotowego pliku `.exe` pod Windows.
 
 ---
 
-- [x] **Separacja i Rozpoznawanie Mówców (Diarization)**:
-  - W oparciu o testy sprzętu Hollyland LARK MAX 2 w systemie Windows (brak 4 fizycznych niezależnych kanałów USB) wdrożono i zoptymalizowano programową diaryzację AI `pyannote.audio` (`batch_size=32`) z panelem autosugestii imion i weryfikacji w GUI.
-
-- [ ] **Globalny / Fizyczny Kill-Switch (Przycisk Prywatności)**:
-  - Obsługa globalnych skrótów klawiszowych (działających w tle).
-  - Integracja ze Stream Deck / przyciskiem USB / webhookiem lokalnym do natychmiastowego wyciszania/zatrzymywania nasłuchu.
-- [ ] **Integracja z Supabase**:
-  - Konfiguracja klienta Supabase w Pythonie.
-  - Tabela na transkrypcje (kolumny: `id`, `session_id`, `speaker`, `channel`, `timestamp`, `content`, `audio_url`, `created_at`).
-  - Zabezpieczenia RLS (Row Level Security) – dostęp wyłącznie dla roli administratora.
-- [ ] **Automatyzacja n8n & Analiza AI**:
-  - Przygotowanie workflow w n8n wyzwalanego cyklicznie (np. co godzinę lub na koniec dnia roboczego).
-  - Prompt analityczny biznesowy (zadania, przypisane osoby, wąskie gardła, sugestie optymalizacyjne, odsiewanie rozmów prywatnych/luźnych).
-- [ ] **Panel / Dashboard (React / Lovable)**:
-  - Wizualizacja wyciągniętych wniosków, listy zadań i podsumowań dnia dla zarządu/administratora.
-- [ ] **Zgodność i Procedury (RODO / Prywatność)**:
-  - Informowanie osób w biurze o monitorowaniu procesów i statusie działania mikrofonów.
+### ⏳ Opcjonalne Usprawnienia:
+- [ ] **Globalny skrót klawiszowy / Stream Deck (Opcjonalny Fizyczny Kill-Switch)**: Możliwość pauzowania nagrywania globalnym skrótem klawiszowym, gdy aplikacja działa zminimalizowana w tle.
 
 ---
 
-## 5. Instrukcja dla Agentów AI pracujących nad projektem
-1. Przy kolejnych zadaniach sprawdzaj ten plik (`PROJECT_GOAL.md`) jako punkt odniesienia do bieżącej architektury i priorytetów.
-2. Wszelkie zmiany założeń, nowe moduły lub nowe testowane urządzenia należy dopisywać i aktualizować w tym pliku.
+## 4. Instrukcja dla Agentów AI pracujących nad projektem
+1. Przy kolejnych zadaniach sprawdzaj ten plik (`PROJECT_GOAL.md`) oraz `README.md` jako punkt odniesienia do bieżącej architektury i priorytetów.
+2. **Prywatność i Bezpieczeństwo:** Nigdy nie umieszczaj w commitowanych plikach dokumentacji ani kodu prawdziwych kluczy API, haseł, prywatnych adresów URL instancji czy danych osobowych klientów. Wszystkie przykłady muszą posługiwać się generycznymi placeholderami.
+3. Wszelkie zmiany założeń, nowe moduły lub optymalizacje należy dopisywać i aktualizować w tym pliku.

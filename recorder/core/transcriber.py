@@ -37,12 +37,14 @@ HALLUCINATION_TRIGGERS = [
     "w tym filmie przeczytam", "w tym filmie", "zobaczymy gdzie tu jest",
     "poniżej znajduje się", "to jest poniżej", "śpiewa", "muzyka", "subskrybuj",
     "do zobaczenia w kolejnym", "zostaw łapkę w górę", "miłego oglądania",
-    "the user", "stop what you are doing", "write for the user"
+    "the user", "stop what you are doing", "write for the user",
+    "searching web", "search the web", "hadi doyalım"
 ]
 
 NON_SPEECH_SOUNDS = {
     "uch", "uh", "uhm", "mhm", "yhm", "eee", "aaa", "ehm", "mmm",
-    "uff", "ach", "och", "oj", "uhuhu", "ehehe", "aha", "hm", "hmm"
+    "uff", "ach", "och", "oj", "uhuhu", "ehehe", "aha", "hm", "hmm",
+    "ha", "haha", "hahaha", "kof", "cough", "he", "hehe", "hi", "ehe"
 }
 
 ISOLATED_NOISE_GREETINGS = {
@@ -52,14 +54,15 @@ ISOLATED_NOISE_GREETINGS = {
     "dzięki za oglądanie", "dzięki za oglądanie.", "dzięki za oglądanie!",
     "dziękuję za oglądanie", "dziękuję za oglądanie.", "dziękuję za oglądanie!",
     "dziękuję za uwagę", "dziękuję za uwagę.", "dziękuje za uwagę.", "dziękuje za uwagę",
-    "do widzenia", "do widzenia.", "do widzenia!", "pozdrawiam", "pozdrawiam.", "pozdrawiam!"
+    "do widzenia", "do widzenia.", "do widzenia!", "pozdrawiam", "pozdrawiam.", "pozdrawiam!",
+    "koniec", "koniec.", "koniec!"
 }
 
 
 def clean_repeated_text(text: str) -> str:
     """
     Ogólne, algorytmiczne usuwanie zapętleń słów, fraz (1-gramów, 2-gramów, 3-gramów),
-    jąkania, powtarzających się ciągów cyfr i wielokropków.
+    jąkania, powtarzających się ciągów cyfr i wielokropków oraz normalizacja spacji.
     """
     if not text:
         return ""
@@ -79,52 +82,148 @@ def clean_repeated_text(text: str) -> str:
     cleaned = re.sub(r'\b([A-Za-z0-9ĄąĆćĘęŁłŃńÓóŚśŹźŻż\'-]+)(?:\s*[\,\.\?\!]\s*|\s+)(?:\1(?:\s*[\,\.\?\!]\s*|\s+))+\1(?:\b|[\,\.\?\!]*)', r'\1', cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r'\b([A-Za-z0-9ĄąĆćĘęŁłŃńÓóŚśŹźŻż\'-]+)(?:[\,\.\?\!]*)?(?:\s+\1(?:[\,\.\?\!]*)?){2,}', r'\1', cleaned, flags=re.IGNORECASE)
 
-    # 4. Usuwanie fraz 2-3 słów powtórzonych wielokrotnie (np. 'i tak dalej, i tak dalej, i tak dalej' -> 'i tak dalej')
-    cleaned = re.sub(r'\b([A-Za-z0-9ĄąĆćĘęŁłŃńÓóŚśŹźŻż\'-]+(?:\s+[A-Za-z0-9ĄąĆćĘęŁłŃńÓóŚśŹźŻż\'-]+){1,2})(?:[\,\.\?\!]*)?(?:\s+\1(?:[\,\.\?\!]*)?){1,}', r'\1', cleaned, flags=re.IGNORECASE)
+    # 3.5 Zabezpieczenie przed halucynacyjnymi ciągami "niech, niech, niech", "ha, ha, ha", "tak, tak, tak" oddzielonymi interpunkcją
+    cleaned = re.sub(r'\b([A-Za-z0-9ĄąĆćĘęŁłŃńÓóŚśŹźŻż\'-]{1,15})(?:[\,\.\?\!]\s*|\s+)(?:\1(?:[\,\.\?\!]\s*|\s+)){2,}', r'\1 ', cleaned, flags=re.IGNORECASE)
 
-    # 5. Czyszczenie zwielokrotnionych wielokropków i białych znaków
+    # 4. Usuwanie fraz 2-3 słów powtórzonych wielokrotnie (np. 'nie ma, nie ma, nie ma' -> 'nie ma')
+    cleaned = re.sub(r'\b([A-Za-z0-9ĄąĆćĘęŁłŃńÓóŚśŹźŻż\'-]+(?:\s+[A-Za-z0-9ĄąĆćĘęŁłŃńÓóŚśŹźŻż\'-]+){1,2})(?:[\,\.\?\!]*)?(?:\s*[\,\.\?\!]*\s*\1(?:[\,\.\?\!]*)?){1,}', r'\1', cleaned, flags=re.IGNORECASE)
+
+    # 5. Normalizacja spacji wokół liczb, godzin, łączników i apostrofów (np. '11 .30' -> '11.30', 'CRM -a' -> 'CRM-a')
+    cleaned = re.sub(r'(\d+)\s*([\.,])\s*(\d+)', r'\1\2\3', cleaned)
+    cleaned = re.sub(r'([A-Za-z0-9ĄąĆćĘęŁłŃńÓóŚśŹźŻż]+)\s*([\'\-])\s*([A-Za-z0-9ĄąĆćĘęŁłŃńÓóŚśŹźŻż]+)', r'\1\2\3', cleaned)
+
+    # 6. Czyszczenie zwielokrotnionych wielokropków i białych znaków
     cleaned = re.sub(r'(\s*\.{2,}\s*){2,}', ' ... ', cleaned)
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     return cleaned
 
 
-def is_hallucination(text: str) -> bool:
+def filter_repeated_words_list(words: List[Dict[str, Any]], max_consecutive: int = 2) -> List[Dict[str, Any]]:
     """
-    Ogólne zabezpieczenie przed halucynacjami, niską entropią (pętle stutter/repetition),
-    odgłosami tła/oddechami oraz samotnymi zwrotami końcowymi z bazy treningowej.
+    Filtruje listę słów (ze znacznikami start/end), zapobiegając dodawaniu patologicznych pętli
+    powtórzeń pojedynczych słów (1-gram) oraz par słów (2-gram, np. 100x 'nie ma').
     """
-    if not text:
-        return True
-    
-    cleaned_txt = clean_repeated_text(text)
-    lower_txt = cleaned_txt.lower().strip()
-    raw_words = [re.sub(r'[^\w]', '', w) for w in lower_txt.split()]
-    raw_words = [w for w in raw_words if w]
+    if not words or len(words) <= 2:
+        return words or []
 
-    if not raw_words or len(lower_txt) < 2 or lower_txt in {".", "...", ",", "?", "!"}:
+    # 1. Filtrowanie pętli 1-słownych (np. 50x 'niech')
+    stage1 = []
+    current_norm = None
+    repeat_count = 0
+
+    for w in words:
+        w_text = w.get("word", "") if isinstance(w, dict) else getattr(w, "word", str(w))
+        norm = re.sub(r'[^\w]', '', str(w_text)).strip().lower()
+        if not norm:
+            stage1.append(w)
+            continue
+
+        if norm == current_norm:
+            repeat_count += 1
+        else:
+            current_norm = norm
+            repeat_count = 1
+
+        if repeat_count <= max_consecutive:
+            stage1.append(w)
+
+    if len(stage1) < 4:
+        return stage1
+
+    # 2. Filtrowanie pętli 2-słownych (np. 'nie ma, nie ma, nie ma...')
+    stage2 = []
+    i = 0
+    while i < len(stage1):
+        if i + 3 < len(stage1):
+            w1_norm = re.sub(r'[^\w]', '', str(stage1[i].get("word", "") if isinstance(stage1[i], dict) else getattr(stage1[i], "word", ""))).strip().lower()
+            w2_norm = re.sub(r'[^\w]', '', str(stage1[i+1].get("word", "") if isinstance(stage1[i+1], dict) else getattr(stage1[i+1], "word", ""))).strip().lower()
+            w3_norm = re.sub(r'[^\w]', '', str(stage1[i+2].get("word", "") if isinstance(stage1[i+2], dict) else getattr(stage1[i+2], "word", ""))).strip().lower()
+            w4_norm = re.sub(r'[^\w]', '', str(stage1[i+3].get("word", "") if isinstance(stage1[i+3], dict) else getattr(stage1[i+3], "word", ""))).strip().lower()
+
+            # Wykrycie powtórzenia 2-gramu: (A, B) == (A, B)
+            if w1_norm and w2_norm and w1_norm == w3_norm and w2_norm == w4_norm:
+                # Dodaj parę początkową
+                stage2.append(stage1[i])
+                stage2.append(stage1[i+1])
+                i += 2
+                # Pomiń wszystkie kolejne identyczne pary powtórzeń (A, B)
+                while i + 1 < len(stage1):
+                    next_w1 = re.sub(r'[^\w]', '', str(stage1[i].get("word", "") if isinstance(stage1[i], dict) else getattr(stage1[i], "word", ""))).strip().lower()
+                    next_w2 = re.sub(r'[^\w]', '', str(stage1[i+1].get("word", "") if isinstance(stage1[i+1], dict) else getattr(stage1[i+1], "word", ""))).strip().lower()
+                    if next_w1 == w1_norm and next_w2 == w2_norm:
+                        i += 2
+                    else:
+                        break
+                continue
+
+        stage2.append(stage1[i])
+        i += 1
+
+    return stage2
+
+
+def is_hallucination(raw_text: str, cleaned_text: Optional[str] = None) -> bool:
+    """
+    Kompleksowe wykrywanie halucynacji Whispera:
+    1. Jeśli surowy segment to czysta pętla powtórzeń w ciszy (np. 15x 'KONIEC' lub 10x 'niech') -> ODRZUCA.
+    2. Jeśli segment zawierał wartościowe zdanie i pętlę na końcu -> ZACHOWUJE (dzięki ocenie zróżnicowania słów).
+    3. Wykrywa plansze YouTube, odgłosy tła i samotne pozdrowienia w ciszy.
+    """
+    if not raw_text or not raw_text.strip():
+        return True
+
+    effective_cleaned = cleaned_text if cleaned_text is not None else clean_repeated_text(raw_text)
+    lower_raw = raw_text.lower().strip()
+    lower_cleaned = effective_cleaned.lower().strip()
+
+    raw_tokens = [re.sub(r'[^\w]', '', w) for w in lower_raw.split()]
+    raw_tokens = [w for w in raw_tokens if w]
+
+    cleaned_tokens = [re.sub(r'[^\w]', '', w) for w in lower_cleaned.split()]
+    cleaned_tokens = [w for w in cleaned_tokens if w]
+
+    if not cleaned_tokens or len(lower_cleaned) < 2 or lower_cleaned in {".", "...", ",", "?", "!"}:
         return True
 
     # 1. Sprawdzenie czy tekst składa się wyłącznie z odgłosów/westchnień/onomatopei
-    if all(w in NON_SPEECH_SOUNDS for w in raw_words):
+    if all(w in NON_SPEECH_SOUNDS for w in cleaned_tokens):
         return True
 
-    # 2. Algorytmiczne wykrywanie niskiej entropii / zapętleń (Stutter / Repetition Loop)
-    if len(raw_words) >= 4:
-        unique_ratio = len(set(raw_words)) / len(raw_words)
-        if unique_ratio < 0.38:
-            return True
-        counts = Counter(raw_words)
-        most_common_count = counts.most_common(1)[0][1]
-        if (most_common_count / len(raw_words)) > 0.55:
+    # 2. Wykrywanie CZYSTEJ halucynacji w ciszy (gdy surowy tekst miał wiele słów, ale to było 1-2 słowa w kółko)
+    if len(raw_tokens) >= 5:
+        unique_raw = set(raw_tokens)
+        raw_unique_ratio = len(unique_raw) / len(raw_tokens)
+        counts = Counter(raw_tokens)
+        most_common_word, most_common_count = counts.most_common(1)[0]
+        raw_dominance = most_common_count / len(raw_tokens)
+
+        # Jeśli jedno słowo stanowi > 70% surowego bloku i unikalnych słów jest <= 2
+        # Oznacza to, że cały segment był pustą pętlą Whispera na szumie (np. 15x 'KONIEC' lub 10x 'niech')
+        if raw_dominance >= 0.70 and len(unique_raw) <= 2:
             return True
 
-    # 3. Odrzucanie samotnych, krótkich powitań/podziękowań generowanych z szumu w ciszy (<= 4 słowa)
-    if len(raw_words) <= 4:
+        # Jeśli po wyczyszczeniu drastycznie spadła liczba słów (np. z 10 słów do 1), to był czysty spam
+        if len(cleaned_tokens) <= 1 and len(raw_tokens) >= 4:
+            return True
+
+    # 3. Analiza zróżnicowania w wyczyszczonym tekście
+    if len(cleaned_tokens) >= 4:
+        unique_ratio = len(set(cleaned_tokens)) / len(cleaned_tokens)
+        if unique_ratio < 0.38:
+            return True
+        c_counts = Counter(cleaned_tokens)
+        most_common_count = c_counts.most_common(1)[0][1]
+        threshold = 0.6 if len(cleaned_tokens) < 15 else 0.55
+        if (most_common_count / len(cleaned_tokens)) > threshold:
+            return True
+
+    # 4. Odrzucanie samotnych, krótkich powitań/podziękowań generowanych z szumu w ciszy (<= 4 słowa)
+    if len(cleaned_tokens) <= 4:
         for tr in ISOLATED_NOISE_GREETINGS:
-            if tr in lower_txt:
+            if tr in lower_cleaned or tr in lower_raw:
                 return True
         for h in HALLUCINATION_TRIGGERS:
-            if h in lower_txt:
+            if h in lower_cleaned or h in lower_raw:
                 return True
 
     return False
@@ -212,10 +311,11 @@ class TranscriberEngine:
         )
 
         phrase_text = "".join([segment.text for segment in segments]).strip()
-        if is_hallucination(phrase_text):
+        cleaned_phrase = clean_repeated_text(phrase_text)
+        if not cleaned_phrase or is_hallucination(phrase_text, cleaned_phrase):
             return ""
 
-        return phrase_text
+        return cleaned_phrase
 
     def transcribe_file_with_words(
         self,
@@ -272,7 +372,7 @@ class TranscriberEngine:
         for segment in segments:
             raw_text = segment.text.strip() if segment.text else ""
             seg_text = clean_repeated_text(raw_text)
-            if not seg_text or is_hallucination(seg_text):
+            if not seg_text or is_hallucination(raw_text, seg_text):
                 continue
 
             # Logowanie pierwszej wykrytej mowy
@@ -294,11 +394,12 @@ class TranscriberEngine:
                 ]
                 if valid_words:
                     has_valid_words = True
-                    for word in valid_words:
+                    filtered_valid = filter_repeated_words_list(valid_words, max_consecutive=2)
+                    for word in filtered_valid:
                         transcript_words.append({
-                            "word": word.word,
-                            "start": word.start,
-                            "end": word.end
+                            "word": word.word if hasattr(word, "word") else word.get("word", ""),
+                            "start": word.start if hasattr(word, "start") else word.get("start", 0.0),
+                            "end": word.end if hasattr(word, "end") else word.get("end", 0.0)
                         })
 
             # 2. Bezpieczny Fallback: jeśli z powodu cichego głosu/szumu segment nie ma word-timestamps,
