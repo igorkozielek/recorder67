@@ -18,7 +18,10 @@ from recorder.config import (
     PRE_SPEECH_BUFFER_CHUNKS,
     RMS_SILENCE_THRESHOLD,
     DEFAULT_WHISPER_MODEL,
-    SESSION_SPLIT_SILENCE_SEC
+    SESSION_SPLIT_SILENCE_SEC,
+    LIVE_BLOCK_MIN_SEC,
+    LIVE_BLOCK_MAX_SEC,
+    LIVE_BLOCK_SILENCE_CUT_SEC
 )
 from recorder.audio.capture import save_wav_file, StreamingWavWriter
 from recorder.audio.converter import resample_to_16k, prepare_audio_file
@@ -42,9 +45,9 @@ class SmartAudioWorker(QThread):
     error_signal = pyqtSignal(str)
 
     # Parametry okna bezpiecznego cięcia w tle (Safe VAD Boundary Handoff)
-    MIN_BLOCK_DURATION_SEC = 120.0          # Min. 2 minuty mowy przed poszukiwaniem punktu podziału
-    SAFE_SILENCE_CUT_THRESHOLD_SEC = 1.2   # Wymagane min. 1.2s ciszy potwierdzonej przez Silero VAD
-    MAX_BLOCK_DURATION_SEC = 300.0          # Maksymalny czas bloku 5 minut
+    MIN_BLOCK_DURATION_SEC = LIVE_BLOCK_MIN_SEC          # Szybki podgląd po min. 15s mowy
+    SAFE_SILENCE_CUT_THRESHOLD_SEC = LIVE_BLOCK_SILENCE_CUT_SEC   # Wymagane min. 1.0s ciszy potwierdzonej przez Silero VAD
+    MAX_BLOCK_DURATION_SEC = LIVE_BLOCK_MAX_SEC          # Maksymalny czas bloku 45 sekund
     OVERLAP_SAMPLES = int(0.5 * 16000)      # 0.5s nakładki akustycznej na styku
 
     def __init__(self, samplerate=SAMPLE_RATE, channels=AUDIO_CHANNELS, device_index=None, auto_pause_sec=DEFAULT_AUTO_PAUSE_SEC):
@@ -283,8 +286,8 @@ class SmartAudioWorker(QThread):
 
                 is_ready_for_cut = (
                     (current_block_dur >= self.MIN_BLOCK_DURATION_SEC and silence_dur >= self.SAFE_SILENCE_CUT_THRESHOLD_SEC) or
-                    (current_block_dur >= self.MAX_BLOCK_DURATION_SEC and silence_dur >= 0.8) or
-                    (current_block_dur >= self.MIN_BLOCK_DURATION_SEC and self.state == SmartRecordState.AUTO_PAUSED)
+                    (current_block_dur >= self.MAX_BLOCK_DURATION_SEC and silence_dur >= 0.6) or
+                    (current_block_dur >= 3.0 and self.state == SmartRecordState.AUTO_PAUSED)
                 )
 
                 if is_ready_for_cut:

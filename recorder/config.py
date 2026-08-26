@@ -146,6 +146,11 @@ SESSION_SPLIT_SILENCE_SEC = DEFAULT_SESSION_SPLIT_MINUTES * 60.0  # Domyślnie 1
 MAX_SESSION_DURATION_SEC = float(get_env_variable("MAX_SESSION_HOURS", "2.0")) * 3600.0  # Max 2h na sesję
 LIVE_STREAMING_ENABLED = get_env_variable("LIVE_STREAMING_ENABLED", "true").lower() in ("1", "true", "yes")
 
+# Parametry szybkiej transmisji bloków mowy na żywo do CRM (zamiast czekania 2 minut)
+LIVE_BLOCK_MIN_SEC = float(get_env_variable("LIVE_BLOCK_MIN_SEC", "15.0"))          # Szybki podgląd po min. 15s mowy
+LIVE_BLOCK_MAX_SEC = float(get_env_variable("LIVE_BLOCK_MAX_SEC", "45.0"))          # Maksymalny czas bloku przed wymuszeniem cięcia na pauzie
+LIVE_BLOCK_SILENCE_CUT_SEC = float(get_env_variable("LIVE_BLOCK_SILENCE_CUT_SEC", "1.0"))  # Min. 1.0s ciszy VAD na naturalnym końcu zdania
+
 # Konfiguracja Cloud Sync / Multi-Tenant / EMANAGER.PRO
 SYNC_QUEUE_DIR = os.path.join(TRANSCRIPTIONS_DIR, "sync_queue")
 os.makedirs(SYNC_QUEUE_DIR, exist_ok=True)
