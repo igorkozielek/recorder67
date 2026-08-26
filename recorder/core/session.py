@@ -134,13 +134,28 @@ class TranscriptionSession:
             print(f"⚠️ [SESJA] Błąd odczytu pliku sesji JSON '{json_path}': {e}")
             return None
 
-    def export_to_plain_text(self, speaker_mapping: Optional[Dict[str, str]] = None) -> str:
+    def export_to_plain_text(self, speaker_mapping: Optional[Dict[str, str]] = None,
+                             session_start_time: Optional[datetime] = None) -> str:
         """
         Generuje czytelny tekst sformatowany z timestampami i nazwami mówców.
         """
         mapping = dict(self.speaker_mapping)
         if speaker_mapping:
             mapping.update(speaker_mapping)
+
+        # Ustalenie bazowego czasu
+        base_dt = session_start_time
+        if base_dt is None and self.created_at:
+            try:
+                base_dt = datetime.fromisoformat(self.created_at)
+            except Exception:
+                base_dt = None
+
+        try:
+            from recorder.config import load_user_settings
+            ts_format = load_user_settings().get("timestamp_format", "offset+clock")
+        except Exception:
+            ts_format = "offset+clock"
 
         lines = []
         for t in self.turns:
@@ -149,20 +164,57 @@ class TranscriptionSession:
             st = t.get("start", 0.0)
             en = t.get("end", 0.0)
             txt = t.get("text", "").strip()
-            if self.has_diarization and spk != "Mówca":
-                lines.append(f"[{st:.1f}s - {en:.1f}s] {display_spk}: {txt}\n")
+
+            # Offset [MM:SS - MM:SS]
+            s_min, s_sec = int(st // 60), int(st % 60)
+            e_min, e_sec = int(en // 60), int(en % 60)
+            offset_label = f"{s_min:02d}:{s_sec:02d} - {e_min:02d}:{e_sec:02d}"
+
+            if base_dt is not None:
+                from datetime import timedelta
+                c_st = (base_dt + timedelta(seconds=st)).strftime("%H:%M:%S")
+                c_en = (base_dt + timedelta(seconds=en)).strftime("%H:%M:%S")
+                clock_label = f"{c_st} - {c_en}"
             else:
-                lines.append(f"[{st:.1f}s - {en:.1f}s]: {txt}\n")
+                clock_label = None
+
+            if ts_format == "clock_only" and clock_label:
+                time_label = clock_label
+            elif ts_format == "offset_only":
+                time_label = offset_label
+            elif clock_label:
+                time_label = f"{offset_label} | {clock_label}"
+            else:
+                time_label = offset_label
+
+            if self.has_diarization and spk != "Mówca":
+                lines.append(f"[{time_label}] {display_spk}: {txt}\n")
+            else:
+                lines.append(f"[{time_label}] {display_spk}: {txt}\n")
 
         return "\n".join(lines).strip()
 
-    def export_to_html(self, speaker_mapping: Optional[Dict[str, str]] = None) -> str:
+    def export_to_html(self, speaker_mapping: Optional[Dict[str, str]] = None,
+                       session_start_time: Optional[datetime] = None) -> str:
         """
         Generuje sformatowany kod HTML do wyświetlenia w QTextEdit.
         """
         mapping = dict(self.speaker_mapping)
         if speaker_mapping:
             mapping.update(speaker_mapping)
+
+        base_dt = session_start_time
+        if base_dt is None and self.created_at:
+            try:
+                base_dt = datetime.fromisoformat(self.created_at)
+            except Exception:
+                base_dt = None
+
+        try:
+            from recorder.config import load_user_settings
+            ts_format = load_user_settings().get("timestamp_format", "offset+clock")
+        except Exception:
+            ts_format = "offset+clock"
 
         html_blocks = []
         for t in self.turns:
@@ -172,10 +224,31 @@ class TranscriptionSession:
             en = t.get("end", 0.0)
             txt = t.get("text", "").strip()
 
-            if self.has_diarization and spk != "Mówca":
-                html_blocks.append(f"<b>[{st:.1f}s - {en:.1f}s] {display_spk}:</b> {txt}<br><br>")
+            s_min, s_sec = int(st // 60), int(st % 60)
+            e_min, e_sec = int(en // 60), int(en % 60)
+            offset_label = f"{s_min:02d}:{s_sec:02d} - {e_min:02d}:{e_sec:02d}"
+
+            if base_dt is not None:
+                from datetime import timedelta
+                c_st = (base_dt + timedelta(seconds=st)).strftime("%H:%M:%S")
+                c_en = (base_dt + timedelta(seconds=en)).strftime("%H:%M:%S")
+                clock_label = f"{c_st} - {c_en}"
             else:
-                html_blocks.append(f"<b>[{st:.1f}s - {en:.1f}s]:</b> {txt}<br><br>")
+                clock_label = None
+
+            if ts_format == "clock_only" and clock_label:
+                time_label = clock_label
+            elif ts_format == "offset_only":
+                time_label = offset_label
+            elif clock_label:
+                time_label = f"{offset_label} | {clock_label}"
+            else:
+                time_label = offset_label
+
+            if self.has_diarization and spk != "Mówca":
+                html_blocks.append(f"<b>[{time_label}] {display_spk}:</b> {txt}<br><br>")
+            else:
+                html_blocks.append(f"<b>[{time_label}] {display_spk}:</b> {txt}<br><br>")
 
         return "".join(html_blocks)
 

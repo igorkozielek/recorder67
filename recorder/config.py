@@ -202,6 +202,7 @@ def load_user_settings() -> dict:
         "vad_speech_threshold": float(get_env_variable("VAD_SPEECH_THRESHOLD", "0.35")),
         "auto_pause_sec": float(get_env_variable("AUTO_PAUSE_SEC", "5.0")),
         "session_split_silence_sec": float(get_env_variable("SESSION_SPLIT_SILENCE_SEC", "900.0")),  # 15 min
+        "timestamp_format": get_env_variable("TIMESTAMP_FORMAT", "offset+clock"),
     }
     return defaults
 

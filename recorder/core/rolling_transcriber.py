@@ -44,10 +44,12 @@ class RollingTranscriptionWorker(QThread):
     finished_signal = pyqtSignal(str, str, list)  # (final_html, final_plain, all_turns)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, model_size: str = DEFAULT_WHISPER_MODEL, txt_save_path: Optional[str] = None):
+    def __init__(self, model_size: str = DEFAULT_WHISPER_MODEL, txt_save_path: Optional[str] = None,
+                 session_start_time: Optional[datetime] = None):
         super().__init__()
         self.model_size = model_size
         self.txt_save_path = txt_save_path
+        self.session_start_time = session_start_time  # Realna godzina startu sesji (do timestampów z godziną)
         self.block_queue: queue.Queue = queue.Queue()
         self._is_running: bool = False
         self.transcriber = TranscriberEngine(model_size=self.model_size)
@@ -64,13 +66,17 @@ class RollingTranscriptionWorker(QThread):
             self.latest_session_seconds = max(self.latest_session_seconds, end_sec)
             self.block_queue.put(block)
 
-    def reset_for_new_session(self, new_txt_save_path: Optional[str] = None):
+    def reset_for_new_session(self, new_txt_save_path: Optional[str] = None,
+                              session_start_time: Optional[datetime] = None):
         """Resetuje stan przetworzonych bloków dla nowej sesji spotkania bez konieczności ponownego ładowania modelu Whisper."""
         self.txt_save_path = new_txt_save_path
+        if session_start_time is not None:
+            self.session_start_time = session_start_time
         self.processed_blocks = []
         self.all_turns = []
         self.total_processed_seconds = 0.0
         self.latest_session_seconds = 0.0
+
 
     def update_session_time(self, current_sec: float):
         """Aktualizuje bieżący czas sesji ze stopera."""
@@ -244,6 +250,13 @@ class RollingTranscriptionWorker(QThread):
         if not combined_turns:
             return "Brak zarejestrowanej mowy.", "Brak zarejestrowanej mowy.", []
 
+        # Odczyt preferowanego formatu timestampu z ustawień użytkownika
+        try:
+            from recorder.config import load_user_settings
+            ts_format = load_user_settings().get("timestamp_format", "offset+clock")
+        except Exception:
+            ts_format = "offset+clock"
+
         full_html = ""
         full_plain = ""
         for t in combined_turns:
@@ -251,16 +264,38 @@ class RollingTranscriptionWorker(QThread):
             st = t.get("start", 0.0)
             en = t.get("end", 0.0)
             txt = t.get("text", "")
-            
-            # Formatowanie minut i sekund: [MM:SS - MM:SS]
+
+            # Formatowanie offsetu MM:SS
             s_min, s_sec = int(st // 60), int(st % 60)
             e_min, e_sec = int(en // 60), int(en % 60)
-            time_label = f"{s_min:02d}:{s_sec:02d} - {e_min:02d}:{e_sec:02d}"
+            offset_label = f"{s_min:02d}:{s_sec:02d} - {e_min:02d}:{e_sec:02d}"
+
+            # Obliczenie realnej godziny jeśli dostępna
+            if self.session_start_time is not None:
+                from datetime import timedelta
+                real_start = self.session_start_time + timedelta(seconds=st)
+                real_end = self.session_start_time + timedelta(seconds=en)
+                clock_start = real_start.strftime("%H:%M:%S")
+                clock_end = real_end.strftime("%H:%M:%S")
+                clock_label = f"{clock_start} - {clock_end}"
+            else:
+                clock_label = None
+
+            # Wybór formatu etykiety
+            if ts_format == "clock_only" and clock_label:
+                time_label = clock_label
+            elif ts_format == "offset_only":
+                time_label = offset_label
+            elif clock_label:  # domyślnie: offset+clock
+                time_label = f"{offset_label} | {clock_label}"
+            else:
+                time_label = offset_label
 
             full_html += f"<b>[{time_label}] {spk}:</b> {txt}<br><br>"
             full_plain += f"[{time_label}] {spk}: {txt}\n\n"
 
         return full_html, full_plain, combined_turns
+
 
     def _save_to_txt_file(self, content: str):
         """Bezpiecznie zapisuje bieżącą transkrypcję do pliku TXT na dysku."""

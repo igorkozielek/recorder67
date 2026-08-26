@@ -90,6 +90,8 @@ class SmartDictaphoneWindow(QMainWindow):
         self.current_meeting_id = None
         self.synced_segment_count = 0
         self._active_threads = []
+        self._finalize_pending = False       # Guard: blokuje Start gdy trwa finalizacja poprzedniej sesji
+        self.session_start_time = None       # Realna godzina startu bieżącego nagrania (datetime)
 
         # Moduł Cloud Sync (Supabase / EMANAGER.PRO / Webhook)
         self.cloud_sync = CloudSyncManager()
@@ -347,7 +349,7 @@ class SmartDictaphoneWindow(QMainWindow):
         # Opcje Diaryzacji i Liczby Osób
         diarization_row = QHBoxLayout()
         self.check_enable_diarization = QCheckBox("Włącz diaryzację mówców (PyAnnote AI - podział na osoby)")
-        self.check_enable_diarization.setChecked(True)
+        self.check_enable_diarization.setChecked(False)
         self.check_enable_diarization.setFont(QFont("Segoe UI", 9, QFont.Weight.Medium))
         self.check_enable_diarization.toggled.connect(self._on_diarization_toggled)
 
@@ -484,6 +486,34 @@ class SmartDictaphoneWindow(QMainWindow):
         self.text_transcript.setPlaceholderText("Tutaj pojawi się transkrypcja z podziałem na role po zakończeniu nagrywania / wgraniu pliku...")
         outputs_main_layout.addWidget(self.text_transcript)
 
+        # PRZYCISKI KOPIOWANIA I POBIERANIA TRANSKRYPCJI
+        transcript_actions_layout = QHBoxLayout()
+        transcript_actions_layout.setSpacing(8)
+
+        self.btn_copy_transcript = QPushButton("📋 Kopiuj transkrypcję")
+        self.btn_copy_transcript.setFixedHeight(32)
+        self.btn_copy_transcript.setStyleSheet(
+            "background-color: #2b2d42; color: #4cc9f0; border: 1px solid #3d405b; "
+            "border-radius: 6px; font-weight: bold; padding: 0 14px;"
+        )
+        self.btn_copy_transcript.setToolTip("Kopiuj całą transkrypcję do schowka")
+        self.btn_copy_transcript.clicked.connect(self._on_copy_transcript_clicked)
+
+        self.btn_save_transcript = QPushButton("💾 Pobierz .txt")
+        self.btn_save_transcript.setFixedHeight(32)
+        self.btn_save_transcript.setStyleSheet(
+            "background-color: #2b2d42; color: #10b981; border: 1px solid #3d405b; "
+            "border-radius: 6px; font-weight: bold; padding: 0 14px;"
+        )
+        self.btn_save_transcript.setToolTip("Zapisz transkrypcję jako plik .txt w wybranej lokalizacji")
+        self.btn_save_transcript.clicked.connect(self._on_save_transcript_clicked)
+
+        transcript_actions_layout.addStretch()
+        transcript_actions_layout.addWidget(self.btn_copy_transcript)
+        transcript_actions_layout.addWidget(self.btn_save_transcript)
+        outputs_main_layout.addLayout(transcript_actions_layout)
+
+
         # PASEK SYNCHRONIZACJI CHMUROWEJ (CLOUD SYNC / EMANAGER.PRO / CRM)
         cloud_bar_layout = QHBoxLayout()
         cloud_bar_layout.setContentsMargins(4, 4, 4, 4)
@@ -532,8 +562,51 @@ class SmartDictaphoneWindow(QMainWindow):
                 "Ustawienia zostały pomyślnie zaktualizowane!\n\n"
                 "Nowy słownik branżowy oraz parametry AI będą automatycznie stosowane przy kolejnych nagraniach i transkrypcjach."
             )
+    def _on_copy_transcript_clicked(self):
+        """Kopiuje bieżącą transkrypcję do schowka systemowego."""
+        text = self.last_plain_text or self.text_transcript.toPlainText()
+        if not text or not text.strip():
+            QMessageBox.information(self, "Brak transkrypcji", "Nie ma jeszcze żadnej transkrypcji do skopiowania.")
+            return
+        QApplication.clipboard().setText(text)
+        # Krótki feedback na etykiecie przycisku
+        self.btn_copy_transcript.setText("✅ Skopiowano!")
+        QTimer.singleShot(2000, lambda: self.btn_copy_transcript.setText("📋 Kopiuj transkrypcję"))
+
+    def _on_save_transcript_clicked(self):
+        """Otwiera dialog 'Zapisz jako' i eksportuje transkrypcję do wybranego pliku .txt."""
+        text = self.last_plain_text or self.text_transcript.toPlainText()
+        if not text or not text.strip():
+            QMessageBox.information(self, "Brak transkrypcji", "Nie ma jeszcze żadnej transkrypcji do zapisania.")
+            return
+
+        # Propozycja nazwy pliku na podstawie bieżącego timestampu lub aktualnej transkrypcji
+        if hasattr(self, "current_live_timestamp") and self.current_live_timestamp:
+            default_name = f"transkrypcja_{self.current_live_timestamp}.txt"
+        elif self.current_txt_path:
+            default_name = os.path.basename(self.current_txt_path)
+        else:
+            default_name = f"transkrypcja_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+
+        save_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Zapisz transkrypcję jako...",
+            os.path.join(os.path.expanduser("~"), "Desktop", default_name),
+            "Plik tekstowy (*.txt);;Wszystkie pliki (*.*)"
+        )
+        if not save_path:
+            return
+
+        try:
+            with open(save_path, "w", encoding="utf-8") as f:
+                f.write(text)
+            self.btn_save_transcript.setText("✅ Zapisano!")
+            QTimer.singleShot(2000, lambda: self.btn_save_transcript.setText("💾 Pobierz .txt"))
+        except Exception as e:
+            QMessageBox.critical(self, "Błąd zapisu", f"Nie udało się zapisać pliku:\n{e}")
 
     def _apply_theme(self):
+
         app = QApplication.instance()
         if app:
             setup_dark_palette(app)
@@ -606,6 +679,16 @@ class SmartDictaphoneWindow(QMainWindow):
             )
             return
 
+        # Guard: nie pozwól na start jeśli poprzednia sesja jeszcze nie zakończyła finalizacji
+        if self._finalize_pending:
+            QMessageBox.information(
+                self,
+                "Finalizacja w toku",
+                "Poprzednie nagranie jest jeszcze finalizowane (zapis do chmury).\n"
+                "Poczekaj chwilę i spróbuj ponownie."
+            )
+            return
+
         self.recorded_seconds = 0
         self.lbl_timer.setText("00:00:00")
 
@@ -615,14 +698,17 @@ class SmartDictaphoneWindow(QMainWindow):
         self.progress_transcription.setValue(0)
         self.progress_transcription.setFormat("Inicjalizacja transkrypcji na żywo...")
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Timestamp z mikrosekundami — zapobiega kolizji UUID5 przy szybkim Stop→Start w tej samej sekundzie
+        now = datetime.now()
+        self.session_start_time = now
+        timestamp = now.strftime("%Y%m%d_%H%M%S_%f")
         self.current_live_timestamp = timestamp
         self.current_live_txt_path = os.path.join(self.transcriptions_dir, f"transkrypcja_{timestamp}.txt")
         self.current_live_wav_path = os.path.join(self.recordings_dir, f"inteligentne_nagranie_{timestamp}.wav")
         self.synced_segment_count = 0
         try:
             with open(self.current_live_txt_path, 'w', encoding='utf-8') as f:
-                f.write(f"=== TRANSKRYPCJA NA ŻYWO (Start: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) ===\n\n")
+                f.write(f"=== TRANSKRYPCJA NA ŻYWO (Start: {now.strftime('%Y-%m-%d %H:%M:%S')}) ===\n\n")
             self._refresh_transcriptions_list()
         except Exception:
             pass
@@ -651,7 +737,8 @@ class SmartDictaphoneWindow(QMainWindow):
         # Uruchomienie silnika asynchronicznego przetwarzania bloków w tle (Rolling Background Transcriber)
         self.rolling_worker = RollingTranscriptionWorker(
             model_size=selected_model,
-            txt_save_path=self.current_live_txt_path
+            txt_save_path=self.current_live_txt_path,
+            session_start_time=self.session_start_time
         )
         self._active_threads.append(self.rolling_worker)
         self.rolling_worker.block_processed_signal.connect(self._on_rolling_block_processed)
@@ -735,7 +822,7 @@ class SmartDictaphoneWindow(QMainWindow):
         except Exception:
             pass
 
-        timestamp = getattr(self, "current_live_timestamp", datetime.now().strftime("%Y%m%d_%H%M%S"))
+        timestamp = getattr(self, "current_live_timestamp", datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
         filename = f"inteligentne_nagranie_{timestamp}.wav"
         save_path = os.path.join(self.recordings_dir, filename)
 
@@ -747,7 +834,9 @@ class SmartDictaphoneWindow(QMainWindow):
         self.lbl_silence_val.setText(f"0.0 s / {self.slider_silence.value()}.0 s")
         self.lbl_vad_detail.setText("VAD: Oczekiwanie na uruchomienie...")
 
-        self.btn_start.setEnabled(True)
+        # Blokada przycisku Start do czasu zakończenia finalizacji
+        self._finalize_pending = True
+        self.btn_start.setEnabled(False)
         self.btn_upload.setEnabled(True)
         self.btn_pause.setEnabled(False)
         self.btn_pause.setText("⏸ Wstrzymaj Ręcznie")
@@ -784,7 +873,10 @@ class SmartDictaphoneWindow(QMainWindow):
             if getattr(self, "rolling_worker", None) is not None:
                 self.rolling_worker.stop_and_finalize(final_block)
         else:
+            self._finalize_pending = False
+            self.btn_start.setEnabled(True)
             QMessageBox.warning(self, "Brak Nagrania", "Nie zarejestrowano mowy do zapisu.")
+
 
     def _on_rolling_finished(self, final_html: str, final_plain: str, all_turns: list):
         """Zakończenie przetwarzania w tle po kliknięciu Stop."""
@@ -1111,6 +1203,10 @@ class SmartDictaphoneWindow(QMainWindow):
         self.last_plain_text = plain_text
         self.btn_manual_sync.setEnabled(True)
 
+        # Zakończenie finalizacji — odblokowanie przycisku Start
+        self._finalize_pending = False
+        self.btn_start.setEnabled(True)
+
         # Automatyczna synchronizacja z chmurą / EMANAGER.PRO
         if self.cloud_sync.config.get("auto_sync"):
             self._trigger_cloud_sync(
@@ -1412,13 +1508,15 @@ class SmartDictaphoneWindow(QMainWindow):
             )
 
         # 2. Generowanie nowych ścieżek dla kolejnego spotkania
-        new_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        split_now = datetime.now()
+        new_timestamp = split_now.strftime("%Y%m%d_%H%M%S_%f")
+        self.session_start_time = split_now
         self.current_live_timestamp = new_timestamp
         self.current_live_wav_path = os.path.join(self.recordings_dir, f"inteligentne_nagranie_{new_timestamp}.wav")
         self.current_live_txt_path = os.path.join(self.transcriptions_dir, f"transkrypcja_{new_timestamp}.txt")
         try:
             with open(self.current_live_txt_path, 'w', encoding='utf-8') as f:
-                f.write(f"=== NOWE SPOTKANIE BIUROWE (Start: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) ===\n\n")
+                f.write(f"=== NOWE SPOTKANIE BIUROWE (Start: {split_now.strftime('%Y-%m-%d %H:%M:%S')}) ===\n\n")
             self._refresh_transcriptions_list()
         except Exception:
             pass
@@ -1426,7 +1524,7 @@ class SmartDictaphoneWindow(QMainWindow):
         # 3. Rotacja rejestratora audio i transkrypcji w tle
         self.worker.rotate_session_file(self.current_live_wav_path)
         if hasattr(self, "rolling_worker") and self.rolling_worker is not None:
-            self.rolling_worker.reset_for_new_session(self.current_live_txt_path)
+            self.rolling_worker.reset_for_new_session(self.current_live_txt_path, session_start_time=split_now)
 
         self.synced_segment_count = 0
         self.current_turns = []
