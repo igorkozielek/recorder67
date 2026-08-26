@@ -17,7 +17,7 @@ os.makedirs(TRANSCRIPTIONS_DIR, exist_ok=True)
 SAMPLE_RATE = 16000  # Wymuszone 16000 Hz dla Silero VAD i Whisper
 AUDIO_CHANNELS = 1
 DEFAULT_AUTO_PAUSE_SEC = 5.0
-VAD_SPEECH_THRESHOLD = 0.35
+VAD_SPEECH_THRESHOLD = 0.42
 PRE_SPEECH_BUFFER_CHUNKS = 14  # ~0.45s próbek dźwięku sprzed momentu wykrycia mowy (akustyczny pre-roll)
 RMS_SILENCE_THRESHOLD = 0.003
 
@@ -186,7 +186,7 @@ def load_user_settings() -> dict:
 
     # Wartości początkowe (z .env / domyślne stałe)
     defaults = {
-        "custom_keywords": get_env_variable("CUSTOM_KEYWORDS", "Aldent, Subiekt GT, CRM, Helpdesk, faktura proforma, synchronizacja, harmonogram, rejestr zmian, zgłoszenia, zamówienia"),
+        "custom_keywords": get_env_variable("CUSTOM_KEYWORDS", "emanager.pro, EMANAGER.PRO, CRM, AI, Supabase, n8n, Make, webhook, API, LLM, GPT-4, Claude, Gemini, Gemini Vision, Helpdesk, Subiekt GT, Subiekt, faktura proforma, synchronizacja, harmonogram, rejestr zmian, zgłoszenia, zamówienia, matryca uprawnień, QR code"),
         "whisper_beam_size": int(get_env_variable("WHISPER_BEAM_SIZE", "5")),
         "default_whisper_model": get_env_variable("DEFAULT_WHISPER_MODEL", "large-v3-turbo"),
         "hf_token": get_env_variable("HF_TOKEN", ""),
@@ -198,8 +198,8 @@ def load_user_settings() -> dict:
         "supabase_bucket": get_env_variable("SUPABASE_STORAGE_BUCKET", "meeting-recordings"),
         "generic_webhook_url": get_env_variable("GENERIC_WEBHOOK_URL", ""),
         "auto_cloud_sync": get_env_variable("AUTO_CLOUD_SYNC", "true").lower() in ("1", "true", "yes"),
-        "sync_upload_audio": get_env_variable("SYNC_UPLOAD_AUDIO", "true").lower() in ("1", "true", "yes"),
-        "vad_speech_threshold": float(get_env_variable("VAD_SPEECH_THRESHOLD", "0.35")),
+        "sync_upload_audio": get_env_variable("SYNC_UPLOAD_AUDIO", "false").lower() in ("1", "true", "yes"),
+        "vad_speech_threshold": float(get_env_variable("VAD_SPEECH_THRESHOLD", "0.42")),
         "auto_pause_sec": float(get_env_variable("AUTO_PAUSE_SEC", "5.0")),
         "session_split_silence_sec": float(get_env_variable("SESSION_SPLIT_SILENCE_SEC", "900.0")),  # 15 min
     }
@@ -245,9 +245,9 @@ def get_vad_speech_threshold() -> float:
     """Zwraca próg czułości wykrywania mowy Silero VAD."""
     st = load_user_settings()
     try:
-        return max(0.1, min(0.9, float(st.get("vad_speech_threshold", 0.35))))
+        return max(0.1, min(0.9, float(st.get("vad_speech_threshold", 0.42))))
     except Exception:
-        return 0.35
+        return 0.42
 
 
 def get_session_split_silence_sec() -> float:
@@ -266,11 +266,12 @@ def get_default_beam_size() -> int:
 
 DEFAULT_BEAM_SIZE = get_beam_size()
 
-# Domyślny słownik początkowy dla Whispera (IT, sprzęt, biznes, odmiany, frazeologia polska)
+# Domyślny słownik początkowy dla Whispera (emanager.pro, CRM z AI, automatyzacje n8n, biznes, architektura)
 DEFAULT_INITIAL_PROMPT = (
-    "Antigravity, zestawienie, sprzęt, procesor, i5, i7, i9, RTX, pamięć RAM, dysk SSD, "
-    "Aldent, CRM, Helpdesk, Subiekt, synchronizacja, harmonogram, rejestr zmian, zgłoszenia, "
-    "zamówienia, diaryzacja, transkrypcja, z przymrużeniem oka."
+    "emanager.pro, EMANAGER.PRO, CRM, AI, Supabase, n8n, Make, webhook, API, LLM, GPT-4, Claude, Gemini, "
+    "Gemini Vision, Lovable, React, Helpdesk, Subiekt GT, Subiekt, faktura proforma, zamówienia, zgłoszenia, "
+    "harmonogram, kategorie, dyplomy, matryca uprawnień, recepcja, check-in, QR code, CSV, oświetleniowiec, "
+    "synchronizacja, rejestr zmian, diaryzacja, transkrypcja, procesy biznesowe, architektura wzrostu."
 )
 
 
@@ -307,7 +308,7 @@ def get_cloud_sync_config() -> dict:
         "organization_id": st.get("organization_id") or get_env_variable("ORGANIZATION_ID", "default_org"),
         "auto_sync": bool(st.get("auto_cloud_sync", True)),
         "generic_webhook_url": st.get("generic_webhook_url") or get_env_variable("GENERIC_WEBHOOK_URL", ""),
-        "upload_audio": bool(st.get("sync_upload_audio", True)),
+        "upload_audio": bool(st.get("sync_upload_audio", False)),
         "live_streaming": LIVE_STREAMING_ENABLED,
         "session_split_silence_sec": get_session_split_silence_sec(),
         "max_session_duration_sec": MAX_SESSION_DURATION_SEC,
