@@ -37,12 +37,14 @@ HALLUCINATION_TRIGGERS = [
     "w tym filmie przeczytam", "w tym filmie", "zobaczymy gdzie tu jest",
     "poniżej znajduje się", "to jest poniżej", "śpiewa", "muzyka", "subskrybuj",
     "do zobaczenia w kolejnym", "zostaw łapkę w górę", "miłego oglądania",
-    "the user", "stop what you are doing", "write for the user"
+    "the user", "stop what you are doing", "write for the user",
+    "searching web", "search the web", "hadi doyalım"
 ]
 
 NON_SPEECH_SOUNDS = {
     "uch", "uh", "uhm", "mhm", "yhm", "eee", "aaa", "ehm", "mmm",
-    "uff", "ach", "och", "oj", "uhuhu", "ehehe", "aha", "hm", "hmm"
+    "uff", "ach", "och", "oj", "uhuhu", "ehehe", "aha", "hm", "hmm",
+    "ha", "haha", "hahaha", "kof", "cough", "he", "hehe", "hi", "ehe"
 }
 
 ISOLATED_NOISE_GREETINGS = {
@@ -60,7 +62,7 @@ ISOLATED_NOISE_GREETINGS = {
 def clean_repeated_text(text: str) -> str:
     """
     Ogólne, algorytmiczne usuwanie zapętleń słów, fraz (1-gramów, 2-gramów, 3-gramów),
-    jąkania, powtarzających się ciągów cyfr i wielokropków.
+    jąkania, powtarzających się ciągów cyfr i wielokropków oraz normalizacja spacji.
     """
     if not text:
         return ""
@@ -80,13 +82,17 @@ def clean_repeated_text(text: str) -> str:
     cleaned = re.sub(r'\b([A-Za-z0-9ĄąĆćĘęŁłŃńÓóŚśŹźŻż\'-]+)(?:\s*[\,\.\?\!]\s*|\s+)(?:\1(?:\s*[\,\.\?\!]\s*|\s+))+\1(?:\b|[\,\.\?\!]*)', r'\1', cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r'\b([A-Za-z0-9ĄąĆćĘęŁłŃńÓóŚśŹźŻż\'-]+)(?:[\,\.\?\!]*)?(?:\s+\1(?:[\,\.\?\!]*)?){2,}', r'\1', cleaned, flags=re.IGNORECASE)
 
-    # 3.5 Zabezpieczenie przed halucynacyjnymi ciągami "niech, niech, niech", "ha, ha, ha", oddzielonymi interpunkcją
+    # 3.5 Zabezpieczenie przed halucynacyjnymi ciągami "niech, niech, niech", "ha, ha, ha", "tak, tak, tak" oddzielonymi interpunkcją
     cleaned = re.sub(r'\b([A-Za-z0-9ĄąĆćĘęŁłŃńÓóŚśŹźŻż\'-]{1,15})(?:[\,\.\?\!]\s*|\s+)(?:\1(?:[\,\.\?\!]\s*|\s+)){2,}', r'\1 ', cleaned, flags=re.IGNORECASE)
 
-    # 4. Usuwanie fraz 2-3 słów powtórzonych wielokrotnie (np. 'i tak dalej, i tak dalej, i tak dalej' -> 'i tak dalej')
-    cleaned = re.sub(r'\b([A-Za-z0-9ĄąĆćĘęŁłŃńÓóŚśŹźŻż\'-]+(?:\s+[A-Za-z0-9ĄąĆćĘęŁłŃńÓóŚśŹźŻż\'-]+){1,2})(?:[\,\.\?\!]*)?(?:\s+\1(?:[\,\.\?\!]*)?){1,}', r'\1', cleaned, flags=re.IGNORECASE)
+    # 4. Usuwanie fraz 2-3 słów powtórzonych wielokrotnie (np. 'nie ma, nie ma, nie ma' -> 'nie ma')
+    cleaned = re.sub(r'\b([A-Za-z0-9ĄąĆćĘęŁłŃńÓóŚśŹźŻż\'-]+(?:\s+[A-Za-z0-9ĄąĆćĘęŁłŃńÓóŚśŹźŻż\'-]+){1,2})(?:[\,\.\?\!]*)?(?:\s*[\,\.\?\!]*\s*\1(?:[\,\.\?\!]*)?){1,}', r'\1', cleaned, flags=re.IGNORECASE)
 
-    # 5. Czyszczenie zwielokrotnionych wielokropków i białych znaków
+    # 5. Normalizacja spacji wokół liczb, godzin, łączników i apostrofów (np. '11 .30' -> '11.30', 'CRM -a' -> 'CRM-a')
+    cleaned = re.sub(r'(\d+)\s*([\.,])\s*(\d+)', r'\1\2\3', cleaned)
+    cleaned = re.sub(r'([A-Za-z0-9ĄąĆćĘęŁłŃńÓóŚśŹźŻż]+)\s*([\'\-])\s*([A-Za-z0-9ĄąĆćĘęŁłŃńÓóŚśŹźŻż]+)', r'\1\2\3', cleaned)
+
+    # 6. Czyszczenie zwielokrotnionych wielokropków i białych znaków
     cleaned = re.sub(r'(\s*\.{2,}\s*){2,}', ' ... ', cleaned)
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     return cleaned
@@ -95,12 +101,13 @@ def clean_repeated_text(text: str) -> str:
 def filter_repeated_words_list(words: List[Dict[str, Any]], max_consecutive: int = 2) -> List[Dict[str, Any]]:
     """
     Filtruje listę słów (ze znacznikami start/end), zapobiegając dodawaniu patologicznych pętli
-    powtórzeń (np. 50x 'niech' redukuje do max_consecutive wystąpień).
+    powtórzeń pojedynczych słów (1-gram) oraz par słów (2-gram, np. 100x 'nie ma').
     """
-    if not words:
-        return []
+    if not words or len(words) <= 2:
+        return words or []
 
-    cleaned_words = []
+    # 1. Filtrowanie pętli 1-słownych (np. 50x 'niech')
+    stage1 = []
     current_norm = None
     repeat_count = 0
 
@@ -108,7 +115,7 @@ def filter_repeated_words_list(words: List[Dict[str, Any]], max_consecutive: int
         w_text = w.get("word", "") if isinstance(w, dict) else getattr(w, "word", str(w))
         norm = re.sub(r'[^\w]', '', str(w_text)).strip().lower()
         if not norm:
-            cleaned_words.append(w)
+            stage1.append(w)
             continue
 
         if norm == current_norm:
@@ -118,9 +125,41 @@ def filter_repeated_words_list(words: List[Dict[str, Any]], max_consecutive: int
             repeat_count = 1
 
         if repeat_count <= max_consecutive:
-            cleaned_words.append(w)
+            stage1.append(w)
 
-    return cleaned_words
+    if len(stage1) < 4:
+        return stage1
+
+    # 2. Filtrowanie pętli 2-słownych (np. 'nie ma, nie ma, nie ma...')
+    stage2 = []
+    i = 0
+    while i < len(stage1):
+        if i + 3 < len(stage1):
+            w1_norm = re.sub(r'[^\w]', '', str(stage1[i].get("word", "") if isinstance(stage1[i], dict) else getattr(stage1[i], "word", ""))).strip().lower()
+            w2_norm = re.sub(r'[^\w]', '', str(stage1[i+1].get("word", "") if isinstance(stage1[i+1], dict) else getattr(stage1[i+1], "word", ""))).strip().lower()
+            w3_norm = re.sub(r'[^\w]', '', str(stage1[i+2].get("word", "") if isinstance(stage1[i+2], dict) else getattr(stage1[i+2], "word", ""))).strip().lower()
+            w4_norm = re.sub(r'[^\w]', '', str(stage1[i+3].get("word", "") if isinstance(stage1[i+3], dict) else getattr(stage1[i+3], "word", ""))).strip().lower()
+
+            # Wykrycie powtórzenia 2-gramu: (A, B) == (A, B)
+            if w1_norm and w2_norm and w1_norm == w3_norm and w2_norm == w4_norm:
+                # Dodaj parę początkową
+                stage2.append(stage1[i])
+                stage2.append(stage1[i+1])
+                i += 2
+                # Pomiń wszystkie kolejne identyczne pary powtórzeń (A, B)
+                while i + 1 < len(stage1):
+                    next_w1 = re.sub(r'[^\w]', '', str(stage1[i].get("word", "") if isinstance(stage1[i], dict) else getattr(stage1[i], "word", ""))).strip().lower()
+                    next_w2 = re.sub(r'[^\w]', '', str(stage1[i+1].get("word", "") if isinstance(stage1[i+1], dict) else getattr(stage1[i+1], "word", ""))).strip().lower()
+                    if next_w1 == w1_norm and next_w2 == w2_norm:
+                        i += 2
+                    else:
+                        break
+                continue
+
+        stage2.append(stage1[i])
+        i += 1
+
+    return stage2
 
 
 def is_hallucination(raw_text: str, cleaned_text: Optional[str] = None) -> bool:
