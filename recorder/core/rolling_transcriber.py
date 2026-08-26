@@ -253,9 +253,9 @@ class RollingTranscriptionWorker(QThread):
         # Odczyt preferowanego formatu timestampu z ustawień użytkownika
         try:
             from recorder.config import load_user_settings
-            ts_format = load_user_settings().get("timestamp_format", "offset+clock")
+            ts_format = load_user_settings().get("timestamp_format", "offset_only")
         except Exception:
-            ts_format = "offset+clock"
+            ts_format = "offset_only"
 
         full_html = ""
         full_plain = ""

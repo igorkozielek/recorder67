@@ -335,9 +335,9 @@ class SettingsDialog(QDialog):
         time_layout.addRow(QLabel("Automatyczny podział sesji biurowych:"), self.combo_session_split)
 
         self.combo_timestamp_format = QComboBox()
-        self.combo_timestamp_format.addItem("Offset + Godzina realna [00:12 | 13:47:12] (Domyślne)", "offset+clock")
+        self.combo_timestamp_format.addItem("Tylko offset [00:12 - 00:18] (Domyślne)", "offset_only")
+        self.combo_timestamp_format.addItem("Offset + Godzina realna [00:12 | 13:47:12]", "offset+clock")
         self.combo_timestamp_format.addItem("Tylko godzina realna [13:47:12 - 13:47:18]", "clock_only")
-        self.combo_timestamp_format.addItem("Tylko offset [00:12 - 00:18]", "offset_only")
         self.combo_timestamp_format.setStyleSheet("background: #181824; color: #edf2f4; border: 1px solid #2b2d42; padding: 4px 8px; border-radius: 4px;")
         time_layout.addRow(QLabel("Format timestampów w transkrypcji:"), self.combo_timestamp_format)
 
@@ -456,7 +456,7 @@ class SettingsDialog(QDialog):
         if s_idx != -1:
             self.combo_session_split.setCurrentIndex(s_idx)
 
-        ts_fmt = st.get("timestamp_format", "offset+clock")
+        ts_fmt = st.get("timestamp_format", "offset_only")
         ts_idx = self.combo_timestamp_format.findData(ts_fmt)
         if ts_idx != -1:
             self.combo_timestamp_format.setCurrentIndex(ts_idx)
@@ -490,6 +490,7 @@ class SettingsDialog(QDialog):
             self.slider_vad.setValue(42)
             self.spin_auto_pause.setValue(5)
             self.combo_session_split.setCurrentIndex(self.combo_session_split.findData(900.0))
+            self.combo_timestamp_format.setCurrentIndex(self.combo_timestamp_format.findData("offset_only"))
             self.chk_auto_sync.setChecked(True)
             self.chk_upload_audio.setChecked(False)
 
@@ -502,7 +503,7 @@ class SettingsDialog(QDialog):
             "vad_speech_threshold": round(self.slider_vad.value() / 100.0, 2),
             "auto_pause_sec": float(self.spin_auto_pause.value()),
             "session_split_silence_sec": float(self.combo_session_split.currentData() or 900.0),
-            "timestamp_format": self.combo_timestamp_format.currentData() or "offset+clock",
+            "timestamp_format": self.combo_timestamp_format.currentData() or "offset_only",
             "device_name": self.txt_device_name.text().strip() or "Biuro-Stanowisko-1",
             "organization_id": self.txt_org_id.text().strip() or "default_org",
             "sync_target": self.combo_sync_target.currentData() or "emanager",
