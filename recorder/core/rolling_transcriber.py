@@ -57,6 +57,14 @@ class RollingTranscriptionWorker(QThread):
             self.latest_session_seconds = max(self.latest_session_seconds, end_sec)
             self.block_queue.put(block)
 
+    def reset_for_new_session(self, new_txt_save_path: Optional[str] = None):
+        """Resetuje stan przetworzonych bloków dla nowej sesji spotkania bez konieczności ponownego ładowania modelu Whisper."""
+        self.txt_save_path = new_txt_save_path
+        self.processed_blocks = []
+        self.all_turns = []
+        self.total_processed_seconds = 0.0
+        self.latest_session_seconds = 0.0
+
     def update_session_time(self, current_sec: float):
         """Aktualizuje bieżący czas sesji ze stopera."""
         self.latest_session_seconds = max(self.latest_session_seconds, float(current_sec))

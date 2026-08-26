@@ -17,9 +17,10 @@ from recorder.config import (
     VAD_SPEECH_THRESHOLD,
     PRE_SPEECH_BUFFER_CHUNKS,
     RMS_SILENCE_THRESHOLD,
-    DEFAULT_WHISPER_MODEL
+    DEFAULT_WHISPER_MODEL,
+    SESSION_SPLIT_SILENCE_SEC
 )
-from recorder.audio.capture import save_wav_file
+from recorder.audio.capture import save_wav_file, StreamingWavWriter
 from recorder.audio.converter import resample_to_16k, prepare_audio_file
 from recorder.core.vad import SileroVADDetector, is_silero_available
 from recorder.core.transcriber import TranscriberEngine
@@ -29,13 +30,15 @@ from recorder.core.diarizer import DiarizationEngine, format_transcript_without_
 class SmartAudioWorker(QThread):
     """
     Wątek przechwytywania dźwięku w czasie rzeczywistym z detekcją Silero VAD i buforowaniem.
-    Obsługuje natywne próbkowanie urządzeń WASAPI / DirectSound / MME i zapobiega błędom NaN.
+    Obsługuje natywne próbkowanie urządzeń WASAPI / DirectSound / MME, zapobiega błędom NaN
+    oraz wspiera ciągłe 8-godzinne nagrywanie ze strumieniowym zapisem na dysk i podziałem sesji.
     """
     audio_level_signal = pyqtSignal(float)             # Poziom RMS (0 - 100)
     vad_info_signal = pyqtSignal(bool, float, float)    # (is_speech, speech_prob, silence_sec)
     state_changed_signal = pyqtSignal(int)             # SmartRecordState
     phrase_signal = pyqtSignal(np.ndarray, int, float)        # Frazy audio dla transkrypcji na żywo (16kHz, samplerate, start_sec)
     rolling_block_ready_signal = pyqtSignal(int, float, float, np.ndarray)  # (block_idx, start_sec, end_sec, audio_data)
+    session_split_signal = pyqtSignal(str)             # Sygnał podziału na nową sesję spotkania (powód)
     error_signal = pyqtSignal(str)
 
     # Parametry okna bezpiecznego cięcia w tle (Safe VAD Boundary Handoff)
@@ -52,11 +55,15 @@ class SmartAudioWorker(QThread):
         self.channels = channels
         self.device_index = device_index
         self.auto_pause_sec = auto_pause_sec
+        self.session_split_silence_sec = SESSION_SPLIT_SILENCE_SEC
 
         self.vad_detector = SileroVADDetector(speech_threshold=VAD_SPEECH_THRESHOLD, default_samplerate=16000)
         self.state = SmartRecordState.STOPPED
         self.frames = []
         self.silence_samples_count = 0
+        self.continuous_silence_samples = 0
+        self.session_has_speech = False
+        self.wav_writer: Optional[StreamingWavWriter] = None
         self._is_running = False
 
         # Buforowanie fraz mowy z pre-bufferingiem (0.45s pre-padding)
@@ -77,10 +84,18 @@ class SmartAudioWorker(QThread):
         except (ValueError, TypeError):
             self.auto_pause_sec = 5.0
 
-    def start_recording(self, device_index=None):
+    def set_session_split_silence_sec(self, seconds: float):
+        try:
+            self.session_split_silence_sec = float(seconds)
+        except (ValueError, TypeError):
+            self.session_split_silence_sec = SESSION_SPLIT_SILENCE_SEC
+
+    def start_recording(self, device_index=None, save_wav_path: Optional[str] = None):
         self.device_index = device_index
         self.frames = []
         self.silence_samples_count = 0
+        self.continuous_silence_samples = 0
+        self.session_has_speech = False
         self.current_phrase_chunks = []
         self.pre_speech_buffer.clear()
         self.silence_in_phrase_samples = 0
@@ -91,10 +106,32 @@ class SmartAudioWorker(QThread):
         self.current_block_chunks = []
         self.last_block_tail = None
 
+        if save_wav_path:
+            self.wav_writer = StreamingWavWriter(save_wav_path, channels=1, samplerate=16000)
+
         self.state = SmartRecordState.RECORDING_SPEECH
         self._is_running = True
         self.state_changed_signal.emit(self.state)
         self.start()
+
+    def rotate_session_file(self, new_wav_path: str):
+        """
+        Zamyka bieżący plik sesji i natychmiast otwiera nowy plik WAV na dysku
+        bez przerywania ciągłego nasłuchu mikrofonu.
+        """
+        if self.wav_writer:
+            self.wav_writer.close()
+            self.wav_writer = None
+
+        self.frames = []
+        self.block_index = 1
+        self.block_start_samples = 0
+        self.current_block_chunks = []
+        self.continuous_silence_samples = 0
+        self.session_has_speech = False
+
+        if new_wav_path:
+            self.wav_writer = StreamingWavWriter(new_wav_path, channels=1, samplerate=16000)
 
     def get_remaining_block(self) -> Optional[tuple]:
         """Zwraca ostatni, nieprzetworzony jeszcze blok nagrania po kliknięciu Stop."""
@@ -124,6 +161,9 @@ class SmartAudioWorker(QThread):
     def stop_recording(self):
         self.state = SmartRecordState.STOPPED
         self._is_running = False
+        if self.wav_writer:
+            self.wav_writer.close()
+            self.wav_writer = None
         if self.phrase_speech_detected and self.current_phrase_chunks:
             try:
                 phrase_arr = np.concatenate(self.current_phrase_chunks)
@@ -198,9 +238,21 @@ class SmartAudioWorker(QThread):
                         self.state = SmartRecordState.RECORDING_SPEECH
                         self.state_changed_signal.emit(self.state)
                     self.silence_samples_count = 0
+                    self.continuous_silence_samples = 0
+                    self.session_has_speech = True
                 else:
                     self.silence_samples_count += len(chunk_16k)
+                    self.continuous_silence_samples += len(chunk_16k)
                     silence_sec = self.silence_samples_count / 16000.0
+
+                    # Smart Session Splitting: Jeśli w biurze była mowa, a teraz panuje długa cisza (np. > 15 min),
+                    # emitujemy sygnał automatycznego podziału na nową sesję
+                    cont_silence_sec = self.continuous_silence_samples / 16000.0
+                    if self.session_has_speech and cont_silence_sec >= self.session_split_silence_sec:
+                        self.session_has_speech = False
+                        self.continuous_silence_samples = 0
+                        mins = int(self.session_split_silence_sec // 60)
+                        self.session_split_signal.emit(f"Cisza w biurze > {mins} min")
 
                     if silence_sec < self.auto_pause_sec:
                         if self.state != SmartRecordState.RECORDING_SILENCE_COUNTDOWN:
@@ -217,7 +269,10 @@ class SmartAudioWorker(QThread):
             # 4. Zapis próbek mowy 16kHz do pliku oraz buforowanie bloków
             if self.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:
                 audio_int16 = (chunk_16k * 32767).clip(-32768, 32767).astype(np.int16)
-                self.frames.append(audio_int16.tobytes())
+                raw_bytes = audio_int16.tobytes()
+                self.frames.append(raw_bytes)
+                if self.wav_writer:
+                    self.wav_writer.write_frames(raw_bytes)
                 self.current_block_chunks.append(chunk_flat)
 
             # Sprawdzenie warunku bezpiecznego podziału na bloki w pełnej ciszy (VAD Silence Handoff)
@@ -317,6 +372,11 @@ class SmartAudioWorker(QThread):
             self.state_changed_signal.emit(self.state)
 
     def save_wav(self, file_path: str) -> bool:
+        if self.wav_writer:
+            self.wav_writer.close()
+            self.wav_writer = None
+            if os.path.exists(file_path) and os.path.getsize(file_path) > 44:
+                return True
         return save_wav_file(file_path, self.frames, channels=1, samplerate=16000)
 
 

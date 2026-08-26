@@ -140,6 +140,12 @@ def get_env_variable(key: str, default: str = "") -> str:
     return default
 
 
+# Konfiguracja Smart Session Splitting i Transmisji na Żywo (8h Ambient Office)
+DEFAULT_SESSION_SPLIT_MINUTES = float(get_env_variable("SESSION_SPLIT_MINUTES", "15.0"))
+SESSION_SPLIT_SILENCE_SEC = DEFAULT_SESSION_SPLIT_MINUTES * 60.0  # Domyślnie 15 min ciągłej ciszy
+MAX_SESSION_DURATION_SEC = float(get_env_variable("MAX_SESSION_HOURS", "2.0")) * 3600.0  # Max 2h na sesję
+LIVE_STREAMING_ENABLED = get_env_variable("LIVE_STREAMING_ENABLED", "true").lower() in ("1", "true", "yes")
+
 # Konfiguracja Cloud Sync / Multi-Tenant / EMANAGER.PRO
 SYNC_QUEUE_DIR = os.path.join(TRANSCRIPTIONS_DIR, "sync_queue")
 os.makedirs(SYNC_QUEUE_DIR, exist_ok=True)
@@ -152,12 +158,16 @@ def get_cloud_sync_config() -> dict:
         "sync_target": get_env_variable("SYNC_TARGET", "emanager"),  # 'emanager', 'generic_webhook', 'none'
         "supabase_url": get_env_variable("SUPABASE_URL", ""),
         "supabase_key": get_env_variable("SUPABASE_KEY", get_env_variable("SUPABASE_PUBLISHABLE_KEY", "")),
+        "supabase_bucket": get_env_variable("SUPABASE_STORAGE_BUCKET", "meeting-recordings"),
         "device_name": get_env_variable("DEVICE_NAME", "Biuro-Stanowisko-1"),
 
         "organization_id": get_env_variable("ORGANIZATION_ID", "default_org"),
         "auto_sync": get_env_variable("AUTO_CLOUD_SYNC", "true").lower() in ("1", "true", "yes"),
         "generic_webhook_url": get_env_variable("GENERIC_WEBHOOK_URL", ""),
         "upload_audio": get_env_variable("SYNC_UPLOAD_AUDIO", "true").lower() in ("1", "true", "yes"),
+        "live_streaming": LIVE_STREAMING_ENABLED,
+        "session_split_silence_sec": SESSION_SPLIT_SILENCE_SEC,
+        "max_session_duration_sec": MAX_SESSION_DURATION_SEC,
     }
 
 

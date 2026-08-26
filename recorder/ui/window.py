@@ -84,6 +84,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.speaker_inputs = {}
         self.last_plain_text = ""
         self.current_meeting_id = None
+        self.synced_segment_count = 0
         self._active_threads = []
 
         # Moduł Cloud Sync (Supabase / EMANAGER.PRO / Webhook)
@@ -91,11 +92,15 @@ class SmartDictaphoneWindow(QMainWindow):
         self.cloud_sync.signals.sync_started.connect(self._on_sync_started)
         self.cloud_sync.signals.sync_finished.connect(self._on_sync_finished)
         self.cloud_sync.signals.offline_queued.connect(self._on_offline_queued)
+        self.cloud_sync.signals.live_session_started.connect(self._on_live_session_started)
+        self.cloud_sync.signals.live_block_synced.connect(self._on_live_block_synced)
+        self.cloud_sync.signals.live_session_finalized.connect(self._on_live_session_finalized)
 
         self.worker = SmartAudioWorker(samplerate=SAMPLE_RATE, auto_pause_sec=DEFAULT_AUTO_PAUSE_SEC)
         self.worker.audio_level_signal.connect(self._update_audio_level)
         self.worker.vad_info_signal.connect(self._update_vad_info)
         self.worker.state_changed_signal.connect(self._on_worker_state_changed)
+        self.worker.session_split_signal.connect(self._on_session_split_triggered)
         self.worker.error_signal.connect(self._handle_audio_error)
 
         self._init_ui()
@@ -556,6 +561,8 @@ class SmartDictaphoneWindow(QMainWindow):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.current_live_timestamp = timestamp
         self.current_live_txt_path = os.path.join(self.transcriptions_dir, f"transkrypcja_{timestamp}.txt")
+        self.current_live_wav_path = os.path.join(self.recordings_dir, f"inteligentne_nagranie_{timestamp}.wav")
+        self.synced_segment_count = 0
         try:
             with open(self.current_live_txt_path, 'w', encoding='utf-8') as f:
                 f.write(f"=== TRANSKRYPCJA NA ŻYWO (Start: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) ===\n\n")
@@ -565,13 +572,22 @@ class SmartDictaphoneWindow(QMainWindow):
 
         selected_model = self.combo_models.currentData() or DEFAULT_WHISPER_MODEL
 
+        # Inicjalizacja sesji w Supabase dla transmisji na żywo do CRM
+        if self.cloud_sync.config.get("live_streaming") and self.cloud_sync.config.get("auto_sync"):
+            self.current_meeting_id = self.cloud_sync.start_live_session_async(
+                title=f"Spotkanie biurowe {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            )
+            target_name = self.cloud_sync.config.get("sync_target", "CRM").upper()
+            self.lbl_cloud_status.setText(f"🟢 Transmisja na żywo do {target_name} aktywna...")
+            self.lbl_cloud_status.setStyleSheet("color: #4cc9f0; font-size: 11px; font-weight: bold;")
+
         # Ustawienie estetycznego komunikatu oczekiwania na pierwszy zweryfikowany blok mowy
         self.text_transcript.setHtml(
             "<div style='color: #4cc9f0; font-size: 13px; padding: 10px;'>"
-            "🎙️ <b>Trwa inteligentne nagrywanie spotkania...</b><br>"
+            "🎙️ <b>Trwa inteligentne nagrywanie spotkania (Transmisja na żywo do CRM)...</b><br>"
             "<span style='color: #94a3b8; font-size: 11px;'>"
             "Mowa jest na bieżąco przetwarzana w tle z pełnym kontekstem zdań. "
-            "Zweryfikowane wypowiedzi pojawią się automatycznie po naturalnych pauzach w rozmowie."
+            "Zweryfikowane wypowiedzi pojawią się automatycznie w CRM po naturalnych pauzach w rozmowie."
             "</span></div>"
         )
 
@@ -591,7 +607,7 @@ class SmartDictaphoneWindow(QMainWindow):
 
         threshold_sec = self.slider_silence.value()
         self.worker.set_auto_pause_sec(threshold_sec)
-        self.worker.start_recording(device_index=selected_index)
+        self.worker.start_recording(device_index=selected_index, save_wav_path=self.current_live_wav_path)
         self.timer.start()
 
         self.btn_start.setEnabled(False)
@@ -613,18 +629,32 @@ class SmartDictaphoneWindow(QMainWindow):
         self.slider_silence.setEnabled(False)
 
     def _on_rolling_block_processed(self, block_idx, proc_sec, tot_sec, all_turns, full_plain, full_html):
-        """Odebranie przetworzonego w tle bloku mowy z pełnymi word-level timestampami."""
+        """Odebranie przetworzonego w tle bloku mowy z pełnymi word-level timestampami i synchronizacja na żywo."""
         self.current_turns = all_turns or []
         self.last_plain_text = full_plain
         self.text_transcript.setHtml(full_html)
         self._populate_speaker_mapping(self.current_turns)
+
+        # Transmisja na żywo nowych segmentów do Supabase / CRM
+        if self.cloud_sync.config.get("live_streaming") and self.cloud_sync.config.get("auto_sync") and self.current_meeting_id:
+            new_segments = (all_turns or [])[self.synced_segment_count:]
+            if new_segments:
+                spk_cnt = len(set(t.get("speaker", "Mówca") for t in (all_turns or []) if t.get("speaker")))
+                self.cloud_sync.append_live_segments_async(
+                    meeting_id=self.current_meeting_id,
+                    new_segments=new_segments,
+                    full_transcript=full_plain,
+                    duration_seconds=tot_sec,
+                    speaker_count=max(1, spk_cnt)
+                )
+                self.synced_segment_count = len(all_turns)
 
         # Aktualizacja paska postępu
         pct = int(min(98, max(5, (proc_sec / max(1.0, tot_sec)) * 100)))
         p_min, p_sec = int(proc_sec // 60), int(proc_sec % 60)
         t_min, t_sec = int(tot_sec // 60), int(tot_sec % 60)
         self.progress_transcription.setValue(pct)
-        self.progress_transcription.setFormat(f"🟢 Przetworzono w tle: {p_min:02d}:{p_sec:02d} / {t_min:02d}:{t_sec:02d} (Blok #{block_idx} gotowy)")
+        self.progress_transcription.setFormat(f"🟢 Przetworzono w tle: {p_min:02d}:{p_sec:02d} / {t_min:02d}:{t_sec:02d} (Blok #{block_idx} na żywo)")
 
     def _on_rolling_status(self, text):
         if self.worker.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:
@@ -1262,6 +1292,75 @@ class SmartDictaphoneWindow(QMainWindow):
         self.lbl_cloud_status.setText(f"☁️ Zapisano w kolejce offline ⏳")
         self.lbl_cloud_status.setStyleSheet("color: #f59e0b; font-size: 11px; font-weight: bold;")
         self.btn_manual_sync.setEnabled(True)
+
+    def _on_live_session_started(self, meeting_id: str):
+        target_name = self.cloud_sync.config.get("sync_target", "CRM").upper()
+        self.lbl_cloud_status.setText(f"🟢 Transmisja na żywo do {target_name} aktywna (ID: {meeting_id[:8]}...)")
+        self.lbl_cloud_status.setStyleSheet("color: #10b981; font-size: 11px; font-weight: bold;")
+
+    def _on_live_block_synced(self, meeting_id: str, count: int):
+        target_name = self.cloud_sync.config.get("sync_target", "CRM").upper()
+        self.lbl_cloud_status.setText(f"🟢 Transmisja do {target_name}: +{count} wypowiedzi na żywo")
+        self.lbl_cloud_status.setStyleSheet("color: #10b981; font-size: 11px; font-weight: bold;")
+
+    def _on_live_session_finalized(self, meeting_id: str, success: bool, msg: str):
+        target_name = self.cloud_sync.config.get("sync_target", "CRM").upper()
+        if success:
+            self.lbl_cloud_status.setText(f"☁️ Zakończono sesję w {target_name} ✅")
+            self.lbl_cloud_status.setStyleSheet("color: #10b981; font-size: 11px; font-weight: bold;")
+        else:
+            self.lbl_cloud_status.setText(f"☁️ Sesja zapisana lokalnie (kolejka offline)")
+            self.lbl_cloud_status.setStyleSheet("color: #f59e0b; font-size: 11px; font-weight: bold;")
+
+    def _on_session_split_triggered(self, reason: str):
+        """
+        Automatycznie zamyka bieżące spotkanie (upload audio do Storage, status='completed')
+        i rozpoczyna nowe spotkanie w Supabase bez przerywania ciągłego nasłuchu mikrofonu.
+        """
+        print(f"[SMART SESSION] Podział sesji wywołany przez: {reason}")
+        # 1. Finalizacja poprzedniej sesji w Supabase
+        if self.current_meeting_id and self.last_plain_text:
+            self.cloud_sync.finalize_live_session_async(
+                meeting_id=self.current_meeting_id,
+                final_transcript=self.last_plain_text,
+                duration_seconds=float(self.recorded_seconds),
+                audio_path=getattr(self, "current_live_wav_path", None),
+                turns=self.current_turns,
+                title=f"Spotkanie biurowe {getattr(self, 'current_live_timestamp', '')}"
+            )
+
+        # 2. Generowanie nowych ścieżek dla kolejnego spotkania
+        new_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.current_live_timestamp = new_timestamp
+        self.current_live_wav_path = os.path.join(self.recordings_dir, f"inteligentne_nagranie_{new_timestamp}.wav")
+        self.current_live_txt_path = os.path.join(self.transcriptions_dir, f"transkrypcja_{new_timestamp}.txt")
+        try:
+            with open(self.current_live_txt_path, 'w', encoding='utf-8') as f:
+                f.write(f"=== NOWE SPOTKANIE BIUROWE (Start: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) ===\n\n")
+            self._refresh_transcriptions_list()
+        except Exception:
+            pass
+
+        # 3. Rotacja rejestratora audio i transkrypcji w tle
+        self.worker.rotate_session_file(self.current_live_wav_path)
+        if hasattr(self, "rolling_worker") and self.rolling_worker is not None:
+            self.rolling_worker.reset_for_new_session(self.current_live_txt_path)
+
+        self.synced_segment_count = 0
+        self.current_turns = []
+        self.last_plain_text = ""
+        self.recorded_seconds = 0
+        self.lbl_timer.setText("00:00:00")
+
+        # 4. Start nowej sesji w Supabase
+        if self.cloud_sync.config.get("live_streaming") and self.cloud_sync.config.get("auto_sync"):
+            self.current_meeting_id = self.cloud_sync.start_live_session_async(
+                title=f"Spotkanie biurowe {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            )
+
+        target_name = self.cloud_sync.config.get("sync_target", "CRM").upper()
+        self.lbl_cloud_status.setText(f"🟢 Nowa sesja spotkania w {target_name} ({reason})")
+        self.lbl_cloud_status.setStyleSheet("color: #10b981; font-size: 11px; font-weight: bold;")
 
     def _refresh_transcriptions_list(self):
         self.list_transcriptions.clear()

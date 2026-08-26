@@ -29,6 +29,9 @@ class CloudSyncSignals(QObject):
     sync_started = pyqtSignal(str)              # meeting_id
     sync_finished = pyqtSignal(str, bool, str)  # meeting_id, success, message
     offline_queued = pyqtSignal(str, str)       # meeting_id, reason
+    live_session_started = pyqtSignal(str)      # meeting_id
+    live_block_synced = pyqtSignal(str, int)    # meeting_id, total_segments_synced
+    live_session_finalized = pyqtSignal(str, bool, str)  # meeting_id, success, message
 
 
 class CloudSyncManager:
@@ -52,6 +55,68 @@ class CloudSyncManager:
         """Przeładowuje konfigurację z pliku .env/środowiska."""
         self.config = get_cloud_sync_config()
 
+    def start_live_session_async(
+        self,
+        title: Optional[str] = None,
+        context_type: str = "general",
+        context_id: Optional[str] = None,
+        meeting_id: Optional[str] = None,
+    ) -> str:
+        """
+        Inicjalizuje nowe spotkanie biurowe w Supabase ze statusem 'recording' (dla transmisji na żywo do CRM).
+        Zwraca wygenerowany meeting_id.
+        """
+        self.reload_config()
+        if not meeting_id:
+            meeting_id = str(uuid.uuid4())
+
+        title_str = title or f"Spotkanie biurowe {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        threading.Thread(
+            target=self._start_live_session_worker,
+            args=(meeting_id, title_str, context_type, context_id),
+            daemon=True
+        ).start()
+
+        return meeting_id
+
+    def append_live_segments_async(
+        self,
+        meeting_id: str,
+        new_segments: List[Dict[str, Any]],
+        full_transcript: str,
+        duration_seconds: float = 0.0,
+        speaker_count: int = 1,
+    ):
+        """
+        Asynchronicznie przesyła nowo przetworzone segmenty mowy do Supabase
+        i aktualizuje nagłówek spotkania (transkrypcję, czas trwania).
+        """
+        self.reload_config()
+        threading.Thread(
+            target=self._append_live_segments_worker,
+            args=(meeting_id, new_segments, full_transcript, duration_seconds, speaker_count),
+            daemon=True
+        ).start()
+
+    def finalize_live_session_async(
+        self,
+        meeting_id: str,
+        final_transcript: str,
+        duration_seconds: float = 0.0,
+        audio_path: Optional[str] = None,
+        turns: Optional[List[Dict[str, Any]]] = None,
+        title: Optional[str] = None,
+    ):
+        """
+        Finalizuje sesję spotkania w Supabase (zmienia status na 'completed', kompresuje i wgrywa audio).
+        """
+        self.reload_config()
+        threading.Thread(
+            target=self._finalize_live_session_worker,
+            args=(meeting_id, final_transcript, duration_seconds, audio_path, turns, title),
+            daemon=True
+        ).start()
+
     def sync_meeting_async(
         self,
         title: str,
@@ -64,7 +129,7 @@ class CloudSyncManager:
         meeting_id: Optional[str] = None,
     ) -> str:
         """
-        Asynchronicznie wysyła spotkanie do chmury (nie blokuje wątku UI).
+        Asynchronicznie wysyła kompletne spotkanie do chmury (nie blokuje wątku UI).
         Zwraca wygenerowany meeting_id.
         """
         self.reload_config()
@@ -162,11 +227,221 @@ class CloudSyncManager:
             else:
                 logger.warning(f"Błąd synchronizacji {meeting_id}: {msg}. Zapisywanie do kolejki offline.")
                 self._save_to_offline_queue(payload, msg)
-
         except Exception as e:
             err_msg = f"Nieoczekiwany błąd podczas wysyłki: {e}"
             logger.error(err_msg, exc_info=True)
             self._save_to_offline_queue(payload, err_msg)
+
+    def _start_live_session_worker(self, meeting_id: str, title: str, context_type: str, context_id: Optional[str]):
+        """Tworzy wstępny rekord spotkania w Supabase ze statusem 'recording'."""
+        sync_target = self.config.get("sync_target", "emanager").lower()
+        if sync_target == "none":
+            self.signals.live_session_started.emit(meeting_id)
+            return
+
+        url = self.config.get("supabase_url", "").rstrip("/")
+        key = self.config.get("supabase_key", "")
+        if not url or not key:
+            self.signals.live_session_started.emit(meeting_id)
+            return
+
+        headers = {
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "Prefer": "return=minimal"
+        }
+
+        meeting_record = {
+            "id": meeting_id,
+            "title": title,
+            "duration_seconds": 0,
+            "created_at": datetime.utcnow().isoformat() + "Z",
+            "status": "recording",
+            "context_type": context_type or "general",
+            "context_id": context_id,
+            "device_name": self.config.get("device_name", "Biuro-Stanowisko-1"),
+            "speaker_count": 1,
+            "transcript": "",
+        }
+
+        try:
+            req = urllib.request.Request(
+                f"{url}/rest/v1/meetings",
+                data=json.dumps(meeting_record).encode("utf-8"),
+                headers=headers,
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status in (200, 201, 204):
+                    logger.info(f"[LIVE STREAM] Rozpoczęto nową sesję spotkania w Supabase: {meeting_id} (status='recording')")
+        except urllib.error.HTTPError as he:
+            if he.code == 409:
+                logger.info(f"[LIVE STREAM] Sesja spotkania {meeting_id} już istnieje w bazie.")
+            else:
+                logger.warning(f"[LIVE STREAM] Błąd startu sesji w tabeli meetings ({he.code}): {he.reason}")
+        except Exception as e:
+            logger.warning(f"[LIVE STREAM] Błąd połączenia podczas startu sesji: {e}")
+
+        self.signals.live_session_started.emit(meeting_id)
+
+    def _append_live_segments_worker(
+        self,
+        meeting_id: str,
+        new_segments: List[Dict[str, Any]],
+        full_transcript: str,
+        duration_seconds: float,
+        speaker_count: int
+    ):
+        """Wysyła nowe segmenty mowy na żywo do meeting_segments oraz aktualizuje nagłówek spotkania."""
+        sync_target = self.config.get("sync_target", "emanager").lower()
+        if sync_target == "none":
+            return
+
+        url = self.config.get("supabase_url", "").rstrip("/")
+        key = self.config.get("supabase_key", "")
+        if not url or not key:
+            return
+
+        headers = {
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "Prefer": "return=minimal"
+        }
+
+        # 1. Wstaw nowe segmenty mowy do tabeli meeting_segments
+        if new_segments:
+            rows = []
+            for s in new_segments:
+                rows.append({
+                    "meeting_id": meeting_id,
+                    "speaker_name": s.get("speaker", "Mówca"),
+                    "start_time": float(s.get("start", 0.0)),
+                    "end_time": float(s.get("end", 0.0)),
+                    "text": str(s.get("text", "")).strip()
+                })
+            try:
+                req = urllib.request.Request(
+                    f"{url}/rest/v1/meeting_segments",
+                    data=json.dumps(rows).encode("utf-8"),
+                    headers=headers,
+                    method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    if resp.status in (200, 201, 204):
+                        logger.debug(f"[LIVE STREAM] Pomyślnie wysłano {len(rows)} segmentów do meeting_segments ({meeting_id})")
+            except Exception as e:
+                logger.warning(f"[LIVE STREAM] Błąd wysyłki meeting_segments: {e}")
+
+        # 2. Zaktualizuj nagłówek spotkania w tabeli meetings (aktualny pełny tekst i czas trwania)
+        patch_data = {
+            "transcript": full_transcript.strip(),
+            "duration_seconds": int(duration_seconds),
+            "speaker_count": max(1, speaker_count),
+            "status": "recording"
+        }
+        try:
+            req = urllib.request.Request(
+                f"{url}/rest/v1/meetings?id=eq.{meeting_id}",
+                data=json.dumps(patch_data).encode("utf-8"),
+                headers=headers,
+                method="PATCH"
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                pass
+        except Exception as e:
+            logger.warning(f"[LIVE STREAM] Błąd PATCH spotkania meetings ({meeting_id}): {e}")
+
+        self.signals.live_block_synced.emit(meeting_id, len(new_segments) if new_segments else 0)
+
+    def _finalize_live_session_worker(
+        self,
+        meeting_id: str,
+        final_transcript: str,
+        duration_seconds: float,
+        audio_path: Optional[str],
+        turns: Optional[List[Dict[str, Any]]],
+        title: Optional[str]
+    ):
+        """Finalizuje sesję spotkania w Supabase (status -> 'completed', upload audio, kolejka offline fallback)."""
+        sync_target = self.config.get("sync_target", "emanager").lower()
+        if sync_target == "none":
+            self.signals.live_session_finalized.emit(meeting_id, True, "Synchronizacja wyłączona")
+            return
+
+        url = self.config.get("supabase_url", "").rstrip("/")
+        key = self.config.get("supabase_key", "")
+        if not url or not key:
+            self.signals.live_session_finalized.emit(meeting_id, False, "Brak kluczy Supabase w .env")
+            return
+
+        headers = {
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "Prefer": "return=minimal"
+        }
+
+        # 1. Upload audio z automatyczną kompresją adaptacyjną (zawsze < 100 MB)
+        audio_url = None
+        if self.config.get("upload_audio") and audio_path and os.path.exists(audio_path):
+            audio_url = self._upload_audio_to_supabase(url, key, meeting_id, audio_path)
+
+        # 2. Zlicz unikalnych mówców
+        spk_cnt = 1
+        if turns:
+            spk_set = set(t.get("speaker", "Mówca") for t in turns if t.get("speaker"))
+            spk_cnt = len(spk_set) if spk_set else 1
+
+        # 3. Zaktualizuj rekord spotkania do status='completed'
+        patch_data = {
+            "transcript": final_transcript.strip(),
+            "duration_seconds": int(duration_seconds),
+            "status": "completed",
+            "speaker_count": spk_cnt,
+        }
+        if title:
+            patch_data["title"] = title
+        if audio_url:
+            patch_data["audio_url"] = audio_url
+
+        try:
+            req = urllib.request.Request(
+                f"{url}/rest/v1/meetings?id=eq.{meeting_id}",
+                data=json.dumps(patch_data).encode("utf-8"),
+                headers=headers,
+                method="PATCH"
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                if resp.status in (200, 204):
+                    logger.info(f"[LIVE STREAM] Pomyślnie sfinalizowano spotkanie w Supabase: {meeting_id} (status='completed')")
+                    self.signals.live_session_finalized.emit(meeting_id, True, "Spotkanie pomyślnie zakończone i zsynchronizowane!")
+                    return
+        except Exception as e:
+            logger.warning(f"[LIVE STREAM] Błąd finalizacji PATCH spotkania: {e}")
+
+        # Jeśli PATCH nie powiódł się, zapisz do kolejki offline
+        segments = []
+        for t in (turns or []):
+            segments.append({
+                "speaker": t.get("speaker", "Mówca"),
+                "start": float(t.get("start", 0.0)),
+                "end": float(t.get("end", 0.0)),
+                "text": str(t.get("text", "")).strip()
+            })
+        full_payload = self._build_payload(
+            meeting_id=meeting_id,
+            title=title or f"Spotkanie {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            transcript_text=final_transcript,
+            segments=segments,
+            duration_seconds=duration_seconds,
+            audio_path=audio_path,
+            context_type="general",
+            context_id=None
+        )
+        self._save_to_offline_queue(full_payload, "Błąd finalizacji sesji na żywo")
+        self.signals.live_session_finalized.emit(meeting_id, False, "Zapisano w kolejce offline")
 
     def _send_to_supabase_emanager(self, payload: Dict[str, Any]) -> tuple[bool, str]:
         """Wysyła spotkanie bezpośrednio do bazy Supabase w EMANAGER.PRO."""
@@ -327,9 +602,11 @@ class CloudSyncManager:
         except Exception as e:
             return False, f"Błąd zapisu do voice_notes: {e}"
 
-    def _compress_audio_for_upload(self, audio_path: str) -> Optional[str]:
+    def _compress_audio_for_upload(self, audio_path: str, duration_sec: float = 0.0) -> Optional[str]:
         """
-        Kompresuje plik WAV do zoptymalizowanego MP3 48kbps mono (16kHz) przy użyciu wbudowanego ffmpeg.
+        Kompresuje plik WAV do zoptymalizowanego MP3 mono (16kHz) przy użyciu wbudowanego ffmpeg.
+        Dobiera bitrate adaptacyjnie w zależności od czasu trwania, aby plik ZAWSZE zmieścił się
+        w limicie 100 MB Supabase Storage (np. 8h @ 24kbps = ~86MB, 2h @ 48kbps = ~43MB).
         Zwraca ścieżkę do tymczasowego pliku MP3, lub None jeśli kompresja się nie powiodła.
         """
         try:
@@ -338,6 +615,25 @@ class CloudSyncManager:
             if not ffmpeg_exe or not os.path.exists(ffmpeg_exe):
                 logger.warning("[UPLOAD] Brak wbudowanego ffmpeg – nie można skompresować audio.")
                 return None
+
+            if duration_sec <= 0 and os.path.exists(audio_path):
+                try:
+                    import soundfile as sf
+                    info = sf.info(audio_path)
+                    duration_sec = float(info.duration)
+                except Exception:
+                    pass
+
+            # Wybór optymalnego bitrate:
+            # > 4h (14400s) -> 24 kbps (~10.8 MB/h -> 8h = ~86.4 MB < 100 MB)
+            # 2h - 4h -> 32 kbps (~14.4 MB/h -> 4h = ~57.6 MB < 100 MB)
+            # <= 2h -> 48 kbps (~21.6 MB/h -> 2h = ~43.2 MB < 100 MB)
+            if duration_sec > 14400:
+                target_bitrate = "24k"
+            elif duration_sec > 7200:
+                target_bitrate = "32k"
+            else:
+                target_bitrate = "48k"
 
             import sys, subprocess
             tmp_mp3 = audio_path.rsplit(".", 1)[0] + "_upload_tmp.mp3"
@@ -348,7 +644,7 @@ class CloudSyncManager:
                 "-ac", "1",          # mono
                 "-ar", "16000",      # 16kHz
                 "-codec:a", "libmp3lame",
-                "-b:a", "48k",       # 48 kbps → idealna mowa, ~36MB na 1h44m
+                "-b:a", target_bitrate,
                 tmp_mp3
             ]
             startupinfo = None
@@ -361,11 +657,11 @@ class CloudSyncManager:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 startupinfo=startupinfo,
-                timeout=180
+                timeout=300
             )
             if result.returncode == 0 and os.path.exists(tmp_mp3) and os.path.getsize(tmp_mp3) > 0:
                 size_mb = os.path.getsize(tmp_mp3) / (1024 * 1024)
-                logger.info(f"[UPLOAD] Skompresowano audio: {os.path.basename(audio_path)} → MP3 48kbps ({size_mb:.1f} MB)")
+                logger.info(f"[UPLOAD] Skompresowano audio: {os.path.basename(audio_path)} → MP3 {target_bitrate} ({size_mb:.1f} MB, czas: {duration_sec/60:.1f} min)")
                 return tmp_mp3
             else:
                 logger.warning(f"[UPLOAD] Kompresja ffmpeg nie powiodła się (returncode={result.returncode})")
