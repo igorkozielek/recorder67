@@ -701,8 +701,23 @@ class SmartDictaphoneWindow(QMainWindow):
 
     def _on_rolling_finished(self, final_html: str, final_plain: str, all_turns: list):
         """Zakończenie przetwarzania w tle po kliknięciu Stop."""
-        if hasattr(self, "rolling_worker") and self.rolling_worker in self._active_threads:
-            self._active_threads.remove(self.rolling_worker)
+        words = []
+        if hasattr(self, "rolling_worker") and self.rolling_worker:
+            if hasattr(self.rolling_worker, "get_all_words"):
+                words = self.rolling_worker.get_all_words()
+            if self.rolling_worker in self._active_threads:
+                self._active_threads.remove(self.rolling_worker)
+
+        # Fallback pobrania słów z sesji JSON jeśli rolling_worker był już wyczyszczony
+        if not words and hasattr(self, "current_live_txt_path") and self.current_live_txt_path:
+            try:
+                j_path = get_session_path_for_txt(self.current_live_txt_path)
+                if os.path.exists(j_path):
+                    s = TranscriptionSession.load_from_json(j_path)
+                    if s and s.words:
+                        words = s.words
+            except Exception:
+                pass
 
         self.current_turns = all_turns or []
         self.last_plain_text = final_plain
@@ -716,27 +731,37 @@ class SmartDictaphoneWindow(QMainWindow):
         min_spk = spk_cfg.get("min_speakers")
         max_spk = spk_cfg.get("max_speakers")
 
-        # Jeśli użytkownik zażądał diaryzacji mówców PyAnnote
-        if enable_diar and token and self.last_audio_save_path and self.current_turns:
+        # Jeśli użytkownik zażądał diaryzacji mówców PyAnnote (reużycie gotowych słów z Whispera bez ponownego uruchamiania)
+        if enable_diar and token and self.last_audio_save_path and words:
             self.progress_transcription.setFormat("Trwa analiza głosów i podział na mówców (PyAnnote)...")
-            self.progress_transcription.setValue(96)
+            self.progress_transcription.setValue(5)
 
-            self.transcription_thread = TranscriptionWorker(
-                self.last_audio_save_path,
-                token,
-                model_size=self.combo_models.currentData() or DEFAULT_WHISPER_MODEL,
-                enable_diarization=True,
+            json_path = None
+            if hasattr(self, "current_live_txt_path") and self.current_live_txt_path:
+                json_path = get_session_path_for_txt(self.current_live_txt_path)
+
+            self.diarization_thread = DiarizationOnlyWorker(
+                audio_path=self.last_audio_save_path,
+                transcript_words=words,
+                hf_token=token,
+                session_json_path=json_path,
                 num_speakers=num_spk,
                 min_speakers=min_spk,
                 max_speakers=max_spk
             )
-            self._active_threads.append(self.transcription_thread)
-            self.transcription_thread.progress_signal.connect(self._on_transcription_progress)
-            self.transcription_thread.finished_signal.connect(self._on_transcription_finished)
-            self.transcription_thread.error_signal.connect(self._on_transcription_error)
-            self.transcription_thread.start()
+            self._active_threads.append(self.diarization_thread)
+            self.diarization_thread.progress_signal.connect(self._on_transcription_progress)
+            self.diarization_thread.finished_signal.connect(self._on_rolling_diarization_finished)
+            self.diarization_thread.error_signal.connect(self._on_transcription_error)
+            self.diarization_thread.start()
         else:
             self._on_transcription_finished(final_html, final_plain, self.current_turns)
+
+    def _on_rolling_diarization_finished(self, html_text: str, plain_text: str, turns: list, session_path: str):
+        """Obsługa zakończenia samej diaryzacji na słowach z rolling-transkrypcji."""
+        if hasattr(self, "diarization_thread") and self.diarization_thread in self._active_threads:
+            self._active_threads.remove(self.diarization_thread)
+        self._on_transcription_finished(html_text, plain_text, turns)
 
 
     def _on_upload_file_clicked(self):
