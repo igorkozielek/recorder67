@@ -166,25 +166,9 @@ SETTINGS_FILE = os.path.join(os.getcwd(), "user_settings.json")
 
 def load_user_settings() -> dict:
     """
-    Wczytuje ustawienia użytkownika z user_settings.json.
-    Jeśli plik nie istnieje, tworzy słownik zainicjalizowany danymi z .env i domyślnych stałych.
+    Wczytuje ustawienia użytkownika z user_settings.json i scala je z domyślnymi wartościami.
+    Zapewnia pełną kompatybilność wsteczną przy aktualizacjach (brakujące klucze są uzupełniane domyślnymi).
     """
-    settings_paths = [
-        SETTINGS_FILE,
-        os.path.join(BASE_DIR, "user_settings.json"),
-        os.path.join(os.path.dirname(sys.executable), "user_settings.json")
-    ]
-    for p in settings_paths:
-        if os.path.exists(p):
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if isinstance(data, dict):
-                        return data
-            except Exception:
-                pass
-
-    # Wartości początkowe (z .env / domyślne stałe)
     defaults = {
         "custom_keywords": get_env_variable("CUSTOM_KEYWORDS", "emanager.pro, EMANAGER.PRO, CRM, AI, Supabase, n8n, Make, webhook, API, LLM, GPT-4, Claude, Gemini, Gemini Vision, Helpdesk, Subiekt GT, Subiekt, faktura proforma, synchronizacja, harmonogram, rejestr zmian, zgłoszenia, zamówienia, matryca uprawnień, QR code"),
         "whisper_beam_size": int(get_env_variable("WHISPER_BEAM_SIZE", "5")),
@@ -204,6 +188,24 @@ def load_user_settings() -> dict:
         "session_split_silence_sec": float(get_env_variable("SESSION_SPLIT_SILENCE_SEC", "900.0")),  # 15 min
         "timestamp_format": get_env_variable("TIMESTAMP_FORMAT", "offset_only"),
     }
+
+    settings_paths = [
+        SETTINGS_FILE,
+        os.path.join(BASE_DIR, "user_settings.json"),
+        os.path.join(os.path.dirname(sys.executable), "user_settings.json")
+    ]
+    for p in settings_paths:
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        merged = dict(defaults)
+                        merged.update(data)
+                        return merged
+            except Exception:
+                pass
+
     return defaults
 
 
