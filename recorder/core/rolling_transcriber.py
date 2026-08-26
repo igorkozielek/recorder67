@@ -9,7 +9,14 @@ from PySide6.QtCore import QThread, Signal as pyqtSignal
 from recorder.core.transcriber import TranscriberEngine, is_hallucination, clean_repeated_text
 from recorder.core.diarizer import format_transcript_without_diarization
 from recorder.core.speakers import format_turns, suggest_speaker_names
-from recorder.config import DEFAULT_WHISPER_MODEL
+from recorder.config import (
+    DEFAULT_WHISPER_MODEL,
+    DEFAULT_BEAM_SIZE,
+    DEFAULT_INITIAL_PROMPT,
+    get_full_initial_prompt,
+    get_beam_size
+)
+from recorder.audio.converter import highpass_filter_audio, normalize_audio
 
 
 class RollingBlock:
@@ -125,17 +132,34 @@ class RollingTranscriptionWorker(QThread):
             self.processed_blocks.append(block)
             return
 
+        # Oczyszczenie pasma i normalizacja głośności bloku
+        audio_clean = highpass_filter_audio(audio_float, sr=16000, cutoff_hz=80.0)
+        audio_norm = normalize_audio(audio_clean, target_peak=0.92)
+
+        initial_prompt = get_full_initial_prompt()
+        effective_beam = get_beam_size()
+
         transcript_words = []
 
         try:
-            # Transkrypcja bloku z word-level timestamps (czysty Whisper jak przy plikach z dysku)
+            # Transkrypcja bloku z word-level timestamps i beam search
             segments, _ = self.transcriber._model.transcribe(
-                audio_float,
+                audio_norm,
                 word_timestamps=True,
                 language="pl",
-                beam_size=1,
-                vad_filter=False,
-                initial_prompt="CRM, Helpdesk, Subiekt, synchronizacja, harmonogram, rejestr zmian, zgłoszenia, zamówienia."
+                beam_size=effective_beam,
+                temperature=0.0,
+                condition_on_previous_text=False,
+                no_speech_threshold=0.6,
+                compression_ratio_threshold=2.4,
+                vad_filter=True,
+                vad_parameters=dict(
+                    threshold=0.35,
+                    min_speech_duration_ms=200,
+                    min_silence_duration_ms=400,
+                    speech_pad_ms=400
+                ),
+                initial_prompt=initial_prompt
             )
 
             for segment in segments:

@@ -32,9 +32,17 @@ class SmartRecordState:
 
 def get_hf_token() -> str:
     """
-    Pobiera token HuggingFace z pliku .env lub zmiennych środowiskowych.
+    Pobiera token HuggingFace ze słownika ustawień użytkownika, pliku .env lub zmiennych środowiskowych.
     """
-    # 1. Sprawdzenie zmiennej środowiskowej
+    # 1. Sprawdzenie ustawień użytkownika
+    try:
+        token = load_user_settings().get("hf_token", "").strip()
+        if token:
+            return token
+    except Exception:
+        pass
+
+    # 2. Sprawdzenie zmiennej środowiskowej
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
     if token:
         return token.strip()
@@ -104,7 +112,7 @@ WHISPER_MODELS = {
     }
 }
 
-DEFAULT_WHISPER_MODEL = "small"
+DEFAULT_WHISPER_MODEL = "large-v3-turbo"
 
 
 def get_env_variable(key: str, default: str = "") -> str:
@@ -151,27 +159,157 @@ LIVE_BLOCK_MIN_SEC = float(get_env_variable("LIVE_BLOCK_MIN_SEC", "15.0"))      
 LIVE_BLOCK_MAX_SEC = float(get_env_variable("LIVE_BLOCK_MAX_SEC", "45.0"))          # Maksymalny czas bloku przed wymuszeniem cięcia na pauzie
 LIVE_BLOCK_SILENCE_CUT_SEC = float(get_env_variable("LIVE_BLOCK_SILENCE_CUT_SEC", "1.0"))  # Min. 1.0s ciszy VAD na naturalnym końcu zdania
 
+import json
+
+SETTINGS_FILE = os.path.join(os.getcwd(), "user_settings.json")
+
+
+def load_user_settings() -> dict:
+    """
+    Wczytuje ustawienia użytkownika z user_settings.json.
+    Jeśli plik nie istnieje, tworzy słownik zainicjalizowany danymi z .env i domyślnych stałych.
+    """
+    settings_paths = [
+        SETTINGS_FILE,
+        os.path.join(BASE_DIR, "user_settings.json"),
+        os.path.join(os.path.dirname(sys.executable), "user_settings.json")
+    ]
+    for p in settings_paths:
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        return data
+            except Exception:
+                pass
+
+    # Wartości początkowe (z .env / domyślne stałe)
+    defaults = {
+        "custom_keywords": get_env_variable("CUSTOM_KEYWORDS", "Aldent, Subiekt GT, CRM, Helpdesk, faktura proforma, synchronizacja, harmonogram, rejestr zmian, zgłoszenia, zamówienia"),
+        "whisper_beam_size": int(get_env_variable("WHISPER_BEAM_SIZE", "5")),
+        "default_whisper_model": get_env_variable("DEFAULT_WHISPER_MODEL", "large-v3-turbo"),
+        "hf_token": get_env_variable("HF_TOKEN", ""),
+        "device_name": get_env_variable("DEVICE_NAME", "Biuro-Stanowisko-1"),
+        "organization_id": get_env_variable("ORGANIZATION_ID", "default_org"),
+        "sync_target": get_env_variable("SYNC_TARGET", "emanager"),
+        "supabase_url": get_env_variable("SUPABASE_URL", ""),
+        "supabase_key": get_env_variable("SUPABASE_KEY", get_env_variable("SUPABASE_PUBLISHABLE_KEY", "")),
+        "supabase_bucket": get_env_variable("SUPABASE_STORAGE_BUCKET", "meeting-recordings"),
+        "generic_webhook_url": get_env_variable("GENERIC_WEBHOOK_URL", ""),
+        "auto_cloud_sync": get_env_variable("AUTO_CLOUD_SYNC", "true").lower() in ("1", "true", "yes"),
+        "sync_upload_audio": get_env_variable("SYNC_UPLOAD_AUDIO", "true").lower() in ("1", "true", "yes"),
+        "vad_speech_threshold": float(get_env_variable("VAD_SPEECH_THRESHOLD", "0.35")),
+        "auto_pause_sec": float(get_env_variable("AUTO_PAUSE_SEC", "5.0")),
+        "session_split_silence_sec": float(get_env_variable("SESSION_SPLIT_SILENCE_SEC", "900.0")),  # 15 min
+    }
+    return defaults
+
+
+def save_user_settings(settings: dict) -> bool:
+    """Zapisuje słownik ustawień do user_settings.json."""
+    try:
+        cur = load_user_settings()
+        cur.update(settings)
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(cur, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception as e:
+        if sys.stderr:
+            print(f"Błąd zapisu user_settings.json: {e}", file=sys.stderr)
+        return False
+
+
+def get_custom_keywords() -> str:
+    """Zwraca zdefiniowany w ustawieniach słownik słów branżowych / nazw własnych."""
+    st = load_user_settings()
+    return str(st.get("custom_keywords", "")).strip()
+
+
+def get_beam_size() -> int:
+    """Zwraca rozmiar wiązki (beam search) dla Whispera."""
+    st = load_user_settings()
+    try:
+        return max(1, min(10, int(st.get("whisper_beam_size", 5))))
+    except Exception:
+        return 5
+
+
+def get_device_name() -> str:
+    """Zwraca nazwę stanowiska komputerowego."""
+    st = load_user_settings()
+    return str(st.get("device_name", "Biuro-Stanowisko-1")).strip()
+
+
+def get_vad_speech_threshold() -> float:
+    """Zwraca próg czułości wykrywania mowy Silero VAD."""
+    st = load_user_settings()
+    try:
+        return max(0.1, min(0.9, float(st.get("vad_speech_threshold", 0.35))))
+    except Exception:
+        return 0.35
+
+
+def get_session_split_silence_sec() -> float:
+    """Zwraca czas ciągłej ciszy wymagany do automatycznego podziału na nową sesję (sekundy)."""
+    st = load_user_settings()
+    try:
+        return float(st.get("session_split_silence_sec", 900.0))
+    except Exception:
+        return 900.0
+
+
+def get_default_beam_size() -> int:
+    """Kompatybilność wsteczna: zwraca get_beam_size()."""
+    return get_beam_size()
+
+
+DEFAULT_BEAM_SIZE = get_beam_size()
+
+# Domyślny słownik początkowy dla Whispera (IT, sprzęt, biznes, odmiany, frazeologia polska)
+DEFAULT_INITIAL_PROMPT = (
+    "Antigravity, zestawienie, sprzęt, procesor, i5, i7, i9, RTX, pamięć RAM, dysk SSD, "
+    "Aldent, CRM, Helpdesk, Subiekt, synchronizacja, harmonogram, rejestr zmian, zgłoszenia, "
+    "zamówienia, diaryzacja, transkrypcja, z przymrużeniem oka."
+)
+
+
+def get_full_initial_prompt(extra_context: str = "") -> str:
+    """
+    Tworzy zoptymalizowany initial_prompt dla Whispera, łącząc słownik bazowy,
+    słownik branżowy użytkownika oraz ewentualny kontekst ostatnich zdań.
+    """
+    kw = get_custom_keywords()
+    prompt = DEFAULT_INITIAL_PROMPT
+    if kw:
+        prompt = f"{prompt}, {kw}"
+    if extra_context and len(extra_context.strip()) > 3:
+        prompt = f"{prompt} {extra_context.strip()[-150:]}"
+    return prompt
+
+
 # Konfiguracja Cloud Sync / Multi-Tenant / EMANAGER.PRO
 SYNC_QUEUE_DIR = os.path.join(TRANSCRIPTIONS_DIR, "sync_queue")
 os.makedirs(SYNC_QUEUE_DIR, exist_ok=True)
 
+
 def get_cloud_sync_config() -> dict:
     """
-    Zwraca aktualną konfigurację integracji chmurowej.
+    Zwraca aktualną konfigurację integracji chmurowej (z priorytetem dla user_settings.json).
     """
+    st = load_user_settings()
     return {
-        "sync_target": get_env_variable("SYNC_TARGET", "emanager"),  # 'emanager', 'generic_webhook', 'none'
-        "supabase_url": get_env_variable("SUPABASE_URL", ""),
-        "supabase_key": get_env_variable("SUPABASE_KEY", get_env_variable("SUPABASE_PUBLISHABLE_KEY", "")),
-        "supabase_bucket": get_env_variable("SUPABASE_STORAGE_BUCKET", "meeting-recordings"),
-        "device_name": get_env_variable("DEVICE_NAME", "Biuro-Stanowisko-1"),
-
-        "organization_id": get_env_variable("ORGANIZATION_ID", "default_org"),
-        "auto_sync": get_env_variable("AUTO_CLOUD_SYNC", "true").lower() in ("1", "true", "yes"),
-        "generic_webhook_url": get_env_variable("GENERIC_WEBHOOK_URL", ""),
-        "upload_audio": get_env_variable("SYNC_UPLOAD_AUDIO", "true").lower() in ("1", "true", "yes"),
+        "sync_target": st.get("sync_target") or get_env_variable("SYNC_TARGET", "emanager"),
+        "supabase_url": st.get("supabase_url") or get_env_variable("SUPABASE_URL", ""),
+        "supabase_key": st.get("supabase_key") or get_env_variable("SUPABASE_KEY", get_env_variable("SUPABASE_PUBLISHABLE_KEY", "")),
+        "supabase_bucket": st.get("supabase_bucket") or get_env_variable("SUPABASE_STORAGE_BUCKET", "meeting-recordings"),
+        "device_name": st.get("device_name") or get_env_variable("DEVICE_NAME", "Biuro-Stanowisko-1"),
+        "organization_id": st.get("organization_id") or get_env_variable("ORGANIZATION_ID", "default_org"),
+        "auto_sync": bool(st.get("auto_cloud_sync", True)),
+        "generic_webhook_url": st.get("generic_webhook_url") or get_env_variable("GENERIC_WEBHOOK_URL", ""),
+        "upload_audio": bool(st.get("sync_upload_audio", True)),
         "live_streaming": LIVE_STREAMING_ENABLED,
-        "session_split_silence_sec": SESSION_SPLIT_SILENCE_SEC,
+        "session_split_silence_sec": get_session_split_silence_sec(),
         "max_session_duration_sec": MAX_SESSION_DURATION_SEC,
     }
 
@@ -258,17 +396,16 @@ def get_recommended_profile() -> dict:
             )
         }
     else:
-        # Maszyna CPU (np. i5-8500 6-core)
-        if cores >= 6:
-            rec_model = "small"
+        # Maszyna CPU
+        if cores >= 4:
+            rec_model = "large-v3-turbo"
             return {
                 "recommended_model": rec_model,
-                "title": "Wykryto wydajny procesor CPU",
+                "title": "Wykryto wielordzeniowy procesor CPU",
                 "message": (
-                    f"Wykryto procesor CPU z {cores} wątkami/rdzeniami (Brak dedykowanej karty NVIDIA).\n\n"
+                    f"Wykryto procesor CPU z {cores} wątkami/rdzeniami.\n\n"
                     f"Ustawiono zoptymalizowany model: '{rec_model}' w trybie int8 ({hw['cpu_threads']} wątki robocze).\n\n"
-                    "Zapewnia on płynną transkrypcję na żywo bez opóźnień.\n"
-                    "(Jeśli zależy Ci na wyższej precyzji, możesz również ręcznie wybrać model 'medium' lub 'large-v3-turbo')."
+                    "Zapewnia on najwyższą precyzję języka polskiego i poprawność trudnych zwrotów."
                 )
             }
         else:
@@ -278,7 +415,7 @@ def get_recommended_profile() -> dict:
                 "title": "Wykryto procesor CPU",
                 "message": (
                     f"Wykryto procesor CPU z {cores} wątkami.\n\n"
-                    f"Ustawiono lekki model: '{rec_model}' (int8) dla zachowania płynności działania systemu."
+                    f"Ustawiono lekki model: '{rec_model}' (int8) dla zachowania optymalnej płynności."
                 )
             }
 
