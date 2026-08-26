@@ -46,3 +46,5 @@ dist/
 # Zmienne środowiskowe i sekrety (nie publikować na GitHubie!)
 .env
 user_settings.json
+*.csv
+.sync_queue/

@@ -1,34 +1,71 @@
-# Recorder67 - Asystent Biurowy Ambient AI
+# 🎙️ Recorder67 - Asystent Biurowy Ambient AI
 
-System ciągłego monitorowania mowy, lokalnej transkrypcji AI oraz analizy biznesowej dla optymalizacji procesów biurowych.
+Nowoczesny system ciągłego monitorowania mowy w biurze, lokalnej transkrypcji AI (offline), detekcji aktywności głosu (VAD) oraz asynchronicznej synchronizacji z systemem CRM / bazą Supabase.
 
-Szczegółowy opis architektury, statusu prac (zrobione vs do zrobienia) oraz założeń znajduje się w dokumencie:
+Szczegółowy opis założeń architektonicznych, pamięci projektu oraz statusu realizacji znajduje się w dokumencie:
 👉 **[PROJECT_GOAL.md](PROJECT_GOAL.md)**
+
+---
+
+## ✨ Główne Funkcjonalności
+
+* 🎙️ **Detekcja Aktywności Głosu (Silero VAD AI):** Wykrywanie mowy w czasie rzeczywistym, bufor pre-padding (brak ucinania pierwszych głosek), konfigurowalny czas auto-pauzy oraz auto-wznawianie.
+* ⚡ **Transkrypcja na Żywo w Tle (Rolling Transcriber):** Ciągłe przetwarzanie wypowiedzi w tle za pomocą `faster-whisper` (modele `small`, `medium`, `large-v3-turbo`) z akceleracją GPU (CUDA float16) lub CPU (int8).
+* 🛡️ **Zaawansowane Filtry Anty-Halucynacyjne:** Algorytmiczne usuwanie patologicznych pętli powtórzeń (1-gramów i 2-gramów, np. zacięć śmiechu, oddechów czy wielokrotnych powtórzeń), z zachowaniem pełnej treści wartościowych zdań.
+* 👥 **Separacja i Autosugestia Mówców:** Opcjonalna diaryzacja `pyannote.audio` (`speaker-diarization-3.1`) z panelem autosugestii imion na podstawie kontekstu rozmów.
+* ☁️ **Agnostyczna Synchronizacja Chmurowa (Cloud Sync):** Transmisja segmentów transkrypcji na żywo do bazy Supabase / REST API / Webhooka CRM z automatyczną kolejką offline na wypadek braku internetu.
+* ⏱️ **Inteligentny Podział Sesji (Smart Session Splitting):** Automatyczne domykanie bieżącego spotkania po konfigurowalnym czasie ciszy (np. 15 minut) i płynne rozpoczynanie nowej sesji bez przerywania nasłuchu.
+* 💾 **Optymalizacja Pamięci i Strumieniowanie WAV:** Strumieniowy zapis dźwięku na dysk (`StreamingWavWriter`) zapobiegający akumulacji danych audio w pamięci RAM podczas wielogodzinnych nagrań.
 
 ---
 
 ## 🚀 Szybki Start
 
-### 1. Instalacja zależności
+### 1. Wymagania wstępne
+* Python 3.10+ (zalecany Python 3.10 lub 3.11 na Windows)
+* Karta NVIDIA z obsługą CUDA (opcjonalnie dla akceleracji GPU) lub wielordzeniowy procesor CPU.
+
+### 2. Instalacja zależności
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Konfiguracja Tokena Hugging Face (dla Diaryzacji PyAnnote)
-Skopiuj plik `.env.example` do `.env` i wklej swój klucz:
+### 3. Konfiguracja środowiska (.env)
+Skopiuj plik `.env.example` do `.env` i uzupełnij wymagane klucze:
 ```bash
 copy .env.example .env
 ```
+
 W pliku `.env`:
 ```env
+# Hugging Face Token (wymagany tylko do diaryzacji PyAnnote)
 HF_TOKEN=hf_twoj_token_tutaj
+
+# Konfiguracja synchronizacji chmurowej (Supabase / CRM)
+SYNC_TARGET=emanager
+SUPABASE_URL=https://twoj-projekt.supabase.co
+SUPABASE_KEY=twoj_anon_lub_publishable_key
+ORGANIZATION_ID=default_org
+DEVICE_NAME=Biuro-Stanowisko-1
+AUTO_CLOUD_SYNC=true
 ```
 
-### 3. Uruchomienie aplikacji
+### 4. Uruchomienie aplikacji
 ```bash
 python main.py
 ```
-*(Alternatywnie: `python recorder/recorder.py` lub `python recorder/main.py`)*
+
+---
+
+## 🏗️ Budowanie wersji instalacyjnej (.EXE)
+
+Aplikację można skompilować do samodzielnego pliku wykonywalnego dla systemu Windows:
+
+```powershell
+# Uruchom dedykowany skrypt budowania PyInstaller:
+.\build_exe.ps1
+```
+Gotowy plik `.exe` wraz ze wszystkimi zależnościami zostanie utworzony w katalogu `dist/InteligentnyDyktafonAI/`.
 
 ---
 
@@ -36,27 +73,33 @@ python main.py
 
 ```text
 recorder67/
-├── main.py                    # Punkt startowy aplikacji
-├── .env                       # Klucze API / HuggingFace Token (ignorowany przez git)
-├── .env.example               # Przykładowa konfiguracja środowiska
-├── PROJECT_GOAL.md            # Pamięć projektu i roadmapa
-├── requirements.txt           # Zależności Python
+├── main.py                     # Główny punkt startowy aplikacji
+├── .env.example                # Przykładowy szablon konfiguracji środowiska
+├── PROJECT_GOAL.md             # Pamięć projektu, roadmapa i architektura
+├── requirements.txt            # Zależności Python (PySide6, faster-whisper, torch, torchaudio, itp.)
+├── InteligentnyDyktafonAI.spec # Specyfikacja kompilacji PyInstaller
+├── build_exe.ps1               # Skrypt automatycznego budowania EXE
 │
 └── recorder/
-    ├── config.py              # Konfiguracja, stałe i wczytywanie tokena z .env
+    ├── config.py               # Centralna konfiguracja, stałe i ustawienia użytkownika
     │
-    ├── core/                  # Czysta logika AI (bez zależności od GUI)
-    │   ├── vad.py             # Detekcja mowy Silero VAD AI
-    │   ├── transcriber.py     # Transkrypcja Faster-Whisper
-    │   └── diarizer.py        # Diaryzacja mówców PyAnnote
+    ├── core/                   # Logika przetwarzania audio i modeli AI
+    │   ├── vad.py              # Detektor aktywności głosu Silero VAD
+    │   ├── transcriber.py      # Silnik Faster-Whisper, filtry halucynacji i deduplikacja
+    │   ├── rolling_transcriber.py # Asynchroniczny transkryber blokowy na żywo
+    │   ├── diarizer.py         # Silnik diaryzacji PyAnnote (Speaker Diarization)
+    │   ├── speakers.py         # Analiza dialogów i autosugestia imion mówców
+    │   ├── session.py          # Zarządzanie strukturą i zapisem sesji JSON/TXT
+    │   └── cloud_sync.py       # Asynchroniczna synchronizacja chmurowa i kolejka offline
     │
-    ├── audio/                 # Obsługa sprzętu i przetwarzanie dźwięku
-    │   ├── devices.py         # Filtrowanie mikrofonów (ignorowanie błędnych WDM-KS)
-    │   ├── converter.py       # Resampling audio do 16 kHz
-    │   └── capture.py         # Zapis bufora do formatu WAV
+    ├── audio/                  # Obsługa wejść audio i operacji na plikach
+    │   ├── devices.py          # Wykrywanie i filtrowanie mikrofonów (DirectSound/WASAPI/MME)
+    │   ├── converter.py        # Resampling do 16 kHz, filtry pasmowe i normalizacja
+    │   └── capture.py          # Strumieniowy zapis WAV na dysku (StreamingWavWriter)
     │
-    └── ui/                    # Interfejs graficzny PyQt6
-        ├── window.py          # Główne okno SmartDictaphoneWindow
-        ├── workers.py         # Wątki robocze QThread
-        └── theme.py           # Motyw ciemny i arkusz stylów QSS
+    └── ui/                     # Interfejs graficzny użytkownika (PySide6)
+        ├── window.py           # Główne okno aplikacji (SmartDictaphoneWindow)
+        ├── workers.py          # Wątki robocze audio i transkrypcji (QThread)
+        ├── settings_dialog.py  # Okno ustawień słownika, parametrów VAD i podziału sesji
+        └── theme.py            # Stylizacja Dark Theme (QSS i paleta)
 ```
