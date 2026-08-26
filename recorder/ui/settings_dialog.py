@@ -28,9 +28,10 @@ class SettingsDialog(QDialog):
     settings_saved_signal = pyqtSignal(dict)
 
     PRESET_KEYWORDS_IT = (
-        "Aldent, Subiekt GT, CRM, Helpdesk, faktura proforma, synchronizacja, harmonogram, "
-        "rejestr zmian, zgłoszenia, zamówienia, i5, i7, i9, RTX 4060, RAM, SSD, Antigravity, "
-        "diaryzacja, transkrypcja, z przymrużeniem oka"
+        "emanager.pro, EMANAGER.PRO, CRM, AI, Supabase, n8n, Make, webhook, API, LLM, GPT-4, Claude, Gemini, "
+        "Gemini Vision, Lovable, React, Helpdesk, Subiekt GT, Subiekt, faktura proforma, zamówienia, zgłoszenia, "
+        "harmonogram, kategorie, dyplomy, matryca uprawnień, recepcja, check-in, QR code, CSV, oświetleniowiec, "
+        "synchronizacja, rejestr zmian, diaryzacja, transkrypcja, procesy biznesowe, architektura wzrostu"
     )
 
     PRESET_KEYWORDS_SALES = (
@@ -292,13 +293,13 @@ class SettingsDialog(QDialog):
         slider_row = QHBoxLayout()
         self.slider_vad = QSlider(Qt.Orientation.Horizontal)
         self.slider_vad.setRange(20, 60)
-        self.slider_vad.setValue(35)
+        self.slider_vad.setValue(42)
         self.slider_vad.setTickInterval(5)
         self.slider_vad.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.slider_vad.valueChanged.connect(self._on_vad_slider_changed)
         slider_row.addWidget(self.slider_vad, stretch=1)
 
-        self.lbl_vad_val = QLabel("0.35 (Standard)")
+        self.lbl_vad_val = QLabel("0.42 (Zalecany / Biuro)")
         self.lbl_vad_val.setStyleSheet("color: #10b981; font-weight: bold; min-width: 140px;")
         slider_row.addWidget(self.lbl_vad_val)
         vad_layout.addLayout(slider_row)
@@ -423,10 +424,10 @@ class SettingsDialog(QDialog):
 
     def _on_vad_slider_changed(self, val: int):
         f_val = val / 100.0
-        if f_val < 0.28:
+        if f_val < 0.32:
             desc = f"{f_val:.2f} (Wysoka czułość / Szept)"
-        elif f_val <= 0.40:
-            desc = f"{f_val:.2f} (Standard / Biuro)"
+        elif f_val <= 0.45:
+            desc = f"{f_val:.2f} (Zalecany / Biuro)"
         else:
             desc = f"{f_val:.2f} (Tłumienie hałasu)"
         self.lbl_vad_val.setText(desc)
@@ -444,7 +445,7 @@ class SettingsDialog(QDialog):
         self.txt_hf_token.setText(st.get("hf_token", ""))
 
         # VAD & Mikrofon
-        vad_val = int(float(st.get("vad_speech_threshold", 0.35)) * 100)
+        vad_val = int(float(st.get("vad_speech_threshold", 0.42)) * 100)
         self.slider_vad.setValue(vad_val)
         self._on_vad_slider_changed(vad_val)
 
@@ -473,7 +474,7 @@ class SettingsDialog(QDialog):
         self.txt_supabase_key.setText(st.get("supabase_key", ""))
         self.txt_webhook_url.setText(st.get("generic_webhook_url", ""))
         self.chk_auto_sync.setChecked(bool(st.get("auto_cloud_sync", True)))
-        self.chk_upload_audio.setChecked(bool(st.get("sync_upload_audio", True)))
+        self.chk_upload_audio.setChecked(bool(st.get("sync_upload_audio", False)))
 
     def _restore_defaults(self):
         """Przywraca zalecane wartości domyślne."""
@@ -486,11 +487,11 @@ class SettingsDialog(QDialog):
         if reply == QMessageBox.StandardButton.Yes:
             self.txt_keywords.setPlainText(self.PRESET_KEYWORDS_IT)
             self.combo_beam.setCurrentIndex(self.combo_beam.findData(5))
-            self.slider_vad.setValue(35)
+            self.slider_vad.setValue(42)
             self.spin_auto_pause.setValue(5)
             self.combo_session_split.setCurrentIndex(self.combo_session_split.findData(900.0))
             self.chk_auto_sync.setChecked(True)
-            self.chk_upload_audio.setChecked(True)
+            self.chk_upload_audio.setChecked(False)
 
     def _save_and_accept(self):
         """Zapisuje wartości do pliku user_settings.json i zamyka dialog."""

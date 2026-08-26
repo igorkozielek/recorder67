@@ -28,6 +28,7 @@ def apply_av_patches():
 
 
 import re
+from collections import Counter
 
 # Wyrażenia halucynacyjne z korpusu treningowego (np. plansze końcowe YouTube / Amara.org / angielskie prompty)
 HALLUCINATION_TRIGGERS = [
@@ -39,63 +40,92 @@ HALLUCINATION_TRIGGERS = [
     "the user", "stop what you are doing", "write for the user"
 ]
 
+NON_SPEECH_SOUNDS = {
+    "uch", "uh", "uhm", "mhm", "yhm", "eee", "aaa", "ehm", "mmm",
+    "uff", "ach", "och", "oj", "uhuhu", "ehehe", "aha", "hm", "hmm"
+}
+
+ISOLATED_NOISE_GREETINGS = {
+    "dzień dobry", "dzień dobry.", "dzień dobry!", "dzień dobry?",
+    "dzień dobry dzień dobry", "dzień dobry dzień dobry.", "dzień dobry dzień dobry!",
+    "dziękuję", "dziękuję.", "dziękuję!", "dzięki", "dzięki.", "dzięki!",
+    "dzięki za oglądanie", "dzięki za oglądanie.", "dzięki za oglądanie!",
+    "dziękuję za oglądanie", "dziękuję za oglądanie.", "dziękuję za oglądanie!",
+    "dziękuję za uwagę", "dziękuję za uwagę.", "dziękuje za uwagę.", "dziękuje za uwagę",
+    "do widzenia", "do widzenia.", "do widzenia!", "pozdrawiam", "pozdrawiam.", "pozdrawiam!"
+}
+
 
 def clean_repeated_text(text: str) -> str:
-    """Usuwa zapętlenia słów (np. 'Dobra. Dobra. Dobra.' -> 'Dobra.') oraz ciągi powtarzających się liczb i wielokropków."""
+    """
+    Ogólne, algorytmiczne usuwanie zapętleń słów, fraz (1-gramów, 2-gramów, 3-gramów),
+    jąkania, powtarzających się ciągów cyfr i wielokropków.
+    """
     if not text:
         return ""
     
     # 1. Wykrywanie ciągów powtarzających się samych cyfr (np. "10 10 10 10 11 11 12 15 15 15")
-    digit_words = [w for w in text.split() if w.isdigit()]
-    if len(digit_words) >= 6 and (len(digit_words) / max(1, len(text.split()))) > 0.6:
+    words = text.split()
+    digit_words = [w.strip(".,!?:;") for w in words if w.strip(".,!?:;").isdigit()]
+    if len(digit_words) >= 5 and (len(digit_words) / max(1, len(words))) > 0.5:
         return ""
 
+    cleaned = text
+
     # 2. Usuwanie zapętleń słów z wielokropkami (np. '...pośle... ...pośle... ...pośle...')
-    cleaned = re.sub(r'(?:\.{2,}\s*)?([A-Za-zĄąĆćĘęŁłŃńÓóŚśŹźŻż0-9]+)(?:\.{2,})?(?:\s*(?:\.{2,}\s*)?\1(?:\.{2,})?){2,}', r'\1', text, flags=re.IGNORECASE)
+    cleaned = re.sub(r'(?:\.{2,}\s*)?([A-Za-z0-9ĄąĆćĘęŁłŃńÓóŚśŹźŻż\'-]+)(?:\.{2,})?(?:\s*(?:\.{2,}\s*)?\1(?:\.{2,})?){2,}', r'\1', cleaned, flags=re.IGNORECASE)
 
-    # 3. Usuwanie wielokrotnie powtórzonych słów lub fraz (>= 3 powtórzenia z rzędu)
-    cleaned = re.sub(r'\b([A-Za-zĄąĆćĘęŁłŃńÓóŚśŹźŻż0-9]+(?:\.|\,)?)(?:\s+\1){2,}', r'\1', cleaned, flags=re.IGNORECASE)
+    # 3. Usuwanie pojedynczego słowa powtórzonego wielokrotnie z interpunkcją (np. 'Uch, uch, uch...' lub 'dobra, dobra, dobra')
+    cleaned = re.sub(r'\b([A-Za-z0-9ĄąĆćĘęŁłŃńÓóŚśŹźŻż\'-]+)(?:\s*[\,\.\?\!]\s*|\s+)(?:\1(?:\s*[\,\.\?\!]\s*|\s+))+\1(?:\b|[\,\.\?\!]*)', r'\1', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\b([A-Za-z0-9ĄąĆćĘęŁłŃńÓóŚśŹźŻż\'-]+)(?:[\,\.\?\!]*)?(?:\s+\1(?:[\,\.\?\!]*)?){2,}', r'\1', cleaned, flags=re.IGNORECASE)
 
-    # 4. Czyszczenie zwielokrotnionych wielokropków
+    # 4. Usuwanie fraz 2-3 słów powtórzonych wielokrotnie (np. 'i tak dalej, i tak dalej, i tak dalej' -> 'i tak dalej')
+    cleaned = re.sub(r'\b([A-Za-z0-9ĄąĆćĘęŁłŃńÓóŚśŹźŻż\'-]+(?:\s+[A-Za-z0-9ĄąĆćĘęŁłŃńÓóŚśŹźŻż\'-]+){1,2})(?:[\,\.\?\!]*)?(?:\s+\1(?:[\,\.\?\!]*)?){1,}', r'\1', cleaned, flags=re.IGNORECASE)
+
+    # 5. Czyszczenie zwielokrotnionych wielokropków i białych znaków
     cleaned = re.sub(r'(\s*\.{2,}\s*){2,}', ' ... ', cleaned)
-    return cleaned.strip()
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned
 
 
 def is_hallucination(text: str) -> bool:
-    """Sprawdza czy krótki fragment tekstu to znana halucynacja z plansz YouTube lub pętla."""
+    """
+    Ogólne zabezpieczenie przed halucynacjami, niską entropią (pętle stutter/repetition),
+    odgłosami tła/oddechami oraz samotnymi zwrotami końcowymi z bazy treningowej.
+    """
     if not text:
         return True
-    lower_txt = text.lower().strip()
-    words = lower_txt.split()
-    if len(lower_txt) < 2 or lower_txt in {".", "...", ",", "?", "!"}:
+    
+    cleaned_txt = clean_repeated_text(text)
+    lower_txt = cleaned_txt.lower().strip()
+    raw_words = [re.sub(r'[^\w]', '', w) for w in lower_txt.split()]
+    raw_words = [w for w in raw_words if w]
+
+    if not raw_words or len(lower_txt) < 2 or lower_txt in {".", "...", ",", "?", "!"}:
         return True
 
-    # Prawdziwe, długie wypowiedzi (powyżej 6 słów) nigdy nie są w całości odrzucane jako halucynacja!
-    if len(words) > 6:
-        # Sprawdzamy jedynie czy to nie jest pętla samych liczb (np. "10 10 10 10 11 11 12 15 15 15")
-        digit_words = [w for w in words if w.isdigit()]
-        if len(digit_words) >= 6 and (len(digit_words) / len(words)) > 0.6:
-            return True
-        return False
-
-    # Odrzucanie samotnych, krótkich powitań i podziękowań generowanych z szumu mikrofonu w ciszy
-    isolated_noise_greetings = {
-        "dzień dobry", "dzień dobry.", "dzień dobry!", "dzień dobry?",
-        "dzień dobry dzień dobry", "dzień dobry dzień dobry.", "dzień dobry dzień dobry!",
-        "dziękuję", "dziękuję.", "dziękuję!", "dzięki", "dzięki.", "dzięki!",
-        "dzięki za oglądanie", "dzięki za oglądanie.", "dzięki za oglądanie!",
-        "dziękuję za oglądanie", "dziękuję za oglądanie.", "dziękuję za oglądanie!",
-        "dziękuję za uwagę", "dziękuję za uwagę.", "dziękuje za uwagę.", "dziękuje za uwagę",
-        "do widzenia", "do widzenia.", "do widzenia!",
-        "mmm", "mmm.", "uhm", "uhm."
-    }
-    if lower_txt in isolated_noise_greetings:
+    # 1. Sprawdzenie czy tekst składa się wyłącznie z odgłosów/westchnień/onomatopei
+    if all(w in NON_SPEECH_SOUNDS for w in raw_words):
         return True
 
-    # Sprawdzenie triggerów z blacklisty dla krótkich fragmentów
-    for h in HALLUCINATION_TRIGGERS:
-        if h in lower_txt:
+    # 2. Algorytmiczne wykrywanie niskiej entropii / zapętleń (Stutter / Repetition Loop)
+    if len(raw_words) >= 4:
+        unique_ratio = len(set(raw_words)) / len(raw_words)
+        if unique_ratio < 0.38:
             return True
+        counts = Counter(raw_words)
+        most_common_count = counts.most_common(1)[0][1]
+        if (most_common_count / len(raw_words)) > 0.55:
+            return True
+
+    # 3. Odrzucanie samotnych, krótkich powitań/podziękowań generowanych z szumu w ciszy (<= 4 słowa)
+    if len(raw_words) <= 4:
+        for tr in ISOLATED_NOISE_GREETINGS:
+            if tr in lower_txt:
+                return True
+        for h in HALLUCINATION_TRIGGERS:
+            if h in lower_txt:
+                return True
 
     return False
 
