@@ -203,8 +203,8 @@ def main():
             if not dist_name.lower().startswith("pyqt6")
         ],
         
-        # Dołączenie pliku .env (jeśli istnieje)
-        f"--add-data={os.path.join(ROOT_DIR, '.env')};." if os.path.exists(os.path.join(ROOT_DIR, '.env')) else "",
+        # Bezpieczne dołączenie pliku przykładowego .env.example (zamiast prywatnego .env)
+        f"--add-data={os.path.join(ROOT_DIR, '.env.example')};." if os.path.exists(os.path.join(ROOT_DIR, '.env.example')) else "",
         
         ENTRY_POINT
     ]
@@ -219,12 +219,26 @@ def main():
         output_folder = os.path.join(DIST_DIR, "InteligentnyDyktafonAI")
         exe_path = os.path.join(output_folder, "InteligentnyDyktafonAI.exe")
         
-        # Skopiuj .env do folderu wyjściowego jeśli nie został automatycznie skopiowany
-        env_src = os.path.join(ROOT_DIR, ".env")
-        env_dst = os.path.join(output_folder, ".env")
-        if os.path.exists(env_src) and not os.path.exists(env_dst):
-            shutil.copy(env_src, env_dst)
-            print("✅ Skopiowano plik konfiguracyjny .env do folderu aplikacji.")
+        # Bezpieczne skopiowanie czystego .env.example oraz README do folderu wyjściowego
+        example_src = os.path.join(ROOT_DIR, ".env.example")
+        example_dst = os.path.join(output_folder, ".env.example")
+        if os.path.exists(example_src):
+            shutil.copy(example_src, example_dst)
+            print("✅ Skopiowano czysty szablon konfiguracyjny .env.example do folderu aplikacji.")
+
+        readme_src = os.path.join(ROOT_DIR, "README.md")
+        readme_dst = os.path.join(output_folder, "README.md")
+        if os.path.exists(readme_src):
+            shutil.copy(readme_src, readme_dst)
+
+        # Usunięcie ewentualnego prywatnego .env z folderu dist, jeśli zostałby przypadkowo skopiowany
+        private_env = os.path.join(output_folder, ".env")
+        if os.path.exists(private_env):
+            try:
+                os.remove(private_env)
+                print("🔒 Usunięto prywatny plik .env z paczki produkcyjnej (dla bezpieczeństwa release'u).")
+            except Exception:
+                pass
 
         print("\n" + "=" * 70)
         print("🎉 SUKCES! Aplikacja została pomyślnie skompilowana!")
@@ -232,8 +246,8 @@ def main():
         print(f"📁 Folder aplikacji: {output_folder}")
         print(f"▶️ Plik startowy:    {exe_path}")
         print(f"📄 Pełny log kompilacji zapisano do: {LOG_FILE}")
-        print("\n💡 Aby przenieść aplikację na inne urządzenie:")
-        print(f"   Spakuj cały folder '{os.path.basename(output_folder)}' do pliku .ZIP i wypakuj na urządzeniu docelowym.")
+        print("\n💡 Aby przygotować Release na GitHub:")
+        print(f"   Zzipuj cały folder '{os.path.basename(output_folder)}' z katalogu 'dist/' i dodaj plik .ZIP do Release na GitHubie.")
     else:
         print("\n❌ Błąd podczas budowania pliku .exe.")
         print(f"📄 Pełny raport błędu znajduje się w pliku: {LOG_FILE}")
