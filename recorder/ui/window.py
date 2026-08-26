@@ -25,11 +25,15 @@ from recorder.config import (
     DEFAULT_WHISPER_MODEL,
     get_hardware_acceleration_info,
     SPEAKER_COUNT_OPTIONS,
-    get_recommended_profile
+    get_recommended_profile,
+    load_user_settings,
+    get_custom_keywords,
+    get_vad_speech_threshold
 )
 from recorder.audio.devices import get_working_input_devices
 from recorder.core.vad import is_silero_available
 from recorder.ui.theme import DARK_THEME_QSS, setup_dark_palette
+from recorder.ui.settings_dialog import SettingsDialog
 from recorder.ui.workers import (
     SmartAudioWorker,
     TranscriptionWorker,
@@ -123,20 +127,45 @@ class SmartDictaphoneWindow(QMainWindow):
         main_layout.setSpacing(16)
         main_layout.setContentsMargins(22, 22, 22, 22)
 
-        # NAGŁÓWEK
-        header_layout = QVBoxLayout()
+        # NAGŁÓWEK Z PRZYCISKIEM USTAWIEŃ
+        header_container = QHBoxLayout()
+        
+        header_text_layout = QVBoxLayout()
         title = QLabel("🎙️ Inteligentny Dyktafon AI")
         title.setFont(QFont("Segoe UI", 20, QFont.Weight.Bold))
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setAlignment(Qt.AlignmentFlag.AlignLeft)
         
-        subtitle = QLabel("System oparty na WYKRYWANIU MOWY (Silero VAD AI)")
+        subtitle = QLabel("System oparty na WYKRYWANIU MOWY (Silero VAD AI) & Faster-Whisper")
         subtitle.setFont(QFont("Segoe UI", 9, QFont.Weight.Medium))
         subtitle.setStyleSheet("color: #4cc9f0;")
-        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
-        header_layout.addWidget(title)
-        header_layout.addWidget(subtitle)
-        main_layout.addLayout(header_layout)
+        header_text_layout.addWidget(title)
+        header_text_layout.addWidget(subtitle)
+        header_container.addLayout(header_text_layout, stretch=1)
+
+        self.btn_settings = QPushButton("⚙️ Ustawienia")
+        self.btn_settings.setToolTip("Otwórz słownik branżowy, parametry AI, VAD i chmury")
+        self.btn_settings.setStyleSheet("""
+            QPushButton {
+                background-color: #2b2d42;
+                color: #4cc9f0;
+                border: 1px solid #3d405b;
+                border-radius: 8px;
+                padding: 10px 18px;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #3d405b;
+                color: #edf2f4;
+                border-color: #4cc9f0;
+            }
+        """)
+        self.btn_settings.clicked.connect(self._open_settings_dialog)
+        header_container.addWidget(self.btn_settings)
+
+        main_layout.addLayout(header_container)
 
         # WYBÓR MIKROFONU
         device_box = QGroupBox("Urządzenie Wejściowe (Mikrofon)")
@@ -470,6 +499,34 @@ class SmartDictaphoneWindow(QMainWindow):
 
         main_layout.addWidget(outputs_box)
 
+
+    def _open_settings_dialog(self):
+        """Otwiera okno konfiguracji słownika branżowego, parametrów AI i chmury."""
+        dlg = SettingsDialog(self)
+        if dlg.exec():
+            st = load_user_settings()
+            # 1. Aktualizacja tokenu HF w polu UI jeśli został zmieniony
+            new_token = st.get("hf_token", "").strip()
+            if new_token:
+                self.input_token.setText(new_token)
+
+            # 2. Aktualizacja czułości VAD w aktywnym detektorze
+            new_vad = float(st.get("vad_speech_threshold", 0.35))
+            if hasattr(self, "worker") and getattr(self.worker, "vad_detector", None):
+                self.worker.vad_detector.speech_threshold = new_vad
+
+            # 3. Aktualizacja czasu auto-pauzy
+            new_pause = int(float(st.get("auto_pause_sec", 5.0)))
+            self.slider_silence.setValue(new_pause)
+            if hasattr(self, "worker"):
+                self.worker.set_auto_pause_sec(float(new_pause))
+
+            QMessageBox.information(
+                self,
+                "Ustawienia Zapisane",
+                "Ustawienia zostały pomyślnie zaktualizowane!\n\n"
+                "Nowy słownik branżowy oraz parametry AI będą automatycznie stosowane przy kolejnych nagraniach i transkrypcjach."
+            )
 
     def _apply_theme(self):
         app = QApplication.instance()

@@ -13,7 +13,8 @@ from recorder.config import (
     DEFAULT_WHISPER_MODEL,
     DEFAULT_BEAM_SIZE,
     DEFAULT_INITIAL_PROMPT,
-    get_env_variable
+    get_full_initial_prompt,
+    get_beam_size
 )
 from recorder.audio.converter import highpass_filter_audio, normalize_audio
 
@@ -127,9 +128,8 @@ class RollingTranscriptionWorker(QThread):
         audio_clean = highpass_filter_audio(audio_float, sr=16000, cutoff_hz=80.0)
         audio_norm = normalize_audio(audio_clean, target_peak=0.92)
 
-        custom_kw = get_env_variable("CUSTOM_KEYWORDS", "")
-        extra_ctx = f", {custom_kw}" if custom_kw else ""
-        initial_prompt = f"{DEFAULT_INITIAL_PROMPT}{extra_ctx}"
+        initial_prompt = get_full_initial_prompt()
+        effective_beam = get_beam_size()
 
         transcript_words = []
 
@@ -139,7 +139,7 @@ class RollingTranscriptionWorker(QThread):
                 audio_norm,
                 word_timestamps=True,
                 language="pl",
-                beam_size=DEFAULT_BEAM_SIZE,
+                beam_size=effective_beam,
                 temperature=0.0,
                 condition_on_previous_text=False,
                 no_speech_threshold=0.6,

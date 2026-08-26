@@ -8,7 +8,9 @@ from recorder.config import (
     get_hardware_acceleration_info,
     DEFAULT_WHISPER_MODEL,
     DEFAULT_BEAM_SIZE,
-    DEFAULT_INITIAL_PROMPT
+    DEFAULT_INITIAL_PROMPT,
+    get_full_initial_prompt,
+    get_beam_size
 )
 from recorder.audio.converter import preprocess_speech_audio, highpass_filter_audio, normalize_audio
 
@@ -142,7 +144,7 @@ class TranscriberEngine:
         return self._model
 
 
-    def transcribe_live_chunk(self, audio_float: np.ndarray, language: str = "pl", context_prompt: str = "", beam_size: int = DEFAULT_BEAM_SIZE) -> str:
+    def transcribe_live_chunk(self, audio_float: np.ndarray, language: str = "pl", context_prompt: str = "", beam_size: Optional[int] = None) -> str:
         """
         Transkrybuje krótki fragment audio (16kHz float32 mono) w locie z pamięcią kontekstu,
         filtrem szumów i wyszukiwaniem wiązkowym (beam search).
@@ -157,17 +159,14 @@ class TranscriberEngine:
         filtered_audio = highpass_filter_audio(audio_float, sr=16000, cutoff_hz=80.0)
         norm_audio = normalize_audio(filtered_audio, target_peak=0.92)
 
-        # W Whisperze initial_prompt łączy słownik domenowy oraz kontekst ostatnich wypowiedzi
-        prompt_ctx = context_prompt.strip()[-150:] if (context_prompt and len(context_prompt.strip()) > 3) else ""
-        if prompt_ctx:
-            initial_prompt = f"{DEFAULT_INITIAL_PROMPT} {prompt_ctx}"
-        else:
-            initial_prompt = DEFAULT_INITIAL_PROMPT
+        # Dynamiczny słownik z ustawień aplikacji
+        initial_prompt = get_full_initial_prompt(context_prompt)
+        effective_beam = beam_size if beam_size is not None else get_beam_size()
 
         segments, _ = self._model.transcribe(
             norm_audio,
             language=language,
-            beam_size=beam_size,
+            beam_size=effective_beam,
             temperature=0.0,
             condition_on_previous_text=False,
             no_speech_threshold=0.6,
@@ -194,7 +193,7 @@ class TranscriberEngine:
         language: str = "pl",
         progress_callback: Optional[Callable[[float, float], None]] = None,
         duration_sec: float = 0.0,
-        beam_size: int = DEFAULT_BEAM_SIZE
+        beam_size: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """
         Transkrybuje cały plik audio i zwraca listę słów z precyzyjnymi timestampami word-level.
@@ -208,23 +207,20 @@ class TranscriberEngine:
         audio_arr, sr = sf.read(audio_path, dtype='float32')
         audio_arr = preprocess_speech_audio(audio_arr, orig_sr=sr)
 
+        effective_beam = beam_size if beam_size is not None else get_beam_size()
         total_duration = duration_sec if duration_sec > 0 else (len(audio_arr) / 16000.0)
         mins = int(total_duration // 60)
         secs = int(total_duration % 60)
-        print(f"[WHISPER] Rozpoczęto pełną transkrypcję pliku (VAD buffer=400ms, beam_size={beam_size}): {os.path.basename(audio_path)} (Długość: {mins}m {secs}s)...")
+        print(f"[WHISPER] Rozpoczęto pełną transkrypcję pliku (VAD buffer=400ms, beam_size={effective_beam}): {os.path.basename(audio_path)} (Długość: {mins}m {secs}s)...")
 
-        from recorder.config import get_env_variable
-        custom_kw = get_env_variable("CUSTOM_KEYWORDS", "")
-        extra_ctx = f", {custom_kw}" if custom_kw else ""
-
-        initial_prompt = f"{DEFAULT_INITIAL_PROMPT}{extra_ctx}"
+        initial_prompt = get_full_initial_prompt()
 
         # Transkrypcja nagrania z bezpiecznym buforem VAD (odcięcie szumów w ciszy, brak ucinania mowy)
         segments, _ = self._model.transcribe(
             audio_arr,
             word_timestamps=True,
             language=language,
-            beam_size=beam_size,
+            beam_size=effective_beam,
             temperature=0.0,
             condition_on_previous_text=False,
             no_speech_threshold=0.6,

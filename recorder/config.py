@@ -32,9 +32,17 @@ class SmartRecordState:
 
 def get_hf_token() -> str:
     """
-    Pobiera token HuggingFace z pliku .env lub zmiennych środowiskowych.
+    Pobiera token HuggingFace ze słownika ustawień użytkownika, pliku .env lub zmiennych środowiskowych.
     """
-    # 1. Sprawdzenie zmiennej środowiskowej
+    # 1. Sprawdzenie ustawień użytkownika
+    try:
+        token = load_user_settings().get("hf_token", "").strip()
+        if token:
+            return token
+    except Exception:
+        pass
+
+    # 2. Sprawdzenie zmiennej środowiskowej
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
     if token:
         return token.strip()
@@ -140,16 +148,111 @@ def get_env_variable(key: str, default: str = "") -> str:
     return default
 
 
-def get_default_beam_size() -> int:
-    """Zwraca skonfigurowany rozmiar wiązki (beam_size) dla Whispera (domyślnie 5)."""
-    val = get_env_variable("WHISPER_BEAM_SIZE", "5")
+import json
+
+SETTINGS_FILE = os.path.join(os.getcwd(), "user_settings.json")
+
+
+def load_user_settings() -> dict:
+    """
+    Wczytuje ustawienia użytkownika z user_settings.json.
+    Jeśli plik nie istnieje, tworzy słownik zainicjalizowany danymi z .env i domyślnych stałych.
+    """
+    settings_paths = [
+        SETTINGS_FILE,
+        os.path.join(BASE_DIR, "user_settings.json"),
+        os.path.join(os.path.dirname(sys.executable), "user_settings.json")
+    ]
+    for p in settings_paths:
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        return data
+            except Exception:
+                pass
+
+    # Wartości początkowe (z .env / domyślne stałe)
+    defaults = {
+        "custom_keywords": get_env_variable("CUSTOM_KEYWORDS", "Aldent, Subiekt GT, CRM, Helpdesk, faktura proforma, synchronizacja, harmonogram, rejestr zmian, zgłoszenia, zamówienia"),
+        "whisper_beam_size": int(get_env_variable("WHISPER_BEAM_SIZE", "5")),
+        "default_whisper_model": get_env_variable("DEFAULT_WHISPER_MODEL", "large-v3-turbo"),
+        "hf_token": get_env_variable("HF_TOKEN", ""),
+        "device_name": get_env_variable("DEVICE_NAME", "Biuro-Stanowisko-1"),
+        "organization_id": get_env_variable("ORGANIZATION_ID", "default_org"),
+        "sync_target": get_env_variable("SYNC_TARGET", "emanager"),
+        "supabase_url": get_env_variable("SUPABASE_URL", ""),
+        "supabase_key": get_env_variable("SUPABASE_KEY", get_env_variable("SUPABASE_PUBLISHABLE_KEY", "")),
+        "generic_webhook_url": get_env_variable("GENERIC_WEBHOOK_URL", ""),
+        "auto_cloud_sync": get_env_variable("AUTO_CLOUD_SYNC", "true").lower() in ("1", "true", "yes"),
+        "sync_upload_audio": get_env_variable("SYNC_UPLOAD_AUDIO", "true").lower() in ("1", "true", "yes"),
+        "vad_speech_threshold": float(get_env_variable("VAD_SPEECH_THRESHOLD", "0.35")),
+        "auto_pause_sec": float(get_env_variable("AUTO_PAUSE_SEC", "5.0")),
+        "session_split_silence_sec": float(get_env_variable("SESSION_SPLIT_SILENCE_SEC", "900.0")),  # 15 min
+    }
+    return defaults
+
+
+def save_user_settings(settings: dict) -> bool:
+    """Zapisuje słownik ustawień do user_settings.json."""
     try:
-        return max(1, min(10, int(val)))
-    except (ValueError, TypeError):
+        cur = load_user_settings()
+        cur.update(settings)
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(cur, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception as e:
+        if sys.stderr:
+            print(f"Błąd zapisu user_settings.json: {e}", file=sys.stderr)
+        return False
+
+
+def get_custom_keywords() -> str:
+    """Zwraca zdefiniowany w ustawieniach słownik słów branżowych / nazw własnych."""
+    st = load_user_settings()
+    return str(st.get("custom_keywords", "")).strip()
+
+
+def get_beam_size() -> int:
+    """Zwraca rozmiar wiązki (beam search) dla Whispera."""
+    st = load_user_settings()
+    try:
+        return max(1, min(10, int(st.get("whisper_beam_size", 5))))
+    except Exception:
         return 5
 
 
-DEFAULT_BEAM_SIZE = get_default_beam_size()
+def get_device_name() -> str:
+    """Zwraca nazwę stanowiska komputerowego."""
+    st = load_user_settings()
+    return str(st.get("device_name", "Biuro-Stanowisko-1")).strip()
+
+
+def get_vad_speech_threshold() -> float:
+    """Zwraca próg czułości wykrywania mowy Silero VAD."""
+    st = load_user_settings()
+    try:
+        return max(0.1, min(0.9, float(st.get("vad_speech_threshold", 0.35))))
+    except Exception:
+        return 0.35
+
+
+def get_session_split_silence_sec() -> float:
+    """Zwraca czas ciągłej ciszy wymagany do automatycznego podziału na nową sesję (sekundy)."""
+    st = load_user_settings()
+    try:
+        return float(st.get("session_split_silence_sec", 900.0))
+    except Exception:
+        return 900.0
+
+
+def get_default_beam_size() -> int:
+    """Kompatybilność wsteczna: zwraca get_beam_size()."""
+    return get_beam_size()
+
+
+DEFAULT_BEAM_SIZE = get_beam_size()
 
 # Domyślny słownik początkowy dla Whispera (IT, sprzęt, biznes, odmiany, frazeologia polska)
 DEFAULT_INITIAL_PROMPT = (
@@ -159,24 +262,39 @@ DEFAULT_INITIAL_PROMPT = (
 )
 
 
+def get_full_initial_prompt(extra_context: str = "") -> str:
+    """
+    Tworzy zoptymalizowany initial_prompt dla Whispera, łącząc słownik bazowy,
+    słownik branżowy użytkownika oraz ewentualny kontekst ostatnich zdań.
+    """
+    kw = get_custom_keywords()
+    prompt = DEFAULT_INITIAL_PROMPT
+    if kw:
+        prompt = f"{prompt}, {kw}"
+    if extra_context and len(extra_context.strip()) > 3:
+        prompt = f"{prompt} {extra_context.strip()[-150:]}"
+    return prompt
+
+
 # Konfiguracja Cloud Sync / Multi-Tenant / EMANAGER.PRO
 SYNC_QUEUE_DIR = os.path.join(TRANSCRIPTIONS_DIR, "sync_queue")
 os.makedirs(SYNC_QUEUE_DIR, exist_ok=True)
 
+
 def get_cloud_sync_config() -> dict:
     """
-    Zwraca aktualną konfigurację integracji chmurowej.
+    Zwraca aktualną konfigurację integracji chmurowej (z priorytetem dla user_settings.json).
     """
+    st = load_user_settings()
     return {
-        "sync_target": get_env_variable("SYNC_TARGET", "emanager"),  # 'emanager', 'generic_webhook', 'none'
-        "supabase_url": get_env_variable("SUPABASE_URL", ""),
-        "supabase_key": get_env_variable("SUPABASE_KEY", get_env_variable("SUPABASE_PUBLISHABLE_KEY", "")),
-        "device_name": get_env_variable("DEVICE_NAME", "Biuro-Stanowisko-1"),
-
-        "organization_id": get_env_variable("ORGANIZATION_ID", "default_org"),
-        "auto_sync": get_env_variable("AUTO_CLOUD_SYNC", "true").lower() in ("1", "true", "yes"),
-        "generic_webhook_url": get_env_variable("GENERIC_WEBHOOK_URL", ""),
-        "upload_audio": get_env_variable("SYNC_UPLOAD_AUDIO", "true").lower() in ("1", "true", "yes"),
+        "sync_target": st.get("sync_target") or get_env_variable("SYNC_TARGET", "emanager"),
+        "supabase_url": st.get("supabase_url") or get_env_variable("SUPABASE_URL", ""),
+        "supabase_key": st.get("supabase_key") or get_env_variable("SUPABASE_KEY", get_env_variable("SUPABASE_PUBLISHABLE_KEY", "")),
+        "device_name": st.get("device_name") or get_env_variable("DEVICE_NAME", "Biuro-Stanowisko-1"),
+        "organization_id": st.get("organization_id") or get_env_variable("ORGANIZATION_ID", "default_org"),
+        "auto_sync": bool(st.get("auto_cloud_sync", True)),
+        "generic_webhook_url": st.get("generic_webhook_url") or get_env_variable("GENERIC_WEBHOOK_URL", ""),
+        "upload_audio": bool(st.get("sync_upload_audio", True)),
     }
 
 
