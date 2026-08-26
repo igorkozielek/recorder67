@@ -378,9 +378,12 @@ class SmartAudioWorker(QThread):
         if self.wav_writer:
             self.wav_writer.close()
             self.wav_writer = None
+            self.frames = []
             if os.path.exists(file_path) and os.path.getsize(file_path) > 44:
                 return True
-        return save_wav_file(file_path, self.frames, channels=1, samplerate=16000)
+        saved = save_wav_file(file_path, self.frames, channels=1, samplerate=16000)
+        self.frames = []
+        return saved
 
 
 

@@ -1496,16 +1496,14 @@ class SmartDictaphoneWindow(QMainWindow):
         i rozpoczyna nowe spotkanie w Supabase bez przerywania ciągłego nasłuchu mikrofonu.
         """
         print(f"[SMART SESSION] Podział sesji wywołany przez: {reason}")
-        # 1. Finalizacja poprzedniej sesji w Supabase
-        if self.current_meeting_id and self.last_plain_text:
-            self.cloud_sync.finalize_live_session_async(
-                meeting_id=self.current_meeting_id,
-                final_transcript=self.last_plain_text,
-                duration_seconds=float(self.recorded_seconds),
-                audio_path=getattr(self, "current_live_wav_path", None),
-                turns=self.current_turns,
-                title=f"Spotkanie biurowe {getattr(self, 'current_live_timestamp', '')}"
-            )
+        
+        # 1. Zachowaj metadane zamykanej sesji
+        old_meeting_id = self.current_meeting_id
+        old_plain_text = self.last_plain_text
+        old_recorded_sec = float(self.recorded_seconds)
+        old_wav_path = getattr(self, "current_live_wav_path", None)
+        old_turns = self.current_turns
+        old_timestamp = getattr(self, 'current_live_timestamp', '')
 
         # 2. Generowanie nowych ścieżek dla kolejnego spotkania
         split_now = datetime.now()
@@ -1521,10 +1519,21 @@ class SmartDictaphoneWindow(QMainWindow):
         except Exception:
             pass
 
-        # 3. Rotacja rejestratora audio i transkrypcji w tle
+        # 3. Rotacja rejestratora audio (flushez i zamyka stary WAV na dysku!) i transkrypcji w tle
         self.worker.rotate_session_file(self.current_live_wav_path)
         if hasattr(self, "rolling_worker") and self.rolling_worker is not None:
             self.rolling_worker.reset_for_new_session(self.current_live_txt_path, session_start_time=split_now)
+
+        # 4. Finalizacja poprzedniej sesji w Supabase (gdy stary WAV jest już w 100% zamknięty na dysku)
+        if old_meeting_id and old_plain_text:
+            self.cloud_sync.finalize_live_session_async(
+                meeting_id=old_meeting_id,
+                final_transcript=old_plain_text,
+                duration_seconds=old_recorded_sec,
+                audio_path=old_wav_path,
+                turns=old_turns,
+                title=f"Spotkanie biurowe {old_timestamp}"
+            )
 
         self.synced_segment_count = 0
         self.current_turns = []
@@ -1532,7 +1541,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.recorded_seconds = 0
         self.lbl_timer.setText("00:00:00")
 
-        # 4. Start nowej sesji w Supabase
+        # 5. Start nowej sesji w Supabase
         if self.cloud_sync.config.get("live_streaming") and self.cloud_sync.config.get("auto_sync"):
             self.current_meeting_id = self.cloud_sync.start_live_session_async(
                 title=f"Spotkanie biurowe {datetime.now().strftime('%Y-%m-%d %H:%M')}"
