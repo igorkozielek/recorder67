@@ -83,6 +83,14 @@ class RollingTranscriptionWorker(QThread):
             self.block_queue.put(final_block)
         self.block_queue.put(None)
 
+    def get_all_words(self) -> List[Dict[str, Any]]:
+        """Zwraca wszystkie przetranskrybowane słowa ze znacznikami czasu ze wszystkich bloków sesji."""
+        all_words = []
+        for b in sorted(self.processed_blocks, key=lambda x: x.start_sec):
+            if hasattr(b, "words") and b.words:
+                all_words.extend(b.words)
+        return all_words
+
     def run(self):
         self._is_running = True
         try:
@@ -273,10 +281,7 @@ class RollingTranscriptionWorker(QThread):
             from recorder.core.session import TranscriptionSession, get_session_path_for_txt
             json_path = get_session_path_for_txt(self.txt_save_path)
 
-            all_words = []
-            for b in sorted(self.processed_blocks, key=lambda x: x.start_sec):
-                if hasattr(b, "words") and b.words:
-                    all_words.extend(b.words)
+            all_words = self.get_all_words()
 
             session = TranscriptionSession.load_from_json(json_path) or TranscriptionSession()
             session.has_transcription = True
