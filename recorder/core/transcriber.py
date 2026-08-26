@@ -4,7 +4,13 @@ import types
 from typing import List, Dict, Any, Tuple, Optional, Callable
 import numpy as np
 import soundfile as sf
-from recorder.config import get_hardware_acceleration_info, DEFAULT_WHISPER_MODEL
+from recorder.config import (
+    get_hardware_acceleration_info,
+    DEFAULT_WHISPER_MODEL,
+    DEFAULT_BEAM_SIZE,
+    DEFAULT_INITIAL_PROMPT
+)
+from recorder.audio.converter import preprocess_speech_audio, highpass_filter_audio, normalize_audio
 
 
 def apply_av_patches():
@@ -136,9 +142,10 @@ class TranscriberEngine:
         return self._model
 
 
-    def transcribe_live_chunk(self, audio_float: np.ndarray, language: str = "pl", context_prompt: str = "") -> str:
+    def transcribe_live_chunk(self, audio_float: np.ndarray, language: str = "pl", context_prompt: str = "", beam_size: int = DEFAULT_BEAM_SIZE) -> str:
         """
-        Transkrybuje krótki fragment audio (16kHz float32 mono) w locie z pamięcią kontekstu i ochroną przed halucynacjami.
+        Transkrybuje krótki fragment audio (16kHz float32 mono) w locie z pamięcią kontekstu,
+        filtrem szumów i wyszukiwaniem wiązkowym (beam search).
         """
         if self._model is None:
             self.load_model()
@@ -146,26 +153,33 @@ class TranscriberEngine:
         if len(audio_float) < int(0.4 * 16000):
             return ""
 
-        # W Whisperze initial_prompt służy WYŁĄCZNIE jako kontekst poprzednich słów mowy.
-        # Wstrzykiwanie sztucznych zdań instruktażowych powodowało ich powtarzanie przez dekoder przy ciszy.
-        prompt = context_prompt.strip()[-150:] if (context_prompt and len(context_prompt.strip()) > 3) else None
+        # Oczyszczenie pasma i normalizacja fragmentu na żywo
+        filtered_audio = highpass_filter_audio(audio_float, sr=16000, cutoff_hz=80.0)
+        norm_audio = normalize_audio(filtered_audio, target_peak=0.92)
+
+        # W Whisperze initial_prompt łączy słownik domenowy oraz kontekst ostatnich wypowiedzi
+        prompt_ctx = context_prompt.strip()[-150:] if (context_prompt and len(context_prompt.strip()) > 3) else ""
+        if prompt_ctx:
+            initial_prompt = f"{DEFAULT_INITIAL_PROMPT} {prompt_ctx}"
+        else:
+            initial_prompt = DEFAULT_INITIAL_PROMPT
 
         segments, _ = self._model.transcribe(
-            audio_float,
+            norm_audio,
             language=language,
-            beam_size=1,
+            beam_size=beam_size,
             temperature=0.0,
             condition_on_previous_text=False,
             no_speech_threshold=0.6,
             compression_ratio_threshold=2.2,
             vad_filter=True,
             vad_parameters=dict(
-                threshold=0.4,
-                min_speech_duration_ms=250,
+                threshold=0.35,
+                min_speech_duration_ms=200,
                 min_silence_duration_ms=400,
-                speech_pad_ms=200
+                speech_pad_ms=300
             ),
-            initial_prompt=prompt
+            initial_prompt=initial_prompt
         )
 
         phrase_text = "".join([segment.text for segment in segments]).strip()
@@ -180,40 +194,48 @@ class TranscriberEngine:
         language: str = "pl",
         progress_callback: Optional[Callable[[float, float], None]] = None,
         duration_sec: float = 0.0,
-        beam_size: int = 1
+        beam_size: int = DEFAULT_BEAM_SIZE
     ) -> List[Dict[str, Any]]:
         """
         Transkrybuje cały plik audio i zwraca listę słów z precyzyjnymi timestampami word-level.
-        Wczytuje dźwięk bezpośrednio przez soundfile (jako tablicę float32), eliminując zależność od biblioteki av.
-        Zawiera bezpieczny fallback: jeśli Whisper nie wygeneruje word-timestamps dla danego segmentu,
-        słowa są automatycznie estymowane na osi czasu segmentu, gwarantując brak ucinania tekstu z początku nagrania.
+        Wczytuje dźwięk bezpośrednio przez soundfile (jako tablicę float32), oczyszcza pasmo (High-Pass 80Hz)
+        oraz normalizuje głośność mowy, gwarantując najwyższą dokładność modelu Whisper.
         """
         if self._model is None:
             self.load_model()
 
-        # Bezpieczne wczytanie tablicy float32 przez soundfile
+        # Bezpieczne wczytanie tablicy float32 przez soundfile z pełnym preprocessingiem mowy
         audio_arr, sr = sf.read(audio_path, dtype='float32')
-        if audio_arr.ndim > 1:
-            audio_arr = np.mean(audio_arr, axis=1)
+        audio_arr = preprocess_speech_audio(audio_arr, orig_sr=sr)
 
-        total_duration = duration_sec if duration_sec > 0 else (len(audio_arr) / float(sr))
+        total_duration = duration_sec if duration_sec > 0 else (len(audio_arr) / 16000.0)
         mins = int(total_duration // 60)
         secs = int(total_duration % 60)
-        print(f"[WHISPER] Rozpoczęto pełną transkrypcję pliku (VAD filter=OFF [100% audio od 0.0s], beam_size={beam_size}): {os.path.basename(audio_path)} (Długość: {mins}m {secs}s)...")
+        print(f"[WHISPER] Rozpoczęto pełną transkrypcję pliku (VAD buffer=400ms, beam_size={beam_size}): {os.path.basename(audio_path)} (Długość: {mins}m {secs}s)...")
 
         from recorder.config import get_env_variable
         custom_kw = get_env_variable("CUSTOM_KEYWORDS", "")
         extra_ctx = f", {custom_kw}" if custom_kw else ""
 
-        initial_prompt = f"CRM, Helpdesk, Subiekt, synchronizacja, harmonogram, rejestr zmian, zgłoszenia, zamówienia{extra_ctx}."
+        initial_prompt = f"{DEFAULT_INITIAL_PROMPT}{extra_ctx}"
 
-        # Transkrypcja całego nagrania bez wycinania przez filtr VAD (gwarancja 100% audio od 0.0s)
+        # Transkrypcja nagrania z bezpiecznym buforem VAD (odcięcie szumów w ciszy, brak ucinania mowy)
         segments, _ = self._model.transcribe(
             audio_arr,
             word_timestamps=True,
             language=language,
             beam_size=beam_size,
-            vad_filter=False,
+            temperature=0.0,
+            condition_on_previous_text=False,
+            no_speech_threshold=0.6,
+            compression_ratio_threshold=2.4,
+            vad_filter=True,
+            vad_parameters=dict(
+                threshold=0.35,
+                min_speech_duration_ms=200,
+                min_silence_duration_ms=400,
+                speech_pad_ms=400
+            ),
             initial_prompt=initial_prompt
         )
 
@@ -234,7 +256,8 @@ class TranscriberEngine:
                 s_secs = int(segment.start % 60)
                 e_mins = int(segment.end // 60)
                 e_secs = int(segment.end % 60)
-                print(f"🎙️ [WHISPER] Pierwsza wykryta mowa: [{s_mins:02d}:{s_secs:02d} - {e_mins:02d}:{e_secs:02d}] (od {segment.start:.1f}s): \"{seg_text[:70]}...\"")
+                safe_snippet = seg_text[:70].encode('ascii', errors='replace').decode('ascii')
+                print(f"[WHISPER] Pierwsza wykryta mowa: [{s_mins:02d}:{s_secs:02d} - {e_mins:02d}:{e_secs:02d}] (od {segment.start:.1f}s): \"{safe_snippet}...\"")
 
             # 1. Sprawdzamy czy Whisper wygenerował dokładne znaczniki słów dla tego segmentu
             has_valid_words = False

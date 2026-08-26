@@ -104,7 +104,7 @@ WHISPER_MODELS = {
     }
 }
 
-DEFAULT_WHISPER_MODEL = "small"
+DEFAULT_WHISPER_MODEL = "large-v3-turbo"
 
 
 def get_env_variable(key: str, default: str = "") -> str:
@@ -138,6 +138,25 @@ def get_env_variable(key: str, default: str = "") -> str:
             except Exception:
                 pass
     return default
+
+
+def get_default_beam_size() -> int:
+    """Zwraca skonfigurowany rozmiar wiązki (beam_size) dla Whispera (domyślnie 5)."""
+    val = get_env_variable("WHISPER_BEAM_SIZE", "5")
+    try:
+        return max(1, min(10, int(val)))
+    except (ValueError, TypeError):
+        return 5
+
+
+DEFAULT_BEAM_SIZE = get_default_beam_size()
+
+# Domyślny słownik początkowy dla Whispera (IT, sprzęt, biznes, odmiany, frazeologia polska)
+DEFAULT_INITIAL_PROMPT = (
+    "Antigravity, zestawienie, sprzęt, procesor, i5, i7, i9, RTX, pamięć RAM, dysk SSD, "
+    "Aldent, CRM, Helpdesk, Subiekt, synchronizacja, harmonogram, rejestr zmian, zgłoszenia, "
+    "zamówienia, diaryzacja, transkrypcja, z przymrużeniem oka."
+)
 
 
 # Konfiguracja Cloud Sync / Multi-Tenant / EMANAGER.PRO
@@ -243,17 +262,16 @@ def get_recommended_profile() -> dict:
             )
         }
     else:
-        # Maszyna CPU (np. i5-8500 6-core)
-        if cores >= 6:
-            rec_model = "small"
+        # Maszyna CPU
+        if cores >= 4:
+            rec_model = "large-v3-turbo"
             return {
                 "recommended_model": rec_model,
-                "title": "Wykryto wydajny procesor CPU",
+                "title": "Wykryto wielordzeniowy procesor CPU",
                 "message": (
-                    f"Wykryto procesor CPU z {cores} wątkami/rdzeniami (Brak dedykowanej karty NVIDIA).\n\n"
+                    f"Wykryto procesor CPU z {cores} wątkami/rdzeniami.\n\n"
                     f"Ustawiono zoptymalizowany model: '{rec_model}' w trybie int8 ({hw['cpu_threads']} wątki robocze).\n\n"
-                    "Zapewnia on płynną transkrypcję na żywo bez opóźnień.\n"
-                    "(Jeśli zależy Ci na wyższej precyzji, możesz również ręcznie wybrać model 'medium' lub 'large-v3-turbo')."
+                    "Zapewnia on najwyższą precyzję języka polskiego i poprawność trudnych zwrotów."
                 )
             }
         else:
@@ -263,7 +281,7 @@ def get_recommended_profile() -> dict:
                 "title": "Wykryto procesor CPU",
                 "message": (
                     f"Wykryto procesor CPU z {cores} wątkami.\n\n"
-                    f"Ustawiono lekki model: '{rec_model}' (int8) dla zachowania płynności działania systemu."
+                    f"Ustawiono lekki model: '{rec_model}' (int8) dla zachowania optymalnej płynności."
                 )
             }
 
