@@ -317,14 +317,16 @@ def get_speaker_samples(turns: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]
     return analyze_speakers(turns)
 
 
-def format_turns(turns: List[Dict[str, Any]], speaker_mapping: Optional[Dict[str, str]] = None) -> Tuple[str, str]:
+def format_turns(turns: List[Dict[str, Any]], speaker_mapping: Optional[Dict[str, str]] = None,
+                 session_start_time: Optional[datetime] = None) -> Tuple[str, str]:
     """
     Formatuje listę wypowiedzi do kodu HTML (dla okna aplikacji) oraz tekstu czystego (do zapisu .txt)
-    z uwzględnieniem mapowania nazw mówców.
+    z uwzględnieniem mapowania nazw mówców i preferowanego formatu timestampu.
     """
     if not turns:
         return "Brak zarejestrowanej mowy.", "Brak zarejestrowanej mowy."
 
+    from recorder.core.session import format_turn_timestamp
     mapping = speaker_mapping or {}
     final_html = ""
     final_plain = ""
@@ -337,8 +339,9 @@ def format_turns(turns: List[Dict[str, Any]], speaker_mapping: Optional[Dict[str
         text = t.get("text", "").strip()
 
         if text:
-            final_html += f"<b>[{start:.1f}s - {end:.1f}s] {display_spk}:</b> {text}<br><br>"
-            final_plain += f"[{start:.1f}s - {end:.1f}s] {display_spk}: {text}\n\n"
+            time_label = format_turn_timestamp(start, end, session_start_time)
+            final_html += f"<b>[{time_label}] {display_spk}:</b> {text}<br><br>"
+            final_plain += f"[{time_label}] {display_spk}: {text}\n\n"
 
     if not final_html:
         final_html = "Brak zarejestrowanej mowy."

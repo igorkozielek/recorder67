@@ -133,11 +133,11 @@ class DiarizationEngine:
         print("👥 [PYANNOTE] Ładowanie modelu 'pyannote/speaker-diarization-3.1'...")
         pipeline = None
         try:
-            pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=self.hf_token)
-        except TypeError:
+            pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=self.hf_token)
+        except (TypeError, Exception):
             try:
-                pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=self.hf_token)
-            except TypeError:
+                pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=self.hf_token)
+            except Exception:
                 pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
 
         if pipeline is None:
@@ -155,23 +155,22 @@ class DiarizationEngine:
         self,
         audio_path: str,
         transcript_words: List[Dict[str, Any]],
-        batch_size: int = 32,
         num_speakers: Optional[int] = None,
         min_speakers: Optional[int] = None,
         max_speakers: Optional[int] = None,
-        progress_callback: Optional[Callable[[int, str], None]] = None
+        session_start_time: Optional[datetime] = None,
+        progress_callback: Optional[Callable[[int, str], None]] = None,
+        **kwargs
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         """
         Główna metoda przetwarzania diaryzacji audio z word-level alignmentem.
         """
         if not transcript_words:
             print("⚠️ [PYANNOTE] Brak słów transkrypcji do dopasowania.")
-            return format_transcript_without_diarization([])
+            return format_transcript_without_diarization([], session_start_time=session_start_time)
 
         pipeline = self.load_pipeline()
         diarize_kwargs = {}
-        if batch_size > 1:
-            diarize_kwargs["batch_size"] = batch_size
 
         if num_speakers is not None and num_speakers > 0:
             diarize_kwargs["num_speakers"] = int(num_speakers)
@@ -316,6 +315,9 @@ class DiarizationEngine:
                         "text": sentence
                     })
 
+        from recorder.core.session import format_turn_timestamp, extract_datetime_from_filename
+        base_dt = session_start_time or extract_datetime_from_filename(audio_path)
+
         final_html = ""
         final_plain = ""
         for t in turns:
@@ -323,8 +325,9 @@ class DiarizationEngine:
             s_txt = t["text"]
             st = t["start"]
             en = t["end"]
-            final_html += f"<b>[{st:.1f}s - {en:.1f}s] {spk}:</b> {s_txt}<br><br>"
-            final_plain += f"[{st:.1f}s - {en:.1f}s] {spk}: {s_txt}\n\n"
+            time_label = format_turn_timestamp(st, en, base_dt)
+            final_html += f"<b>[{time_label}] {spk}:</b> {s_txt}<br><br>"
+            final_plain += f"[{time_label}] {spk}: {s_txt}\n\n"
 
         print(f"✅ [PYANNOTE] Diaryzacja zakończona! Wykryto mówców: {', '.join(sorted(speakers_detected)) if speakers_detected else 'Brak'}")
 
@@ -337,12 +340,13 @@ class DiarizationEngine:
         gc.collect()
 
         if not final_html or not turns:
-            return format_transcript_without_diarization(transcript_words)
+            return format_transcript_without_diarization(transcript_words, session_start_time=base_dt)
 
         return final_html, final_plain, turns
 
 
-def format_transcript_without_diarization(transcript_words: List[Dict[str, Any]]) -> Tuple[str, str, List[Dict[str, Any]]]:
+def format_transcript_without_diarization(transcript_words: List[Dict[str, Any]],
+                                          session_start_time: Optional[datetime] = None) -> Tuple[str, str, List[Dict[str, Any]]]:
     """
     Szybko grupuje słowa w czytelne bloki zdań z timestampami (gdy diaryzacja mówców jest wyłączona).
     Zwraca (final_html, final_plain, turns).
@@ -378,6 +382,7 @@ def format_transcript_without_diarization(transcript_words: List[Dict[str, Any]]
         if text:
             chunks.append((chunk_start, last_end, text))
 
+    from recorder.core.session import format_turn_timestamp
     final_html = ""
     final_plain = ""
     turns = []
@@ -389,7 +394,8 @@ def format_transcript_without_diarization(transcript_words: List[Dict[str, Any]]
             "speaker": "Mówca",
             "text": text
         })
-        final_html += f"<b>[{start_t:.1f}s - {end_t:.1f}s]:</b> {text}<br><br>"
-        final_plain += f"[{start_t:.1f}s - {end_t:.1f}s]: {text}\n\n"
+        time_label = format_turn_timestamp(start_t, end_t, session_start_time)
+        final_html += f"<b>[{time_label}]:</b> {text}<br><br>"
+        final_plain += f"[{time_label}]: {text}\n\n"
 
     return final_html, final_plain, turns

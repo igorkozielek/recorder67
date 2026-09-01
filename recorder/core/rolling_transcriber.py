@@ -22,13 +22,16 @@ from recorder.audio.converter import highpass_filter_audio, normalize_audio
 class RollingBlock:
     """
     Struktura reprezentująca pojedynczy zamknięty blok nagrania audio w sesji.
+    Obsługuje oznaczenie źródła kanału (np. 'mic' = mikrofon biurowy, 'system' = dźwięk Discord/Teams).
     """
-    def __init__(self, block_index: int, start_sec: float, end_sec: float, audio_float: np.ndarray):
+    def __init__(self, block_index: int, start_sec: float, end_sec: float, audio_float: np.ndarray, channel_source: str = "mic"):
         self.block_index = block_index
         self.start_sec = start_sec
         self.end_sec = end_sec
         self.audio_float = audio_float
+        self.channel_source = channel_source  # 'mic' lub 'system'
         self.turns: List[Dict[str, Any]] = []
+        self.words: List[Dict[str, Any]] = []
         self.plain_text: str = ""
         self.html_text: str = ""
         self.is_processed: bool = False
@@ -59,10 +62,10 @@ class RollingTranscriptionWorker(QThread):
         self.total_processed_seconds: float = 0.0
         self.latest_session_seconds: float = 0.0
 
-    def add_block(self, block_index: int, start_sec: float, end_sec: float, audio_float: np.ndarray):
-        """Dodaje nowy zamknięty blok audio do kolejki przetwarzania w tle."""
+    def add_block(self, block_index: int, start_sec: float, end_sec: float, audio_float: np.ndarray, channel_source: str = "mic"):
+        """Dodaje nowy zamknięty blok audio do kolejki przetwarzania w tle z oznaczeniem źródła (mic / system)."""
         if self._is_running:
-            block = RollingBlock(block_index, start_sec, end_sec, audio_float)
+            block = RollingBlock(block_index, start_sec, end_sec, audio_float, channel_source=channel_source)
             self.latest_session_seconds = max(self.latest_session_seconds, end_sec)
             self.block_queue.put(block)
 
@@ -89,6 +92,11 @@ class RollingTranscriptionWorker(QThread):
             self.block_queue.put(final_block)
         self.block_queue.put(None)
 
+    def stop(self):
+        """Natychmiast przerywa pętlę roboczą i odblokowuje wątek."""
+        self._is_running = False
+        self.block_queue.put(None)
+
     def get_all_words(self) -> List[Dict[str, Any]]:
         """Zwraca wszystkie przetranskrybowane słowa ze znacznikami czasu ze wszystkich bloków sesji."""
         all_words = []
@@ -104,12 +112,14 @@ class RollingTranscriptionWorker(QThread):
             self.transcriber.load_model()
             self.status_signal.emit("Silnik transkrypcji w tle: GOTOWY")
 
-            while True:
+            while self._is_running or not self.block_queue.empty():
+                if self.block_queue.empty():
+                    self.msleep(100)
+                    continue
+
                 try:
-                    block: Optional[RollingBlock] = self.block_queue.get(timeout=0.3)
-                except queue.Empty:
-                    if not self._is_running:
-                        break
+                    block: Optional[RollingBlock] = self.block_queue.get_nowait()
+                except Exception:
                     continue
 
                 if block is None:
@@ -226,6 +236,11 @@ class RollingTranscriptionWorker(QThread):
         block.words = transcript_words
         if transcript_words:
             _, _, block_turns = format_transcript_without_diarization(transcript_words)
+            default_spk = "Mikrofon" if block.channel_source == "mic" else "Dźwięk Systemu"
+            for trn in block_turns:
+                trn["channel"] = block.channel_source
+                if trn.get("speaker") in ("Mówca", None, "", "Ty / Biuro", "Zdalny (Discord/Teams)"):
+                    trn["speaker"] = default_spk
             block.turns = block_turns
 
         # ZWALNIANIE PAMIĘCI RAM: usuwamy referencję do surowych danych audio, których już nie potrzebujemy
@@ -273,6 +288,7 @@ class RollingTranscriptionWorker(QThread):
         full_plain = ""
         for t in combined_turns:
             spk = t.get("speaker", "Mówca")
+            channel = t.get("channel", "mic")
             st = t.get("start", 0.0)
             en = t.get("end", 0.0)
             txt = t.get("text", "")
@@ -303,8 +319,16 @@ class RollingTranscriptionWorker(QThread):
             else:
                 time_label = offset_label
 
-            full_html += f"<b>[{time_label}] {spk}:</b> {txt}<br><br>"
-            full_plain += f"[{time_label}] {spk}: {txt}\n\n"
+            if channel == "system":
+                badge = "🎧 "
+                color = "#a370f7"
+            else:
+                badge = "🎙️ "
+                color = "#4cc9f0"
+
+            display_spk = f"{badge}{spk}" if not (spk.startswith("🎙️") or spk.startswith("🎧")) else spk
+            full_html += f"<b>[{time_label}] <span style='color: {color};'>{display_spk}:</span></b> {txt}<br><br>"
+            full_plain += f"[{time_label}] {display_spk}: {txt}\n\n"
 
         return full_html, full_plain, combined_turns
 
