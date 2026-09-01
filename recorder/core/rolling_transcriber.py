@@ -213,7 +213,8 @@ class RollingTranscriptionWorker(QThread):
                             "word": w_text,
                             "start": g_start,
                             "end": g_end,
-                            "probability": prob
+                            "probability": prob,
+                            "channel": block.channel_source
                         })
                 else:
                     # Fallback estymacji słów
@@ -227,7 +228,8 @@ class RollingTranscriptionWorker(QThread):
                                 "word": (" " + w_str if i > 0 else w_str),
                                 "start": w_start,
                                 "end": w_end,
-                                "probability": 0.9
+                                "probability": 0.9,
+                                "channel": block.channel_source
                             })
         except Exception as trans_err:
             print(f"[ROLLING] Pominięto fragment bloku #{block.block_index}: {trans_err}")
@@ -269,7 +271,7 @@ class RollingTranscriptionWorker(QThread):
         )
 
     def _compile_full_transcript(self):
-        """Kompiluje wszystkie przetworzone bloki w jedną spójną transkrypcję."""
+        """Kompiluje wszystkie przetworzone bloki w jedną spójną transkrypcję posortowaną chronologicznie."""
         combined_turns = []
         for b in sorted(self.processed_blocks, key=lambda x: x.start_sec):
             combined_turns.extend(b.turns)
@@ -277,47 +279,21 @@ class RollingTranscriptionWorker(QThread):
         if not combined_turns:
             return "Brak zarejestrowanej mowy.", "Brak zarejestrowanej mowy.", []
 
-        # Odczyt preferowanego formatu timestampu z ustawień użytkownika
-        try:
-            from recorder.config import load_user_settings
-            ts_format = load_user_settings().get("timestamp_format", "offset_only")
-        except Exception:
-            ts_format = "offset_only"
+        # Ścisłe sortowanie chronologiczne według momentu rozpoczęcia wypowiedzi (start)
+        combined_turns.sort(key=lambda t: float(t.get("start", 0.0)))
+
+        from recorder.core.session import format_turn_timestamp
 
         full_html = ""
         full_plain = ""
         for t in combined_turns:
             spk = t.get("speaker", "Mówca")
             channel = t.get("channel", "mic")
-            st = t.get("start", 0.0)
-            en = t.get("end", 0.0)
+            st = float(t.get("start", 0.0))
+            en = float(t.get("end", 0.0))
             txt = t.get("text", "")
 
-            # Formatowanie offsetu MM:SS
-            s_min, s_sec = int(st // 60), int(st % 60)
-            e_min, e_sec = int(en // 60), int(en % 60)
-            offset_label = f"{s_min:02d}:{s_sec:02d} - {e_min:02d}:{e_sec:02d}"
-
-            # Obliczenie realnej godziny jeśli dostępna
-            if self.session_start_time is not None:
-                from datetime import timedelta
-                real_start = self.session_start_time + timedelta(seconds=st)
-                real_end = self.session_start_time + timedelta(seconds=en)
-                clock_start = real_start.strftime("%H:%M:%S")
-                clock_end = real_end.strftime("%H:%M:%S")
-                clock_label = f"{clock_start} - {clock_end}"
-            else:
-                clock_label = None
-
-            # Wybór formatu etykiety
-            if ts_format == "clock_only" and clock_label:
-                time_label = clock_label
-            elif ts_format == "offset_only":
-                time_label = offset_label
-            elif clock_label:  # domyślnie: offset+clock
-                time_label = f"{offset_label} | {clock_label}"
-            else:
-                time_label = offset_label
+            time_label = format_turn_timestamp(st, en, self.session_start_time)
 
             if channel == "system":
                 badge = "🎧 "
@@ -358,8 +334,8 @@ class RollingTranscriptionWorker(QThread):
             session.has_transcription = True
             session.whisper_model = self.model_size
             session.duration_sec = self.total_processed_seconds
-            session.turns = turns or []
-            session.words = all_words
+            session.turns = sorted(turns or [], key=lambda t: float(t.get("start", 0.0)))
+            session.words = sorted(all_words or [], key=lambda w: float(w.get("start", 0.0)))
             session.save_to_json(json_path)
         except Exception:
             pass

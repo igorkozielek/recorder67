@@ -88,8 +88,8 @@ class TranscriptionSession:
         self.has_diarization = has_diarization
         self.speakers_detected = speakers_detected or []
         self.speaker_mapping = speaker_mapping or {}
-        self.words = words or []
-        self.turns = turns or []
+        self.words = sorted(words or [], key=lambda w: float(w.get("start", 0.0)))
+        self.turns = sorted(turns or [], key=lambda t: float(t.get("start", 0.0)))
 
     @property
     def speakers_count(self) -> int:
@@ -200,12 +200,13 @@ class TranscriptionSession:
         if base_dt is None:
             base_dt = extract_datetime_from_filename(self.prepared_wav) or extract_datetime_from_filename(self.source_audio)
 
+        sorted_turns = sorted(self.turns, key=lambda t: float(t.get("start", 0.0)))
         lines = []
-        for t in self.turns:
+        for t in sorted_turns:
             spk = t.get("speaker", "Mówca")
             display_spk = mapping.get(spk, spk)
-            st = t.get("start", 0.0)
-            en = t.get("end", 0.0)
+            st = float(t.get("start", 0.0))
+            en = float(t.get("end", 0.0))
             txt = t.get("text", "").strip()
 
             time_label = format_turn_timestamp(st, en, base_dt)
@@ -231,12 +232,13 @@ class TranscriptionSession:
         if base_dt is None:
             base_dt = extract_datetime_from_filename(self.prepared_wav) or extract_datetime_from_filename(self.source_audio)
 
+        sorted_turns = sorted(self.turns, key=lambda t: float(t.get("start", 0.0)))
         html_blocks = []
-        for t in self.turns:
+        for t in sorted_turns:
             spk = t.get("speaker", "Mówca")
             display_spk = mapping.get(spk, spk)
-            st = t.get("start", 0.0)
-            en = t.get("end", 0.0)
+            st = float(t.get("start", 0.0))
+            en = float(t.get("end", 0.0))
             txt = t.get("text", "").strip()
 
             time_label = format_turn_timestamp(st, en, base_dt)
