@@ -88,6 +88,15 @@ graph TD
 
 ---
 
+### ✍️ REGUŁA 6: Czysty Język, Styl Komunikacji i Redagowania Treści
+1. **Zakaz sztucznych, redundantnych nawiasów:**
+   - **BEZWZGLĘDNY ZAKAZ** dopisywania w nawiasach angielskich tłumaczeń lub korpo-żargonu (np. `(Background & Objective)`, `(*Action Items*)`, `(New Features)`, `(Timeline Alignment)`, `(Fixes & Improvements)`).
+   - Treści tworzone dla użytkownika (opisy wydań, issues, dokumentacja, wiadomości) muszą być pisane w czystym, naturalnym języku polskim. Jeśli pojęcie ma polski odpowiednik (*Kontekst i cel*, *Lista zadań*, *Nowości*, *Poprawki*), używamy wyłącznie polskiego określenia.
+2. **Naturalny i zwięzły ton:**
+   - Komunikaty i propozycje wiadomości mają brzmieć po ludzku, profesjonalnie i konkretnie, bez sztucznego lania wody i zbędnych ozdobników.
+
+---
+
 ## 🛠️ 3. Lista Kontrolna Przed Wdrożeniem Zmian (Pre-Change Checklist)
 
 Przed zakończeniem dowolnego zadania programistycznego w tym projekcie upewnij się, że:
