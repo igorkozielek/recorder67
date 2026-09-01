@@ -2024,14 +2024,19 @@ class SmartDictaphoneWindow(QMainWindow):
                 with open(file_path, 'r', encoding='utf-8') as f:
                     content = f.read()
 
-                turns = parse_txt_to_turns(content)
-                self.current_turns = turns or []
-                self.last_plain_text = content
-                self.current_txt_path = file_path
-
                 # Odczytaj meeting_id z sesji JSON lub wylicz deterministyczny identyfikator
                 json_path = get_session_path_for_txt(file_path)
                 sess = TranscriptionSession.load_from_json(json_path) if os.path.exists(json_path) else None
+
+                session_dt = None
+                if sess and sess.created_at:
+                    try:
+                        session_dt = datetime.fromisoformat(sess.created_at)
+                    except Exception:
+                        pass
+                if not session_dt:
+                    session_dt = extract_datetime_from_filename(file_path)
+
                 if sess and getattr(sess, "meeting_id", None):
                     self.current_meeting_id = sess.meeting_id
                 elif sess and getattr(sess, "prepared_wav", None):
@@ -2042,14 +2047,23 @@ class SmartDictaphoneWindow(QMainWindow):
                     txt_stem = os.path.splitext(os.path.basename(file_path))[0].replace("transkrypcja_", "")
                     self.current_meeting_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"recorder67_{txt_stem}"))
 
-                if turns:
-                    self._populate_speaker_mapping(turns)
-                    html_content, _ = format_turns(turns)
+                # 1. Preferuj oryginalne turns z pliku sesji JSON
+                if sess and sess.turns:
+                    self.current_turns = sess.turns
+                    self._populate_speaker_mapping(sess.turns)
+                    html_content = sess.export_to_html(session_start_time=session_dt)
                     self.text_transcript.setHtml(html_content)
                 else:
-                    self.speaker_box.setVisible(False)
-                    html_content = content.replace("\n", "<br>")
-                    self.text_transcript.setHtml(html_content)
+                    turns = parse_txt_to_turns(content, session_start_time=session_dt)
+                    self.current_turns = turns or []
+                    if turns:
+                        self._populate_speaker_mapping(turns)
+                        html_content, _ = format_turns(turns, session_start_time=session_dt)
+                        self.text_transcript.setHtml(html_content)
+                    else:
+                        self.speaker_box.setVisible(False)
+                        html_content = content.replace("\n", "<br>")
+                        self.text_transcript.setHtml(html_content)
 
                 self.btn_manual_sync.setEnabled(True)
                 target_name = self.cloud_sync.config.get("sync_target", "emanager").upper()
