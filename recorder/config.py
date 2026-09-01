@@ -30,6 +30,13 @@ class SmartRecordState:
     MANUAL_PAUSED = 4
 
 
+# Źródła nagrywania (Mikrofon, Dźwięk Systemu / Discord / Teams, Tryb Hybrydowy)
+class RecordSourceMode:
+    MIC_ONLY = "mic_only"          # 🎙️ Tylko mikrofon (biuro / sala)
+    SYSTEM_ONLY = "system_only"    # 🎧 Tylko dźwięk systemu / Discord / Teams
+    HYBRID_DUAL = "hybrid_dual"    # 🎙️+🎧 Tryb Hybrydowy (Mikrofon + System / 2 ścieżki)
+
+
 def get_hf_token() -> str:
     """
     Pobiera token HuggingFace ze słownika ustawień użytkownika, pliku .env lub zmiennych środowiskowych.
@@ -184,6 +191,10 @@ def load_user_settings() -> dict:
         "auto_cloud_sync": get_env_variable("AUTO_CLOUD_SYNC", "true").lower() in ("1", "true", "yes"),
         "sync_upload_audio": get_env_variable("SYNC_UPLOAD_AUDIO", "false").lower() in ("1", "true", "yes"),
         "vad_speech_threshold": float(get_env_variable("VAD_SPEECH_THRESHOLD", "0.42")),
+        "system_vad_speech_threshold": float(get_env_variable("SYSTEM_VAD_SPEECH_THRESHOLD", "0.42")),
+        "record_source_mode": get_env_variable("RECORD_SOURCE_MODE", RecordSourceMode.HYBRID_DUAL),
+        "loopback_device_index": get_env_variable("LOOPBACK_DEVICE_INDEX", ""),
+        "target_app_filter": get_env_variable("TARGET_APP_FILTER", ""),
         "auto_pause_sec": float(get_env_variable("AUTO_PAUSE_SEC", "5.0")),
         "session_split_silence_sec": float(get_env_variable("SESSION_SPLIT_SILENCE_SEC", "900.0")),  # 15 min
         "timestamp_format": get_env_variable("TIMESTAMP_FORMAT", "offset_only"),
@@ -245,12 +256,42 @@ def get_device_name() -> str:
 
 
 def get_vad_speech_threshold() -> float:
-    """Zwraca próg czułości wykrywania mowy Silero VAD."""
+    """Zwraca próg czułości wykrywania mowy Silero VAD dla mikrofonu."""
     st = load_user_settings()
     try:
         return max(0.1, min(0.9, float(st.get("vad_speech_threshold", 0.42))))
     except Exception:
         return 0.42
+
+
+def get_system_vad_speech_threshold() -> float:
+    """Zwraca próg czułości wykrywania mowy Silero VAD dla dźwięku systemu/Discorda."""
+    st = load_user_settings()
+    try:
+        return max(0.1, min(0.9, float(st.get("system_vad_speech_threshold", 0.42))))
+    except Exception:
+        return 0.42
+
+
+def get_record_source_mode() -> str:
+    """Zwraca aktywny tryb źródła dźwięku (mic_only, system_only, hybrid_dual)."""
+    st = load_user_settings()
+    mode = str(st.get("record_source_mode", RecordSourceMode.HYBRID_DUAL)).strip()
+    if mode in (RecordSourceMode.MIC_ONLY, RecordSourceMode.SYSTEM_ONLY, RecordSourceMode.HYBRID_DUAL):
+        return mode
+    return RecordSourceMode.HYBRID_DUAL
+
+
+def get_loopback_device_index() -> str:
+    """Zwraca zapisany identyfikator/indeks urządzenia WASAPI Loopback."""
+    st = load_user_settings()
+    return str(st.get("loopback_device_index", "")).strip()
+
+
+def get_target_app_filter() -> str:
+    """Zwraca nazwę/filtr docelowej aplikacji z dźwiękiem (np. Discord.exe)."""
+    st = load_user_settings()
+    return str(st.get("target_app_filter", "")).strip()
 
 
 def get_session_split_silence_sec() -> float:

@@ -9,10 +9,7 @@ import soundfile as sf
 
 def mix_to_mono(audio_arr: np.ndarray) -> np.ndarray:
     """
-    Inteligentnie miksuje wielokanałowe audio do mono:
-    - Jeśli jeden kanał jest wyraźnie głośniejszy (np. mikrofon stereo/combo nagrywał tylko na lewym kanale),
-      wybiera dominujący kanał zamiast tłumić go przez uśrednianie z ciszą.
-    - W przeciwnym razie wylicza średnią arytmetyczną z kanałów.
+    Miksuje wielokanałowe audio (np. 2-kanałowe stereo: lewy=mikrofon, prawy=system) do mono.
     """
     if audio_arr.ndim <= 1:
         return audio_arr.astype(np.float32)
@@ -21,17 +18,7 @@ def mix_to_mono(audio_arr: np.ndarray) -> np.ndarray:
     if num_channels == 1:
         return audio_arr[:, 0].astype(np.float32) if audio_arr.ndim > 1 else audio_arr.astype(np.float32)
 
-    # Oblicz RMS dla każdego kanału
-    channel_rms = [float(np.sqrt(np.mean(audio_arr[:, ch] ** 2))) for ch in range(num_channels)]
-    max_rms = max(channel_rms)
-    min_rms = min(channel_rms)
-
-    # Jeśli jeden kanał to cisza (< 15% głośności drugiego), bierzemy kanał z sygnałem
-    if max_rms > 0.001 and min_rms < (0.15 * max_rms):
-        best_ch = int(np.argmax(channel_rms))
-        return audio_arr[:, best_ch].astype(np.float32)
-
-    # Standardowy miks średniej
+    # Bezpieczne uśrednienie wszystkich kanałów (Lewy + Prawy)
     return np.mean(audio_arr, axis=1).astype(np.float32)
 
 

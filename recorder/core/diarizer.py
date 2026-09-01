@@ -133,11 +133,11 @@ class DiarizationEngine:
         print("👥 [PYANNOTE] Ładowanie modelu 'pyannote/speaker-diarization-3.1'...")
         pipeline = None
         try:
-            pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=self.hf_token)
-        except TypeError:
+            pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=self.hf_token)
+        except (TypeError, Exception):
             try:
-                pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=self.hf_token)
-            except TypeError:
+                pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=self.hf_token)
+            except Exception:
                 pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
 
         if pipeline is None:
@@ -155,23 +155,222 @@ class DiarizationEngine:
         self,
         audio_path: str,
         transcript_words: List[Dict[str, Any]],
-        batch_size: int = 32,
         num_speakers: Optional[int] = None,
         min_speakers: Optional[int] = None,
         max_speakers: Optional[int] = None,
-        progress_callback: Optional[Callable[[int, str], None]] = None
+        session_start_time: Optional[datetime] = None,
+        progress_callback: Optional[Callable[[int, str], None]] = None,
+        **kwargs
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         """
         Główna metoda przetwarzania diaryzacji audio z word-level alignmentem.
+        Automatycznie wykrywa nagrania 2-kanałowe stereo (Hybryda: Mikrofon + System)
+        i uruchamia bezbłędną diaryzację kanałową.
         """
         if not transcript_words:
             print("⚠️ [PYANNOTE] Brak słów transkrypcji do dopasowania.")
-            return format_transcript_without_diarization([])
+            return format_transcript_without_diarization([], session_start_time=session_start_time)
 
+        import soundfile as sf
+        is_stereo = False
+        try:
+            if os.path.exists(audio_path):
+                s_info = sf.info(audio_path)
+                is_stereo = (s_info.channels == 2)
+        except Exception:
+            pass
+
+        has_channel_tags = any(w.get("channel") in ("mic", "system") for w in transcript_words)
+
+        if is_stereo or has_channel_tags:
+            print("🎛️ [PYANNOTE] Wykryto nagranie dwukanałowe (Hybryda: Mikrofon + System). Uruchamianie inteligentnej diaryzacji kanałowej...")
+            return self._process_hybrid_stereo(
+                audio_path=audio_path,
+                transcript_words=transcript_words,
+                num_speakers=num_speakers,
+                min_speakers=min_speakers,
+                max_speakers=max_speakers,
+                session_start_time=session_start_time,
+                progress_callback=progress_callback,
+                **kwargs
+            )
+
+        return self._run_pyannote_core(
+            audio_path=audio_path,
+            transcript_words=transcript_words,
+            num_speakers=num_speakers,
+            min_speakers=min_speakers,
+            max_speakers=max_speakers,
+            session_start_time=session_start_time,
+            progress_callback=progress_callback,
+            **kwargs
+        )
+
+    def _process_hybrid_stereo(
+        self,
+        audio_path: str,
+        transcript_words: List[Dict[str, Any]],
+        num_speakers: Optional[int] = None,
+        min_speakers: Optional[int] = None,
+        max_speakers: Optional[int] = None,
+        session_start_time: Optional[datetime] = None,
+        progress_callback: Optional[Callable[[int, str], None]] = None,
+        **kwargs
+    ) -> Tuple[str, str, List[Dict[str, Any]]]:
+        """
+        Inteligentna diaryzacja hybrydowa:
+        - Słowa z kanału mikrofonu (Kanał 0) są w 100% bezpiecznie przypisywane do lokalnego mówcy (SPEAKER_00 / Mikrofon).
+        - PyAnnote analizuje wyłącznie prawy kanał (Kanał 1 / Dźwięk Systemu), aby bezbłędnie rozróżnić rozmówców zdalnych.
+        - Wszystkie tury są scalane i ściśle sortowane chronologicznie po czasie rozpoczęcia (start).
+        """
+        import soundfile as sf
+        import tempfile
+        import numpy as np
+
+        mic_words = []
+        sys_words = []
+
+        audio_arr = None
+        sr = 16000
+        try:
+            if os.path.exists(audio_path):
+                audio_arr, sr = sf.read(audio_path)
+        except Exception:
+            pass
+
+        for w in transcript_words:
+            ch = w.get("channel")
+            if ch == "mic":
+                mic_words.append(w)
+            elif ch == "system":
+                sys_words.append(w)
+            elif audio_arr is not None and audio_arr.ndim > 1 and audio_arr.shape[1] == 2:
+                w_s = max(0, int(float(w.get("start", 0.0)) * sr))
+                w_e = min(len(audio_arr), int(float(w.get("end", 0.0)) * sr))
+                if w_e > w_s:
+                    seg = audio_arr[w_s:w_e]
+                    rms_mic = float(np.sqrt(np.mean(seg[:, 0] ** 2)))
+                    rms_sys = float(np.sqrt(np.mean(seg[:, 1] ** 2)))
+                    if rms_mic > rms_sys:
+                        mic_words.append(w)
+                    else:
+                        sys_words.append(w)
+                else:
+                    mic_words.append(w)
+            else:
+                mic_words.append(w)
+
+        # 1. Kwestie mikrofonu (Lokalny Mówca - bez ryzyka pomyłki)
+        mic_turns = []
+        if mic_words:
+            _, _, m_turns = format_transcript_without_diarization(mic_words, session_start_time=session_start_time)
+            for t in m_turns:
+                t["speaker"] = "SPEAKER_00"
+                t["channel"] = "mic"
+                mic_turns.append(t)
+
+        # 2. Diaryzacja kanału systemowego (Rozmówcy Zdalni / YouTube) przez PyAnnote
+        sys_turns = []
+        if sys_words and audio_arr is not None and audio_arr.ndim > 1 and audio_arr.shape[1] == 2:
+            temp_sys_path = None
+            try:
+                if progress_callback:
+                    progress_callback(30, "Przygotowanie ścieżki dźwięku systemu...")
+
+                sys_audio = audio_arr[:, 1]
+                temp_fd, temp_sys_path = tempfile.mkstemp(suffix=".wav", prefix="diar_sys_")
+                os.close(temp_fd)
+                sf.write(temp_sys_path, sys_audio, sr)
+
+                if progress_callback:
+                    progress_callback(50, "Analiza osób na kanale zdalnym/systemowym...")
+
+                # Jeśli obecny jest mikrofon (1 osoba lokalna), dla kanału systemowego przekazujemy (N - 1)
+                has_mic = bool(mic_words)
+                sys_num = (num_speakers - 1) if (num_speakers is not None and has_mic and num_speakers > 1) else num_speakers
+                sys_min = max(1, min_speakers - 1) if (min_speakers is not None and has_mic and min_speakers > 1) else min_speakers
+                sys_max = max(1, max_speakers - 1) if (max_speakers is not None and has_mic and max_speakers > 1) else max_speakers
+
+                _, _, s_turns = self._run_pyannote_core(
+                    temp_sys_path,
+                    sys_words,
+                    num_speakers=sys_num,
+                    min_speakers=sys_min,
+                    max_speakers=sys_max,
+                    session_start_time=session_start_time,
+                    progress_callback=progress_callback
+                )
+                for t in s_turns:
+                    orig_spk = t.get("speaker", "SPEAKER_00")
+                    if orig_spk.startswith("SPEAKER_"):
+                        try:
+                            idx = int(orig_spk.replace("SPEAKER_", ""))
+                            t["speaker"] = f"SPEAKER_{idx+1:02d}"
+                        except Exception:
+                            t["speaker"] = "SPEAKER_01"
+                    elif orig_spk in ("Mówca", None, "", "Dźwięk Systemu"):
+                        t["speaker"] = "SPEAKER_01"
+                    else:
+                        t["speaker"] = orig_spk
+                    t["channel"] = "system"
+                    sys_turns.append(t)
+            except Exception as diar_err:
+                print(f"⚠️ [PYANNOTE] Błąd diaryzacji kanału systemowego: {diar_err}")
+                _, _, s_turns = format_transcript_without_diarization(sys_words, session_start_time=session_start_time)
+                for t in s_turns:
+                    t["speaker"] = "SPEAKER_01"
+                    t["channel"] = "system"
+                    sys_turns.append(t)
+            finally:
+                if temp_sys_path and os.path.exists(temp_sys_path):
+                    try:
+                        os.remove(temp_sys_path)
+                    except Exception:
+                        pass
+        elif sys_words:
+            _, _, s_turns = format_transcript_without_diarization(sys_words, session_start_time=session_start_time)
+            for t in s_turns:
+                t["speaker"] = "SPEAKER_01"
+                t["channel"] = "system"
+                sys_turns.append(t)
+
+        # 3. Scalenie i ścisłe sortowanie chronologiczne wszystkich tur po 'start'
+        all_turns = mic_turns + sys_turns
+        all_turns.sort(key=lambda t: float(t.get("start", 0.0)))
+
+        from recorder.core.session import format_turn_timestamp, extract_datetime_from_filename
+        base_dt = session_start_time or extract_datetime_from_filename(audio_path)
+
+        final_html = ""
+        final_plain = ""
+        for t in all_turns:
+            spk = t["speaker"]
+            s_txt = t["text"]
+            st = float(t["start"])
+            en = float(t["end"])
+            time_label = format_turn_timestamp(st, en, base_dt)
+            final_html += f"<b>[{time_label}] {spk}:</b> {s_txt}<br><br>"
+            final_plain += f"[{time_label}] {spk}: {s_txt}\n\n"
+
+        if progress_callback:
+            progress_callback(100, "Diaryzacja hybrydowa zakończona pomyślnie!")
+
+        return final_html, final_plain, all_turns
+
+    def _run_pyannote_core(
+        self,
+        audio_path: str,
+        transcript_words: List[Dict[str, Any]],
+        num_speakers: Optional[int] = None,
+        min_speakers: Optional[int] = None,
+        max_speakers: Optional[int] = None,
+        session_start_time: Optional[datetime] = None,
+        progress_callback: Optional[Callable[[int, str], None]] = None,
+        **kwargs
+    ) -> Tuple[str, str, List[Dict[str, Any]]]:
+        """Bazowa diaryzacja PyAnnote dla pojedynczego strumienia audio."""
         pipeline = self.load_pipeline()
         diarize_kwargs = {}
-        if batch_size > 1:
-            diarize_kwargs["batch_size"] = batch_size
 
         if num_speakers is not None and num_speakers > 0:
             diarize_kwargs["num_speakers"] = int(num_speakers)
@@ -207,7 +406,7 @@ class DiarizationEngine:
 
             diarize_kwargs["hook"] = _pyannote_hook
 
-        print(f"⏳ [PYANNOTE] Rozpoczęto analizę głosów (parametry: {diarize_kwargs}) dla pliku: {os.path.basename(audio_path)}...")
+        print(f"⏳ [PYANNOTE] Rozpoczęto analizę głosów dla pliku: {os.path.basename(audio_path)}...")
 
         try:
             diarization = pipeline(audio_path, **diarize_kwargs)
@@ -221,7 +420,7 @@ class DiarizationEngine:
                 diarization = None
 
         if diarization is None:
-            return format_transcript_without_diarization(transcript_words)
+            return format_transcript_without_diarization(transcript_words, session_start_time=session_start_time)
 
         diar_segments = []
         speakers_detected = set()
@@ -234,7 +433,7 @@ class DiarizationEngine:
 
         if not diar_segments:
             print("⚠️ [PYANNOTE] Nie wykryto segmentów mówców. Powrót do transkrypcji ciągłej.")
-            return format_transcript_without_diarization(transcript_words)
+            return format_transcript_without_diarization(transcript_words, session_start_time=session_start_time)
 
         # Dopasowanie słów do mówcy
         word_speaker_tags = []
@@ -316,15 +515,22 @@ class DiarizationEngine:
                         "text": sentence
                     })
 
+        # Ścisłe sortowanie chronologiczne
+        turns.sort(key=lambda t: float(t.get("start", 0.0)))
+
+        from recorder.core.session import format_turn_timestamp, extract_datetime_from_filename
+        base_dt = session_start_time or extract_datetime_from_filename(audio_path)
+
         final_html = ""
         final_plain = ""
         for t in turns:
             spk = t["speaker"]
             s_txt = t["text"]
-            st = t["start"]
-            en = t["end"]
-            final_html += f"<b>[{st:.1f}s - {en:.1f}s] {spk}:</b> {s_txt}<br><br>"
-            final_plain += f"[{st:.1f}s - {en:.1f}s] {spk}: {s_txt}\n\n"
+            st = float(t["start"])
+            en = float(t["end"])
+            time_label = format_turn_timestamp(st, en, base_dt)
+            final_html += f"<b>[{time_label}] {spk}:</b> {s_txt}<br><br>"
+            final_plain += f"[{time_label}] {spk}: {s_txt}\n\n"
 
         print(f"✅ [PYANNOTE] Diaryzacja zakończona! Wykryto mówców: {', '.join(sorted(speakers_detected)) if speakers_detected else 'Brak'}")
 
@@ -337,12 +543,13 @@ class DiarizationEngine:
         gc.collect()
 
         if not final_html or not turns:
-            return format_transcript_without_diarization(transcript_words)
+            return format_transcript_without_diarization(transcript_words, session_start_time=base_dt)
 
         return final_html, final_plain, turns
 
 
-def format_transcript_without_diarization(transcript_words: List[Dict[str, Any]]) -> Tuple[str, str, List[Dict[str, Any]]]:
+def format_transcript_without_diarization(transcript_words: List[Dict[str, Any]],
+                                          session_start_time: Optional[datetime] = None) -> Tuple[str, str, List[Dict[str, Any]]]:
     """
     Szybko grupuje słowa w czytelne bloki zdań z timestampami (gdy diaryzacja mówców jest wyłączona).
     Zwraca (final_html, final_plain, turns).
@@ -378,6 +585,7 @@ def format_transcript_without_diarization(transcript_words: List[Dict[str, Any]]
         if text:
             chunks.append((chunk_start, last_end, text))
 
+    from recorder.core.session import format_turn_timestamp
     final_html = ""
     final_plain = ""
     turns = []
@@ -389,7 +597,8 @@ def format_transcript_without_diarization(transcript_words: List[Dict[str, Any]]
             "speaker": "Mówca",
             "text": text
         })
-        final_html += f"<b>[{start_t:.1f}s - {end_t:.1f}s]:</b> {text}<br><br>"
-        final_plain += f"[{start_t:.1f}s - {end_t:.1f}s]: {text}\n\n"
+        time_label = format_turn_timestamp(start_t, end_t, session_start_time)
+        final_html += f"<b>[{time_label}]:</b> {text}<br><br>"
+        final_plain += f"[{time_label}]: {text}\n\n"
 
     return final_html, final_plain, turns

@@ -14,7 +14,8 @@ from recorder.config import (
     load_user_settings,
     save_user_settings,
     WHISPER_MODELS,
-    DEFAULT_WHISPER_MODEL
+    DEFAULT_WHISPER_MODEL,
+    RecordSourceMode
 )
 
 
@@ -22,7 +23,7 @@ class SettingsDialog(QDialog):
     """
     Nowoczesne okno ustawień aplikacji:
     - Karta 1: Słownik branżowy (słowa kluczowe), wybór Beam Size Whispera, Token HuggingFace
-    - Karta 2: Mikrofon, czułość Silero VAD, auto-pauza i dzielenie sesji
+    - Karta 2: Źródła audio, czułość Silero VAD (mikrofon + system/Discord), auto-pauza i dzielenie sesji
     - Karta 3: Integracja chmurowa (Supabase / EMANAGER.PRO / Webhook), nazwa stanowiska
     """
     settings_saved_signal = pyqtSignal(dict)
@@ -281,12 +282,27 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(tab, "📚 Słownik i AI")
 
     def _create_tab_vad(self):
-        """Karta 2: Mikrofon, czułość VAD i czasy pauz."""
+        """Karta 2: Źródła audio, czułość VAD dla mikrofonu i systemu oraz czasy sesji."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setSpacing(14)
 
-        box_vad = QGroupBox("🎙️ Czułość Detekcji Mowy Silero VAD")
+        # Sekcja: Domyślne Źródło Audio
+        box_source = QGroupBox("Domyślne Źródło Dźwięku")
+        box_source.setStyleSheet("QGroupBox { font-weight: bold; color: #4cc9f0; border: 1px solid #2b2d42; border-radius: 6px; margin-top: 6px; padding-top: 12px; }")
+        source_layout = QFormLayout(box_source)
+        source_layout.setSpacing(10)
+
+        self.combo_default_source_mode = QComboBox()
+        self.combo_default_source_mode.addItem("🎙️+🎧 Mikrofon + Dźwięk Systemu", RecordSourceMode.HYBRID_DUAL)
+        self.combo_default_source_mode.addItem("🎙️ Tylko Mikrofon", RecordSourceMode.MIC_ONLY)
+        self.combo_default_source_mode.addItem("🎧 Tylko Dźwięk Systemu", RecordSourceMode.SYSTEM_ONLY)
+        self.combo_default_source_mode.setStyleSheet("background: #181824; color: #edf2f4; border: 1px solid #2b2d42; padding: 6px 10px; border-radius: 6px;")
+        source_layout.addRow(QLabel("Tryb nagrywania:"), self.combo_default_source_mode)
+        layout.addWidget(box_source)
+
+        # Sekcja: Czułość VAD Mikrofonu
+        box_vad = QGroupBox("🎙️ Czułość Detekcji Mowy Mikrofonu")
         box_vad.setStyleSheet("QGroupBox { font-weight: bold; color: #4cc9f0; border: 1px solid #2b2d42; border-radius: 6px; margin-top: 6px; padding-top: 12px; }")
         vad_layout = QVBoxLayout(box_vad)
 
@@ -299,18 +315,31 @@ class SettingsDialog(QDialog):
         self.slider_vad.valueChanged.connect(self._on_vad_slider_changed)
         slider_row.addWidget(self.slider_vad, stretch=1)
 
-        self.lbl_vad_val = QLabel("0.42 (Zalecany / Biuro)")
+        self.lbl_vad_val = QLabel("0.42 (Zalecany)")
         self.lbl_vad_val.setStyleSheet("color: #10b981; font-weight: bold; min-width: 140px;")
         slider_row.addWidget(self.lbl_vad_val)
         vad_layout.addLayout(slider_row)
-
-        lbl_vad_hint = QLabel(
-            "Niższa wartość (0.20-0.30): Wykrywa bardzo cichy szept (dla cichych pomieszczeń).\n"
-            "Wyższa wartość (0.45-0.60): Tłumi szum otoczenia, klikanie klawiatury i hałas z korytarza."
-        )
-        lbl_vad_hint.setStyleSheet("color: #8d99ae; font-size: 11px;")
-        vad_layout.addWidget(lbl_vad_hint)
         layout.addWidget(box_vad)
+
+        # Sekcja: Czułość VAD Dźwięku Systemu
+        box_vad_sys = QGroupBox("🎧 Czułość Detekcji Dźwięku Systemu")
+        box_vad_sys.setStyleSheet("QGroupBox { font-weight: bold; color: #4cc9f0; border: 1px solid #2b2d42; border-radius: 6px; margin-top: 6px; padding-top: 12px; }")
+        vad_sys_layout = QVBoxLayout(box_vad_sys)
+
+        sys_slider_row = QHBoxLayout()
+        self.slider_vad_sys = QSlider(Qt.Orientation.Horizontal)
+        self.slider_vad_sys.setRange(20, 60)
+        self.slider_vad_sys.setValue(42)
+        self.slider_vad_sys.setTickInterval(5)
+        self.slider_vad_sys.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.slider_vad_sys.valueChanged.connect(self._on_vad_sys_slider_changed)
+        sys_slider_row.addWidget(self.slider_vad_sys, stretch=1)
+
+        self.lbl_vad_sys_val = QLabel("0.42 (Zalecany)")
+        self.lbl_vad_sys_val.setStyleSheet("color: #a370f7; font-weight: bold; min-width: 140px;")
+        sys_slider_row.addWidget(self.lbl_vad_sys_val)
+        vad_sys_layout.addLayout(sys_slider_row)
+        layout.addWidget(box_vad_sys)
 
         # Sekcja: Czasy i sesje
         box_time = QGroupBox("⏱️ Zarządzanie Ciszą i Sesjami Nagrywania")
@@ -332,7 +361,7 @@ class SettingsDialog(QDialog):
         self.combo_session_split.addItem("1 godzina ciągłej ciszy", 3600.0)
         self.combo_session_split.addItem("Wyłączone (Zawsze jedna długa sesja)", 0.0)
         self.combo_session_split.setStyleSheet("background: #181824; color: #edf2f4; border: 1px solid #2b2d42; padding: 4px 8px; border-radius: 4px;")
-        time_layout.addRow(QLabel("Automatyczny podział sesji biurowych:"), self.combo_session_split)
+        time_layout.addRow(QLabel("Automatyczny podział sesji:"), self.combo_session_split)
 
         self.combo_timestamp_format = QComboBox()
         self.combo_timestamp_format.addItem("Tylko offset [00:12 - 00:18] (Domyślne)", "offset_only")
@@ -343,7 +372,7 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(box_time)
         layout.addStretch()
-        self.tabs.addTab(tab, "🎙️ Mikrofon i VAD")
+        self.tabs.addTab(tab, "🎙️ Audio i VAD")
 
     def _create_tab_cloud(self):
         """Karta 3: Chmura, Supabase, Stanowisko i Webhook."""
@@ -432,6 +461,16 @@ class SettingsDialog(QDialog):
             desc = f"{f_val:.2f} (Tłumienie hałasu)"
         self.lbl_vad_val.setText(desc)
 
+    def _on_vad_sys_slider_changed(self, val: int):
+        f_val = val / 100.0
+        if f_val < 0.32:
+            desc = f"{f_val:.2f} (Cichy głos online)"
+        elif f_val <= 0.45:
+            desc = f"{f_val:.2f} (Zalecany)"
+        else:
+            desc = f"{f_val:.2f} (Silne tłumienie zakłóceń)"
+        self.lbl_vad_sys_val.setText(desc)
+
     def _load_values(self):
         """Ładuje aktualne ustawienia do kontrolek UI."""
         st = load_user_settings()
@@ -444,10 +483,19 @@ class SettingsDialog(QDialog):
             self.combo_beam.setCurrentIndex(idx)
         self.txt_hf_token.setText(st.get("hf_token", ""))
 
-        # VAD & Mikrofon
+        # Źródło Audio & VAD
+        src_mode = st.get("record_source_mode", RecordSourceMode.HYBRID_DUAL)
+        sm_idx = self.combo_default_source_mode.findData(src_mode)
+        if sm_idx != -1:
+            self.combo_default_source_mode.setCurrentIndex(sm_idx)
+
         vad_val = int(float(st.get("vad_speech_threshold", 0.42)) * 100)
         self.slider_vad.setValue(vad_val)
         self._on_vad_slider_changed(vad_val)
+
+        vad_sys_val = int(float(st.get("system_vad_speech_threshold", 0.42)) * 100)
+        self.slider_vad_sys.setValue(vad_sys_val)
+        self._on_vad_sys_slider_changed(vad_sys_val)
 
         self.spin_auto_pause.setValue(int(float(st.get("auto_pause_sec", 5.0))))
 
@@ -487,7 +535,9 @@ class SettingsDialog(QDialog):
         if reply == QMessageBox.StandardButton.Yes:
             self.txt_keywords.setPlainText(self.PRESET_KEYWORDS_IT)
             self.combo_beam.setCurrentIndex(self.combo_beam.findData(5))
+            self.combo_default_source_mode.setCurrentIndex(self.combo_default_source_mode.findData(RecordSourceMode.HYBRID_DUAL))
             self.slider_vad.setValue(42)
+            self.slider_vad_sys.setValue(42)
             self.spin_auto_pause.setValue(5)
             self.combo_session_split.setCurrentIndex(self.combo_session_split.findData(900.0))
             self.combo_timestamp_format.setCurrentIndex(self.combo_timestamp_format.findData("offset_only"))
@@ -500,7 +550,9 @@ class SettingsDialog(QDialog):
             "custom_keywords": self.txt_keywords.toPlainText().strip(),
             "whisper_beam_size": int(self.combo_beam.currentData() or 5),
             "hf_token": self.txt_hf_token.text().strip(),
+            "record_source_mode": self.combo_default_source_mode.currentData() or RecordSourceMode.HYBRID_DUAL,
             "vad_speech_threshold": round(self.slider_vad.value() / 100.0, 2),
+            "system_vad_speech_threshold": round(self.slider_vad_sys.value() / 100.0, 2),
             "auto_pause_sec": float(self.spin_auto_pause.value()),
             "session_split_silence_sec": float(self.combo_session_split.currentData() or 900.0),
             "timestamp_format": self.combo_timestamp_format.currentData() or "offset_only",

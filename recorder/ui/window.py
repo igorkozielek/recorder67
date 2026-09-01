@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 
 from recorder.config import (
     SmartRecordState,
+    RecordSourceMode,
     RECORDINGS_DIR,
     TRANSCRIPTIONS_DIR,
     get_hf_token,
@@ -28,9 +29,16 @@ from recorder.config import (
     get_recommended_profile,
     load_user_settings,
     get_custom_keywords,
-    get_vad_speech_threshold
+    get_vad_speech_threshold,
+    get_system_vad_speech_threshold,
+    get_record_source_mode,
+    get_loopback_device_index
 )
-from recorder.audio.devices import get_working_input_devices
+from recorder.audio.devices import (
+    get_working_input_devices,
+    get_working_loopback_devices,
+    get_active_audio_apps
+)
 from recorder.core.vad import is_silero_available
 from recorder.ui.theme import DARK_THEME_QSS, setup_dark_palette
 from recorder.ui.settings_dialog import SettingsDialog
@@ -52,7 +60,8 @@ from recorder.core.session import (
     TranscriptionSession,
     get_session_path_for_txt,
     get_session_path_for_audio,
-    find_existing_session_for_audio
+    find_existing_session_for_audio,
+    extract_datetime_from_filename
 )
 from recorder.core.cloud_sync import CloudSyncManager
 
@@ -104,6 +113,7 @@ class SmartDictaphoneWindow(QMainWindow):
 
         self.worker = SmartAudioWorker(samplerate=SAMPLE_RATE, auto_pause_sec=DEFAULT_AUTO_PAUSE_SEC)
         self.worker.audio_level_signal.connect(self._update_audio_level)
+        self.worker.dual_audio_level_signal.connect(self._update_dual_audio_level)
         self.worker.vad_info_signal.connect(self._update_vad_info)
         self.worker.state_changed_signal.connect(self._on_worker_state_changed)
         self.worker.session_split_signal.connect(self._on_session_split_triggered)
@@ -142,7 +152,7 @@ class SmartDictaphoneWindow(QMainWindow):
         title.setFont(QFont("Segoe UI", 20, QFont.Weight.Bold))
         title.setAlignment(Qt.AlignmentFlag.AlignLeft)
         
-        subtitle = QLabel("System oparty na WYKRYWANIU MOWY (Silero VAD AI) & Faster-Whisper")
+        subtitle = QLabel("Detekcja Mowy (Silero VAD AI) & Faster-Whisper")
         subtitle.setFont(QFont("Segoe UI", 9, QFont.Weight.Medium))
         subtitle.setStyleSheet("color: #4cc9f0;")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -174,18 +184,78 @@ class SmartDictaphoneWindow(QMainWindow):
 
         main_layout.addLayout(header_container)
 
-        # WYBÓR MIKROFONU
-        device_box = QGroupBox("Urządzenie Wejściowe (Mikrofon)")
-        device_layout = QHBoxLayout(device_box)
+        # ŹRÓDŁA DŹWIĘKU
+        sources_box = QGroupBox("Źródła Dźwięku")
+        sources_layout = QVBoxLayout(sources_box)
+        sources_layout.setSpacing(8)
+
+        # 1. Wybór Trybu Źródła
+        mode_row = QHBoxLayout()
+        lbl_mode = QLabel("Tryb:")
+        lbl_mode.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        lbl_mode.setStyleSheet("color: #4cc9f0; min-width: 120px;")
+        
+        self.combo_source_mode = QComboBox()
+        self.combo_source_mode.addItem("🎙️+🎧 Mikrofon + Dźwięk Systemu", RecordSourceMode.HYBRID_DUAL)
+        self.combo_source_mode.addItem("🎙️ Tylko Mikrofon", RecordSourceMode.MIC_ONLY)
+        self.combo_source_mode.addItem("🎧 Tylko Dźwięk Systemu", RecordSourceMode.SYSTEM_ONLY)
+        
+        saved_mode = get_record_source_mode()
+        sm_idx = self.combo_source_mode.findData(saved_mode)
+        if sm_idx != -1:
+            self.combo_source_mode.setCurrentIndex(sm_idx)
+            
+        self.combo_source_mode.currentIndexChanged.connect(self._on_source_mode_changed)
+        mode_row.addWidget(lbl_mode)
+        mode_row.addWidget(self.combo_source_mode, stretch=1)
+        sources_layout.addLayout(mode_row)
+
+        # 2. Wybór Mikrofonu
+        mic_row = QHBoxLayout()
+        self.lbl_mic_input = QLabel("🎙️ Mikrofon:")
+        self.lbl_mic_input.setFont(QFont("Segoe UI", 9))
+        self.lbl_mic_input.setStyleSheet("min-width: 120px;")
         self.combo_devices = QComboBox()
         self.btn_refresh_dev = QPushButton("🔄")
         self.btn_refresh_dev.setFixedWidth(40)
-        self.btn_refresh_dev.setToolTip("Odśwież listę mikrofonów")
-        self.btn_refresh_dev.clicked.connect(self._refresh_audio_devices)
+        self.btn_refresh_dev.setToolTip("Odśwież tylko listę mikrofonów")
+        self.btn_refresh_dev.clicked.connect(self._refresh_microphones)
+        mic_row.addWidget(self.lbl_mic_input)
+        mic_row.addWidget(self.combo_devices, stretch=1)
+        mic_row.addWidget(self.btn_refresh_dev)
+        sources_layout.addLayout(mic_row)
 
-        device_layout.addWidget(self.combo_devices, stretch=1)
-        device_layout.addWidget(self.btn_refresh_dev)
-        main_layout.addWidget(device_box)
+        # 3. Wybór Wyjścia Loopback (Głośniki / Słuchawki)
+        sys_row = QHBoxLayout()
+        self.lbl_sys_input = QLabel("🎧 Dźwięk Systemu:")
+        self.lbl_sys_input.setFont(QFont("Segoe UI", 9))
+        self.lbl_sys_input.setStyleSheet("min-width: 120px;")
+        self.combo_loopback_devices = QComboBox()
+        self.btn_refresh_loop = QPushButton("🔄")
+        self.btn_refresh_loop.setFixedWidth(40)
+        self.btn_refresh_loop.setToolTip("Odśwież tylko urządzenia wyjściowe (Głośniki / Słuchawki)")
+        self.btn_refresh_loop.clicked.connect(self._refresh_loopback_devices)
+        sys_row.addWidget(self.lbl_sys_input)
+        sys_row.addWidget(self.combo_loopback_devices, stretch=1)
+        sys_row.addWidget(self.btn_refresh_loop)
+        sources_layout.addLayout(sys_row)
+
+        # 4. Wybór Konkretnej Aplikacji Audio (Discord, Firefox / YouTube, Teams itp.)
+        app_row = QHBoxLayout()
+        self.lbl_app_input = QLabel("🎯 Aplikacja audio:")
+        self.lbl_app_input.setFont(QFont("Segoe UI", 9))
+        self.lbl_app_input.setStyleSheet("min-width: 120px;")
+        self.combo_target_apps = QComboBox()
+        self.btn_refresh_apps = QPushButton("🔄")
+        self.btn_refresh_apps.setFixedWidth(40)
+        self.btn_refresh_apps.setToolTip("Odśwież tylko listę aktywnych programów z dźwiękiem (np. Discord, Firefox, Chrome)")
+        self.btn_refresh_apps.clicked.connect(self._refresh_target_apps)
+        app_row.addWidget(self.lbl_app_input)
+        app_row.addWidget(self.combo_target_apps, stretch=1)
+        app_row.addWidget(self.btn_refresh_apps)
+        sources_layout.addLayout(app_row)
+
+        main_layout.addWidget(sources_box)
 
         # WYBÓR MODELU FASTER-WHISPER I AKCELERACJA SPRZĘTOWA
         model_box = QGroupBox("Model Transkrypcji AI (Faster-Whisper)")
@@ -264,18 +334,60 @@ class SmartDictaphoneWindow(QMainWindow):
         self.progress_silence.setObjectName("SilenceProgress")
         display_layout.addWidget(self.progress_silence)
 
-        meter_layout = QHBoxLayout()
-        lbl_mic_icon = QLabel("🔊 Poziom sygnału:")
-        lbl_mic_icon.setFont(QFont("Segoe UI", 9))
-        self.progress_vu = QProgressBar()
-        self.progress_vu.setRange(0, 100)
-        self.progress_vu.setValue(0)
-        self.progress_vu.setTextVisible(False)
-        self.progress_vu.setFixedHeight(10)
-        
-        meter_layout.addWidget(lbl_mic_icon)
-        meter_layout.addWidget(self.progress_vu)
-        display_layout.addLayout(meter_layout)
+        # PODWÓJNY WSKAŹNIK VU METER (Mikrofon + Dźwięk Systemu)
+        vu_grid = QVBoxLayout()
+        vu_grid.setSpacing(6)
+
+        mic_vu_row = QHBoxLayout()
+        self.lbl_vu_mic_title = QLabel("🎙️ Mikrofon:")
+        self.lbl_vu_mic_title.setFont(QFont("Segoe UI", 8, QFont.Weight.Medium))
+        self.lbl_vu_mic_title.setStyleSheet("color: #4cc9f0; min-width: 120px;")
+        self.progress_vu_mic = QProgressBar()
+        self.progress_vu_mic.setRange(0, 100)
+        self.progress_vu_mic.setValue(0)
+        self.progress_vu_mic.setTextVisible(False)
+        self.progress_vu_mic.setFixedHeight(8)
+        self.progress_vu_mic.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #2b2d42;
+                border-radius: 4px;
+                background-color: #181824;
+            }
+            QProgressBar::chunk {
+                background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4cc9f0, stop:0.8 #4895ef, stop:1 #f72585);
+                border-radius: 3px;
+            }
+        """)
+        mic_vu_row.addWidget(self.lbl_vu_mic_title)
+        mic_vu_row.addWidget(self.progress_vu_mic, stretch=1)
+        vu_grid.addLayout(mic_vu_row)
+
+        sys_vu_row = QHBoxLayout()
+        self.lbl_vu_sys_title = QLabel("🎧 Dźwięk Systemu:")
+        self.lbl_vu_sys_title.setFont(QFont("Segoe UI", 8, QFont.Weight.Medium))
+        self.lbl_vu_sys_title.setStyleSheet("color: #a370f7; min-width: 120px;")
+        self.progress_vu_sys = QProgressBar()
+        self.progress_vu_sys.setRange(0, 100)
+        self.progress_vu_sys.setValue(0)
+        self.progress_vu_sys.setTextVisible(False)
+        self.progress_vu_sys.setFixedHeight(8)
+        self.progress_vu_sys.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #2b2d42;
+                border-radius: 4px;
+                background-color: #181824;
+            }
+            QProgressBar::chunk {
+                background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #a370f7, stop:0.8 #7209b7, stop:1 #f72585);
+                border-radius: 3px;
+            }
+        """)
+        sys_vu_row.addWidget(self.lbl_vu_sys_title)
+        sys_vu_row.addWidget(self.progress_vu_sys, stretch=1)
+        vu_grid.addLayout(sys_vu_row)
+
+        self.progress_vu = self.progress_vu_mic  # Kompatybilność
+        display_layout.addLayout(vu_grid)
 
         self.lbl_vad_detail = QLabel("VAD: Oczekiwanie na uruchomienie...")
         self.lbl_vad_detail.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -613,27 +725,140 @@ class SmartDictaphoneWindow(QMainWindow):
             app.setStyleSheet(DARK_THEME_QSS)
         self.setStyleSheet(DARK_THEME_QSS)
 
-    def _refresh_audio_devices(self):
+    def _refresh_microphones(self):
+        """Odświeża wyłącznie listę mikrofonów wejściowych."""
+        current_data = self.combo_devices.currentData()
         self.combo_devices.clear()
-        devices = get_working_input_devices()
-
+        devices = get_working_input_devices(force_refresh=False)
         if devices:
-            for dev in devices:
+            default_idx = 0
+            for i, dev in enumerate(devices):
                 label = f"{dev['name']} ({dev['hostapi']})"
                 self.combo_devices.addItem(label, userData=dev['index'])
+                if current_data is not None and dev['index'] == current_data:
+                    default_idx = i
+            self.combo_devices.setCurrentIndex(default_idx)
         else:
-            self.combo_devices.addItem("⚠️ BRAK MIKROFONU (Podłącz urządzenie w Windows)", userData=None)
+            self.combo_devices.addItem("⚠️ BRAK MIKROFONU", userData=None)
+
+    def _refresh_loopback_devices(self):
+        """Odświeża wyłącznie listę urządzeń wyjściowych / loopback (głośniki/słuchawki)."""
+        current_data = self.combo_loopback_devices.currentData()
+        self.combo_loopback_devices.clear()
+        loopbacks = get_working_loopback_devices()
+        if loopbacks:
+            default_idx = 0
+            for i, loop_dev in enumerate(loopbacks):
+                self.combo_loopback_devices.addItem(loop_dev['label'], userData=loop_dev['index'])
+                if current_data is not None and loop_dev['index'] == current_data:
+                    default_idx = i
+                elif loop_dev.get('is_default') and current_data is None:
+                    default_idx = i
+            self.combo_loopback_devices.setCurrentIndex(default_idx)
+        else:
+            try:
+                import pyaudiowpatch as pyaudio
+                p_tmp = pyaudio.PyAudio()
+                def_l = p_tmp.get_default_wasapi_loopback()
+                p_tmp.terminate()
+                if def_l:
+                    c_name = def_l.get('name', 'Głośniki systemowe').replace(" [Loopback]", "").strip()
+                    self.combo_loopback_devices.addItem(f"🎧 {c_name} (Domyślne)", userData=def_l.get('index'))
+                else:
+                    self.combo_loopback_devices.addItem("🎧 Domyślne wyjście systemowe", userData=None)
+            except Exception:
+                self.combo_loopback_devices.addItem("🎧 Domyślne wyjście systemowe", userData=None)
+
+    def _refresh_target_apps(self):
+        """Odświeża wyłącznie listę aktywnych programów z dźwiękiem (np. Discord, Firefox, Chrome)."""
+        current_exe = self.combo_target_apps.currentData()
+        self.combo_target_apps.clear()
+        self.combo_target_apps.addItem("Wszystkie programy (cały mikser)", userData="")
+        try:
+            active_apps = get_active_audio_apps()
+            if active_apps:
+                match_idx = 0
+                for i, app_info in enumerate(active_apps, start=1):
+                    label = f"{app_info['name']} ({app_info['exe']})"
+                    self.combo_target_apps.addItem(label, userData=app_info['exe'])
+                    if current_exe and app_info['exe'].lower() == current_exe.lower():
+                        match_idx = i
+                self.combo_target_apps.setCurrentIndex(match_idx)
+        except Exception:
+            pass
+
+    def _refresh_audio_devices(self):
+        """Pełne odświeżenie wszystkich źródeł dźwięku."""
+        self._refresh_microphones()
+        self._refresh_loopback_devices()
+        self._refresh_target_apps()
+        self._on_source_mode_changed()
+
+    def _on_source_mode_changed(self):
+        """Dopasowuje dostępność kontrolek i wskaźników VU do wybranego trybu źródła."""
+        mode = self.combo_source_mode.currentData() or RecordSourceMode.HYBRID_DUAL
+        if mode == RecordSourceMode.MIC_ONLY:
+            self.combo_devices.setEnabled(True)
+            self.btn_refresh_dev.setEnabled(True)
+            self.combo_loopback_devices.setEnabled(False)
+            self.btn_refresh_loop.setEnabled(False)
+            self.combo_target_apps.setEnabled(False)
+            self.btn_refresh_apps.setEnabled(False)
+            self.lbl_mic_input.setStyleSheet("color: #4cc9f0; min-width: 120px; font-weight: bold;")
+            self.lbl_sys_input.setStyleSheet("color: #8d99ae; min-width: 120px;")
+            self.lbl_app_input.setStyleSheet("color: #8d99ae; min-width: 120px;")
+            self.lbl_vu_mic_title.setVisible(True)
+            self.progress_vu_mic.setVisible(True)
+            self.lbl_vu_sys_title.setVisible(False)
+            self.progress_vu_sys.setVisible(False)
+        elif mode == RecordSourceMode.SYSTEM_ONLY:
+            self.combo_devices.setEnabled(False)
+            self.btn_refresh_dev.setEnabled(False)
+            self.combo_loopback_devices.setEnabled(True)
+            self.btn_refresh_loop.setEnabled(True)
+            self.combo_target_apps.setEnabled(True)
+            self.btn_refresh_apps.setEnabled(True)
+            self.lbl_mic_input.setStyleSheet("color: #8d99ae; min-width: 120px;")
+            self.lbl_sys_input.setStyleSheet("color: #a370f7; min-width: 120px; font-weight: bold;")
+            self.lbl_app_input.setStyleSheet("color: #a370f7; min-width: 120px; font-weight: bold;")
+            self.lbl_vu_mic_title.setVisible(False)
+            self.progress_vu_mic.setVisible(False)
+            self.lbl_vu_sys_title.setVisible(True)
+            self.progress_vu_sys.setVisible(True)
+        else:  # HYBRID_DUAL
+            self.combo_devices.setEnabled(True)
+            self.btn_refresh_dev.setEnabled(True)
+            self.combo_loopback_devices.setEnabled(True)
+            self.btn_refresh_loop.setEnabled(True)
+            self.combo_target_apps.setEnabled(True)
+            self.btn_refresh_apps.setEnabled(True)
+            self.lbl_mic_input.setStyleSheet("color: #4cc9f0; min-width: 120px; font-weight: bold;")
+            self.lbl_sys_input.setStyleSheet("color: #a370f7; min-width: 120px; font-weight: bold;")
+            self.lbl_app_input.setStyleSheet("color: #a370f7; min-width: 120px; font-weight: bold;")
+            self.lbl_vu_mic_title.setVisible(True)
+            self.progress_vu_mic.setVisible(True)
+            self.lbl_vu_sys_title.setVisible(True)
+            self.progress_vu_sys.setVisible(True)
+
+    def _update_dual_audio_level(self, mic_lvl: float, sys_lvl: float):
+        """Aktualizacja podwójnego wskaźnika poziomu głośności VU meter w UI."""
+        try:
+            self.progress_vu_mic.setValue(int(max(0, min(100, mic_lvl))))
+            self.progress_vu_sys.setValue(int(max(0, min(100, sys_lvl))))
+        except Exception:
+            pass
 
     def _refresh_recordings_list(self):
+        """Odświeża listę nagrań WAV posortowaną chronologicznie (najnowsze na samej górze)."""
         self.list_recordings.clear()
         if not os.path.exists(self.recordings_dir):
             return
 
-        files = [f for f in os.listdir(self.recordings_dir) if f.endswith(".wav")]
-        files.sort(reverse=True)
+        full_paths = [os.path.join(self.recordings_dir, f) for f in os.listdir(self.recordings_dir) if f.endswith(".wav")]
+        full_paths.sort(key=lambda p: os.path.getmtime(p), reverse=True)
 
-        for filename in files:
-            full_path = os.path.join(self.recordings_dir, filename)
+        for full_path in full_paths:
+            filename = os.path.basename(full_path)
             size_kb = os.path.getsize(full_path) / 1024
             mtime = datetime.fromtimestamp(os.path.getmtime(full_path)).strftime("%Y-%m-%d %H:%M:%S")
             
@@ -666,9 +891,11 @@ class SmartDictaphoneWindow(QMainWindow):
         self.worker.set_auto_pause_sec(value)
 
     def _on_start_clicked(self):
-        selected_index = self.combo_devices.currentData()
+        selected_mode = self.combo_source_mode.currentData() or RecordSourceMode.HYBRID_DUAL
+        selected_mic = self.combo_devices.currentData()
+        selected_loopback = self.combo_loopback_devices.currentData()
 
-        if selected_index is None:
+        if selected_mode == RecordSourceMode.MIC_ONLY and selected_mic is None:
             QMessageBox.warning(
                 self,
                 "Brak Mikrofonu",
@@ -727,10 +954,10 @@ class SmartDictaphoneWindow(QMainWindow):
         # Ustawienie estetycznego komunikatu oczekiwania na pierwszy zweryfikowany blok mowy
         self.text_transcript.setHtml(
             "<div style='color: #4cc9f0; font-size: 13px; padding: 10px;'>"
-            "🎙️ <b>Trwa inteligentne nagrywanie spotkania (Transmisja na żywo do CRM)...</b><br>"
+            "🎙️ <b>Trwa inteligentne nagrywanie spotkania (Mikrofon + Słuchawki / Discord)...</b><br>"
             "<span style='color: #94a3b8; font-size: 11px;'>"
-            "Mowa jest na bieżąco przetwarzana w tle z pełnym kontekstem zdań. "
-            "Zweryfikowane wypowiedzi pojawią się automatycznie w CRM po naturalnych pauzach w rozmowie."
+            "Mowa z biura oraz dźwięk ze spotkania online są na bieżąco analizowane dwutorowo przez Silero VAD i Faster-Whisper. "
+            "Zweryfikowane wypowiedzi pojawią się automatycznie z podziałem na role."
             "</span></div>"
         )
 
@@ -749,9 +976,17 @@ class SmartDictaphoneWindow(QMainWindow):
 
         self.worker.rolling_block_ready_signal.connect(self.rolling_worker.add_block)
 
+        selected_target_app = self.combo_target_apps.currentData() if hasattr(self, "combo_target_apps") else ""
+
         threshold_sec = self.slider_silence.value()
         self.worker.set_auto_pause_sec(threshold_sec)
-        self.worker.start_recording(device_index=selected_index, save_wav_path=self.current_live_wav_path)
+        self.worker.start_recording(
+            device_index=selected_mic,
+            loopback_device_index=selected_loopback,
+            source_mode=selected_mode,
+            target_app_filter=selected_target_app,
+            save_wav_path=self.current_live_wav_path
+        )
         self.timer.start()
 
         self.btn_start.setEnabled(False)
@@ -764,7 +999,14 @@ class SmartDictaphoneWindow(QMainWindow):
         self.btn_pause.update()
 
         self.btn_stop.setEnabled(True)
+        self.combo_source_mode.setEnabled(False)
         self.combo_devices.setEnabled(False)
+        self.combo_loopback_devices.setEnabled(False)
+        if hasattr(self, "combo_target_apps"):
+            self.combo_target_apps.setEnabled(False)
+            self.btn_refresh_apps.setEnabled(False)
+        self.btn_refresh_dev.setEnabled(False)
+        self.btn_refresh_loop.setEnabled(False)
         self.combo_models.setEnabled(False)
         self.btn_auto_detect.setEnabled(False)
         self.check_enable_diarization.setEnabled(False)
@@ -829,7 +1071,8 @@ class SmartDictaphoneWindow(QMainWindow):
         saved = self.worker.save_wav(save_path)
         self.last_audio_save_path = save_path if saved else None
 
-        self.progress_vu.setValue(0)
+        self.progress_vu_mic.setValue(0)
+        self.progress_vu_sys.setValue(0)
         self.progress_silence.setValue(0)
         self.lbl_silence_val.setText(f"0.0 s / {self.slider_silence.value()}.0 s")
         self.lbl_vad_detail.setText("VAD: Oczekiwanie na uruchomienie...")
@@ -846,7 +1089,8 @@ class SmartDictaphoneWindow(QMainWindow):
         self.btn_pause.update()
 
         self.btn_stop.setEnabled(False)
-        self.combo_devices.setEnabled(True)
+        self.combo_source_mode.setEnabled(True)
+        self._on_source_mode_changed()
         self.combo_models.setEnabled(True)
         self.btn_auto_detect.setEnabled(True)
         self.check_enable_diarization.setEnabled(True)
@@ -859,12 +1103,21 @@ class SmartDictaphoneWindow(QMainWindow):
             self._refresh_recordings_list()
             self._refresh_transcriptions_list()
 
-            # Pobranie ostatniego nieprzetworzonego fragmentu audio
-            remaining = self.worker.get_remaining_block()
+            # Pobranie wszystkich zaległych bloków audio (mikrofon + loopback)
             final_block = None
-            if remaining:
-                r_idx, r_start, r_end, r_audio = remaining
-                final_block = RollingBlock(r_idx, r_start, r_end, r_audio)
+            if hasattr(self.worker, "get_remaining_blocks"):
+                rem_blocks = self.worker.get_remaining_blocks()
+                if rem_blocks:
+                    for b_idx, b_st, b_en, b_arr, b_ch in rem_blocks[:-1]:
+                        if getattr(self, "rolling_worker", None) is not None:
+                            self.rolling_worker.add_block(b_idx, b_st, b_en, b_arr, channel_source=b_ch)
+                    last_idx, last_st, last_en, last_arr, last_ch = rem_blocks[-1]
+                    final_block = RollingBlock(last_idx, last_st, last_en, last_arr, channel_source=last_ch)
+            elif hasattr(self.worker, "get_remaining_block"):
+                remaining = self.worker.get_remaining_block()
+                if remaining:
+                    r_idx, r_start, r_end, r_audio = remaining
+                    final_block = RollingBlock(r_idx, r_start, r_end, r_audio)
 
             self.progress_transcription.setFormat("Finalizowanie ostatniego fragmentu rozmowy w tle...")
             self.progress_transcription.setValue(95)
@@ -1353,7 +1606,28 @@ class SmartDictaphoneWindow(QMainWindow):
             if orig_spk in mapping:
                 t["speaker"] = mapping[orig_spk]
 
-        html_text, plain_text = format_turns(self.current_turns, mapping)
+        # Ustalenie bazowej daty/godziny sesji do zachowania formatu timestampu
+        session_dt = getattr(self, "current_session_start_time", None)
+        if not session_dt and self.current_txt_path:
+            session_dt = extract_datetime_from_filename(self.current_txt_path)
+        if not session_dt and self.last_audio_save_path:
+            session_dt = extract_datetime_from_filename(self.last_audio_save_path)
+
+        if self.current_txt_path:
+            json_path = get_session_path_for_txt(self.current_txt_path)
+            if os.path.exists(json_path):
+                sess = TranscriptionSession.load_from_json(json_path)
+                if sess:
+                    sess.update_speaker_mapping(mapping)
+                    sess.turns = self.current_turns
+                    sess.save_to_json(json_path)
+                    if sess.created_at and not session_dt:
+                        try:
+                            session_dt = datetime.fromisoformat(sess.created_at)
+                        except Exception:
+                            pass
+
+        html_text, plain_text = format_turns(self.current_turns, mapping, session_start_time=session_dt)
         self.text_transcript.setHtml(html_text)
         self.last_plain_text = plain_text
 
@@ -1552,15 +1826,16 @@ class SmartDictaphoneWindow(QMainWindow):
         self.lbl_cloud_status.setStyleSheet("color: #10b981; font-size: 11px; font-weight: bold;")
 
     def _refresh_transcriptions_list(self):
+        """Odświeża listę transkrypcji TXT posortowaną chronologicznie (najnowsze na samej górze)."""
         self.list_transcriptions.clear()
         if not os.path.exists(self.transcriptions_dir):
             return
 
-        files = [f for f in os.listdir(self.transcriptions_dir) if f.endswith(".txt")]
-        files.sort(reverse=True)
+        full_paths = [os.path.join(self.transcriptions_dir, f) for f in os.listdir(self.transcriptions_dir) if f.endswith(".txt")]
+        full_paths.sort(key=lambda p: os.path.getmtime(p), reverse=True)
 
-        for filename in files:
-            full_path = os.path.join(self.transcriptions_dir, filename)
+        for full_path in full_paths:
+            filename = os.path.basename(full_path)
             size_kb = os.path.getsize(full_path) / 1024
             mtime = datetime.fromtimestamp(os.path.getmtime(full_path)).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -1749,14 +2024,19 @@ class SmartDictaphoneWindow(QMainWindow):
                 with open(file_path, 'r', encoding='utf-8') as f:
                     content = f.read()
 
-                turns = parse_txt_to_turns(content)
-                self.current_turns = turns or []
-                self.last_plain_text = content
-                self.current_txt_path = file_path
-
                 # Odczytaj meeting_id z sesji JSON lub wylicz deterministyczny identyfikator
                 json_path = get_session_path_for_txt(file_path)
                 sess = TranscriptionSession.load_from_json(json_path) if os.path.exists(json_path) else None
+
+                session_dt = None
+                if sess and sess.created_at:
+                    try:
+                        session_dt = datetime.fromisoformat(sess.created_at)
+                    except Exception:
+                        pass
+                if not session_dt:
+                    session_dt = extract_datetime_from_filename(file_path)
+
                 if sess and getattr(sess, "meeting_id", None):
                     self.current_meeting_id = sess.meeting_id
                 elif sess and getattr(sess, "prepared_wav", None):
@@ -1767,14 +2047,23 @@ class SmartDictaphoneWindow(QMainWindow):
                     txt_stem = os.path.splitext(os.path.basename(file_path))[0].replace("transkrypcja_", "")
                     self.current_meeting_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"recorder67_{txt_stem}"))
 
-                if turns:
-                    self._populate_speaker_mapping(turns)
-                    html_content, _ = format_turns(turns)
+                # 1. Preferuj oryginalne turns z pliku sesji JSON
+                if sess and sess.turns:
+                    self.current_turns = sess.turns
+                    self._populate_speaker_mapping(sess.turns)
+                    html_content = sess.export_to_html(session_start_time=session_dt)
                     self.text_transcript.setHtml(html_content)
                 else:
-                    self.speaker_box.setVisible(False)
-                    html_content = content.replace("\n", "<br>")
-                    self.text_transcript.setHtml(html_content)
+                    turns = parse_txt_to_turns(content, session_start_time=session_dt)
+                    self.current_turns = turns or []
+                    if turns:
+                        self._populate_speaker_mapping(turns)
+                        html_content, _ = format_turns(turns, session_start_time=session_dt)
+                        self.text_transcript.setHtml(html_content)
+                    else:
+                        self.speaker_box.setVisible(False)
+                        html_content = content.replace("\n", "<br>")
+                        self.text_transcript.setHtml(html_content)
 
                 self.btn_manual_sync.setEnabled(True)
                 target_name = self.cloud_sync.config.get("sync_target", "emanager").upper()
@@ -1843,14 +2132,7 @@ class SmartDictaphoneWindow(QMainWindow):
                 self.progress_transcription.setFormat(f"⏸️ Auto-Pauza (Cisza): {t_min:02d}:{t_sec:02d} nagrania")
 
     def _update_audio_level(self, level):
-        try:
-            if level is None or level != level:
-                val = 0
-            else:
-                val = int(max(0.0, min(100.0, float(level))))
-            self.progress_vu.setValue(val)
-        except Exception:
-            self.progress_vu.setValue(0)
+        pass
 
     def _update_vad_info(self, is_speech, speech_prob, current_silence_sec):
         if self.worker.state == SmartRecordState.MANUAL_PAUSED:
@@ -1935,11 +2217,16 @@ class SmartDictaphoneWindow(QMainWindow):
     def closeEvent(self, event):
         try:
             self.timer.stop()
-            if self.worker.state != SmartRecordState.STOPPED:
+            if self.worker is not None and self.worker.state != SmartRecordState.STOPPED:
                 self.worker.stop_recording()
-            self.worker.wait(1000)
+                self.worker.wait(1500)
 
-            if self.live_transcription_worker is not None:
+            if getattr(self, "rolling_worker", None) is not None and self.rolling_worker.isRunning():
+                self.rolling_worker.stop()
+                self.rolling_worker.wait(1500)
+                self.rolling_worker = None
+
+            if self.live_transcription_worker is not None and self.live_transcription_worker.isRunning():
                 self.live_transcription_worker.stop()
                 self.live_transcription_worker.wait(1000)
                 self.live_transcription_worker = None

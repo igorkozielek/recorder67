@@ -1,9 +1,57 @@
 import os
 import sys
 import json
+import re
 import tempfile
 from typing import List, Dict, Any, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
+
+
+def extract_datetime_from_filename(filepath: str) -> Optional[datetime]:
+    """Pobiera dokładną datę i godzinę rozpoczęcia nagrania z nazwy pliku."""
+    if not filepath:
+        return None
+    base = os.path.basename(filepath)
+    import re
+    m = re.search(r'(\d{8})_(\d{6})', base)
+    if m:
+        try:
+            return datetime.strptime(f"{m.group(1)}_{m.group(2)}", "%Y%m%d_%H%M%S")
+        except Exception:
+            pass
+    return None
+
+
+def format_turn_timestamp(st: float, en: float, session_start_time: Optional[datetime] = None) -> str:
+    """Formatuje znacznik czasu dla wypowiedzi zgodnie z ustawieniami użytkownika (offset, godzina, hybryda)."""
+    try:
+        from recorder.config import load_user_settings
+        ts_format = load_user_settings().get("timestamp_format", "offset_only")
+    except Exception:
+        ts_format = "offset_only"
+
+    s_min, s_sec = int(st // 60), int(st % 60)
+    e_min, e_sec = int(en // 60), int(en % 60)
+    offset_label = f"{s_min:02d}:{s_sec:02d} - {e_min:02d}:{e_sec:02d}"
+
+    if session_start_time is not None:
+        from datetime import timedelta
+        real_start = session_start_time + timedelta(seconds=st)
+        real_end = session_start_time + timedelta(seconds=en)
+        clock_start = real_start.strftime("%H:%M:%S")
+        clock_end = real_end.strftime("%H:%M:%S")
+        clock_label = f"{clock_start} - {clock_end}"
+    else:
+        clock_label = None
+
+    if ts_format == "clock_only" and clock_label:
+        return clock_label
+    elif ts_format == "offset_only":
+        return offset_label
+    elif clock_label:
+        return f"{offset_label} | {clock_label}"
+    else:
+        return offset_label
 
 
 class TranscriptionSession:
@@ -40,8 +88,8 @@ class TranscriptionSession:
         self.has_diarization = has_diarization
         self.speakers_detected = speakers_detected or []
         self.speaker_mapping = speaker_mapping or {}
-        self.words = words or []
-        self.turns = turns or []
+        self.words = sorted(words or [], key=lambda w: float(w.get("start", 0.0)))
+        self.turns = sorted(turns or [], key=lambda t: float(t.get("start", 0.0)))
 
     @property
     def speakers_count(self) -> int:
@@ -143,54 +191,26 @@ class TranscriptionSession:
         if speaker_mapping:
             mapping.update(speaker_mapping)
 
-        # Ustalenie bazowego czasu
         base_dt = session_start_time
         if base_dt is None and self.created_at:
             try:
                 base_dt = datetime.fromisoformat(self.created_at)
             except Exception:
                 base_dt = None
+        if base_dt is None:
+            base_dt = extract_datetime_from_filename(self.prepared_wav) or extract_datetime_from_filename(self.source_audio)
 
-        try:
-            from recorder.config import load_user_settings
-            ts_format = load_user_settings().get("timestamp_format", "offset_only")
-        except Exception:
-            ts_format = "offset_only"
-
+        sorted_turns = sorted(self.turns, key=lambda t: float(t.get("start", 0.0)))
         lines = []
-        for t in self.turns:
+        for t in sorted_turns:
             spk = t.get("speaker", "Mówca")
             display_spk = mapping.get(spk, spk)
-            st = t.get("start", 0.0)
-            en = t.get("end", 0.0)
+            st = float(t.get("start", 0.0))
+            en = float(t.get("end", 0.0))
             txt = t.get("text", "").strip()
 
-            # Offset [MM:SS - MM:SS]
-            s_min, s_sec = int(st // 60), int(st % 60)
-            e_min, e_sec = int(en // 60), int(en % 60)
-            offset_label = f"{s_min:02d}:{s_sec:02d} - {e_min:02d}:{e_sec:02d}"
-
-            if base_dt is not None:
-                from datetime import timedelta
-                c_st = (base_dt + timedelta(seconds=st)).strftime("%H:%M:%S")
-                c_en = (base_dt + timedelta(seconds=en)).strftime("%H:%M:%S")
-                clock_label = f"{c_st} - {c_en}"
-            else:
-                clock_label = None
-
-            if ts_format == "clock_only" and clock_label:
-                time_label = clock_label
-            elif ts_format == "offset_only":
-                time_label = offset_label
-            elif clock_label:
-                time_label = f"{offset_label} | {clock_label}"
-            else:
-                time_label = offset_label
-
-            if self.has_diarization and spk != "Mówca":
-                lines.append(f"[{time_label}] {display_spk}: {txt}\n")
-            else:
-                lines.append(f"[{time_label}] {display_spk}: {txt}\n")
+            time_label = format_turn_timestamp(st, en, base_dt)
+            lines.append(f"[{time_label}] {display_spk}: {txt}\n")
 
         return "\n".join(lines).strip()
 
@@ -209,48 +229,22 @@ class TranscriptionSession:
                 base_dt = datetime.fromisoformat(self.created_at)
             except Exception:
                 base_dt = None
+        if base_dt is None:
+            base_dt = extract_datetime_from_filename(self.prepared_wav) or extract_datetime_from_filename(self.source_audio)
 
-        try:
-            from recorder.config import load_user_settings
-            ts_format = load_user_settings().get("timestamp_format", "offset_only")
-        except Exception:
-            ts_format = "offset_only"
-
+        sorted_turns = sorted(self.turns, key=lambda t: float(t.get("start", 0.0)))
         html_blocks = []
-        for t in self.turns:
+        for t in sorted_turns:
             spk = t.get("speaker", "Mówca")
             display_spk = mapping.get(spk, spk)
-            st = t.get("start", 0.0)
-            en = t.get("end", 0.0)
+            st = float(t.get("start", 0.0))
+            en = float(t.get("end", 0.0))
             txt = t.get("text", "").strip()
 
-            s_min, s_sec = int(st // 60), int(st % 60)
-            e_min, e_sec = int(en // 60), int(en % 60)
-            offset_label = f"{s_min:02d}:{s_sec:02d} - {e_min:02d}:{e_sec:02d}"
+            time_label = format_turn_timestamp(st, en, base_dt)
+            html_blocks.append(f"<b>[{time_label}] {display_spk}:</b> {txt}<br><br>")
 
-            if base_dt is not None:
-                from datetime import timedelta
-                c_st = (base_dt + timedelta(seconds=st)).strftime("%H:%M:%S")
-                c_en = (base_dt + timedelta(seconds=en)).strftime("%H:%M:%S")
-                clock_label = f"{c_st} - {c_en}"
-            else:
-                clock_label = None
-
-            if ts_format == "clock_only" and clock_label:
-                time_label = clock_label
-            elif ts_format == "offset_only":
-                time_label = offset_label
-            elif clock_label:
-                time_label = f"{offset_label} | {clock_label}"
-            else:
-                time_label = offset_label
-
-            if self.has_diarization and spk != "Mówca":
-                html_blocks.append(f"<b>[{time_label}] {display_spk}:</b> {txt}<br><br>")
-            else:
-                html_blocks.append(f"<b>[{time_label}] {display_spk}:</b> {txt}<br><br>")
-
-        return "".join(html_blocks)
+        return "".join(html_blocks).strip()
 
     def update_speaker_mapping(self, new_mapping: Dict[str, str]):
         """

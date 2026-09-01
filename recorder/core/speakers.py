@@ -317,14 +317,16 @@ def get_speaker_samples(turns: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]
     return analyze_speakers(turns)
 
 
-def format_turns(turns: List[Dict[str, Any]], speaker_mapping: Optional[Dict[str, str]] = None) -> Tuple[str, str]:
+def format_turns(turns: List[Dict[str, Any]], speaker_mapping: Optional[Dict[str, str]] = None,
+                 session_start_time: Optional[datetime] = None) -> Tuple[str, str]:
     """
     Formatuje listę wypowiedzi do kodu HTML (dla okna aplikacji) oraz tekstu czystego (do zapisu .txt)
-    z uwzględnieniem mapowania nazw mówców.
+    z uwzględnieniem mapowania nazw mówców i preferowanego formatu timestampu.
     """
     if not turns:
         return "Brak zarejestrowanej mowy.", "Brak zarejestrowanej mowy."
 
+    from recorder.core.session import format_turn_timestamp
     mapping = speaker_mapping or {}
     final_html = ""
     final_plain = ""
@@ -337,8 +339,9 @@ def format_turns(turns: List[Dict[str, Any]], speaker_mapping: Optional[Dict[str
         text = t.get("text", "").strip()
 
         if text:
-            final_html += f"<b>[{start:.1f}s - {end:.1f}s] {display_spk}:</b> {text}<br><br>"
-            final_plain += f"[{start:.1f}s - {end:.1f}s] {display_spk}: {text}\n\n"
+            time_label = format_turn_timestamp(start, end, session_start_time)
+            final_html += f"<b>[{time_label}] {display_spk}:</b> {text}<br><br>"
+            final_plain += f"[{time_label}] {display_spk}: {text}\n\n"
 
     if not final_html:
         final_html = "Brak zarejestrowanej mowy."
@@ -347,24 +350,29 @@ def format_turns(turns: List[Dict[str, Any]], speaker_mapping: Optional[Dict[str
     return final_html, final_plain
 
 
-def parse_txt_to_turns(txt_content: str) -> List[Dict[str, Any]]:
+def parse_txt_to_turns(txt_content: str, session_start_time: Optional[datetime] = None) -> List[Dict[str, Any]]:
     """
     Parsuje treść pliku tekstowego transkrypcji na listę ustrukturyzowanych segmentów/turns.
     Obsługuje formaty:
     - [19.5s - 20.6s] SPEAKER_02: Treść wypowiedzi
     - [00:19 - 00:20] Jan: Treść wypowiedzi
+    - [15:43:54 - 15:44:01] Jan: Treść wypowiedzi
+    - [00:19 - 00:20 | 15:43:54 - 15:44:01] Jan: Treść wypowiedzi
     - SPEAKER_02: Treść wypowiedzi
     """
     turns = []
     if not txt_content:
         return turns
 
+    pattern_hybrid = re.compile(r'^\s*\[(\d+):(\d+)\s*-\s*(\d+):(\d+)\s*\|\s*(\d{1,2}):(\d{2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2}):(\d{2})\]\s*([^:]+):\s*(.*)$')
+    pattern_clock = re.compile(r'^\s*\[(\d{1,2}):(\d{2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2}):(\d{2})\]\s*([^:]+):\s*(.*)$')
     pattern_sec = re.compile(r'^\s*\[([\d\.]+)\s*s?\s*-\s*([\d\.]+)\s*s?\]\s*([^:]+):\s*(.*)$')
     pattern_min = re.compile(r'^\s*\[(\d+):(\d+)\s*-\s*(\d+):(\d+)\]\s*([^:]+):\s*(.*)$')
     pattern_simple = re.compile(r'^\s*([^:\[\n]+):\s*(.*)$')
 
     blocks = txt_content.strip().split('\n\n')
     current_time = 0.0
+    first_clock_sec = None
 
     for block in blocks:
         lines = [l.strip() for l in block.split('\n') if l.strip()]
@@ -373,6 +381,42 @@ def parse_txt_to_turns(txt_content: str) -> List[Dict[str, Any]]:
         header_line = lines[0]
         remaining_text = " ".join(lines[1:]) if len(lines) > 1 else ""
 
+        # 1. Format hybrydowy [00:19 - 00:20 | 15:43:54 - 15:44:01] Mówca: ...
+        m_hyb = pattern_hybrid.match(header_line)
+        if m_hyb:
+            start = int(m_hyb.group(1)) * 60 + int(m_hyb.group(2))
+            end = int(m_hyb.group(3)) * 60 + int(m_hyb.group(4))
+            speaker = m_hyb.group(9).strip()
+            text = (m_hyb.group(10) + " " + remaining_text).strip()
+            turns.append({"speaker": speaker, "start": float(start), "end": float(end), "text": text})
+            current_time = float(end)
+            continue
+
+        # 2. Format samej godziny realnej [15:43:54 - 15:44:01] Mówca: ...
+        m_clock = pattern_clock.match(header_line)
+        if m_clock:
+            h1, min1, s1 = int(m_clock.group(1)), int(m_clock.group(2)), int(m_clock.group(3))
+            h2, min2, s2 = int(m_clock.group(4)), int(m_clock.group(5)), int(m_clock.group(6))
+            c_start = h1 * 3600 + min1 * 60 + s1
+            c_end = h2 * 3600 + min2 * 60 + s2
+
+            if session_start_time is not None:
+                base_sec = session_start_time.hour * 3600 + session_start_time.minute * 60 + session_start_time.second
+                start = max(0.0, float(c_start - base_sec))
+                end = max(start + 0.1, float(c_end - base_sec))
+            else:
+                if first_clock_sec is None:
+                    first_clock_sec = c_start
+                start = max(0.0, float(c_start - first_clock_sec))
+                end = max(start + 0.1, float(c_end - first_clock_sec))
+
+            speaker = m_clock.group(7).strip()
+            text = (m_clock.group(8) + " " + remaining_text).strip()
+            turns.append({"speaker": speaker, "start": start, "end": end, "text": text})
+            current_time = end
+            continue
+
+        # 3. Format sekundowy [1.8s - 10.2s] Mówca: ...
         m_sec = pattern_sec.match(header_line)
         if m_sec:
             start = float(m_sec.group(1))
@@ -383,6 +427,7 @@ def parse_txt_to_turns(txt_content: str) -> List[Dict[str, Any]]:
             current_time = end
             continue
 
+        # 4. Format minutowy [00:19 - 00:20] Mówca: ...
         m_min = pattern_min.match(header_line)
         if m_min:
             start = int(m_min.group(1)) * 60 + int(m_min.group(2))
@@ -393,14 +438,16 @@ def parse_txt_to_turns(txt_content: str) -> List[Dict[str, Any]]:
             current_time = float(end)
             continue
 
+        # 5. Prosty format Mówca: Treść
         m_sim = pattern_simple.match(header_line)
-        if m_sim and len(m_sim.group(1)) < 40:
+        if m_sim and len(m_sim.group(1)) < 40 and not m_sim.group(1).startswith("["):
             speaker = m_sim.group(1).strip()
             text = (m_sim.group(2) + " " + remaining_text).strip()
             turns.append({"speaker": speaker, "start": current_time, "end": current_time + 5.0, "text": text})
             current_time += 5.0
             continue
 
+        # 6. Zwykły blok tekstu bez nagłówka
         full_text = " ".join(lines)
         turns.append({"speaker": "Mówca", "start": current_time, "end": current_time + 5.0, "text": full_text})
         current_time += 5.0
