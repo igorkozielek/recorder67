@@ -41,6 +41,79 @@ except ImportError:
     pyaudio = None
 
 
+class RealtimeAudioMixer:
+    """
+    Miesza dwa niezależne asynchroniczne strumienie audio 16kHz float32 (mikrofon + loopback)
+    w czasie rzeczywistym do wspólnego pliku WAV bez opóźnień i przesterowań.
+    """
+    def __init__(self):
+        import threading
+        self.mic_buffer = np.array([], dtype=np.float32)
+        self.sys_buffer = np.array([], dtype=np.float32)
+        self.lock = threading.Lock()
+
+    def reset(self):
+        with self.lock:
+            self.mic_buffer = np.array([], dtype=np.float32)
+            self.sys_buffer = np.array([], dtype=np.float32)
+
+    def add_mic_chunk(self, chunk: np.ndarray):
+        if chunk is None or len(chunk) == 0:
+            return
+        with self.lock:
+            self.mic_buffer = np.append(self.mic_buffer, chunk)
+
+    def add_sys_chunk(self, chunk: np.ndarray):
+        if chunk is None or len(chunk) == 0:
+            return
+        with self.lock:
+            self.sys_buffer = np.append(self.sys_buffer, chunk)
+
+    def pop_mixed_frames(self, is_hybrid: bool, run_mic: bool, run_sys: bool) -> bytes:
+        with self.lock:
+            if not is_hybrid:
+                if run_mic and len(self.mic_buffer) > 0:
+                    data = self.mic_buffer
+                    self.mic_buffer = np.array([], dtype=np.float32)
+                    int16_arr = (data * 32767.0).clip(-32768, 32767).astype(np.int16)
+                    return int16_arr.tobytes()
+                elif run_sys and len(self.sys_buffer) > 0:
+                    data = self.sys_buffer
+                    self.sys_buffer = np.array([], dtype=np.float32)
+                    int16_arr = (data * 32767.0).clip(-32768, 32767).astype(np.int16)
+                    return int16_arr.tobytes()
+                return b""
+
+            # W trybie hybrydowym: Lewy kanał = Mikrofon, Prawy kanał = Dźwięk Systemu (Stereo 2-kanałowe)
+            min_len = min(len(self.mic_buffer), len(self.sys_buffer))
+            if min_len == 0:
+                if len(self.mic_buffer) > 16000 and len(self.sys_buffer) == 0:
+                    data = self.mic_buffer
+                    self.mic_buffer = np.array([], dtype=np.float32)
+                    stereo = np.zeros((len(data), 2), dtype=np.float32)
+                    stereo[:, 0] = data
+                    return (stereo * 32767.0).clip(-32768, 32767).astype(np.int16).tobytes()
+                elif len(self.sys_buffer) > 16000 and len(self.mic_buffer) == 0:
+                    data = self.sys_buffer
+                    self.sys_buffer = np.array([], dtype=np.float32)
+                    stereo = np.zeros((len(data), 2), dtype=np.float32)
+                    stereo[:, 1] = data
+                    return (stereo * 32767.0).clip(-32768, 32767).astype(np.int16).tobytes()
+                return b""
+
+            m_part = self.mic_buffer[:min_len]
+            s_part = self.sys_buffer[:min_len]
+            self.mic_buffer = self.mic_buffer[min_len:]
+            self.sys_buffer = self.sys_buffer[min_len:]
+
+            # Zapis stereo: Kolumna 0 (Left) = Mic, Kolumna 1 (Right) = System
+            stereo = np.empty((min_len, 2), dtype=np.float32)
+            stereo[:, 0] = m_part
+            stereo[:, 1] = s_part
+            int16_arr = (stereo * 32767.0).clip(-32768, 32767).astype(np.int16)
+            return int16_arr.tobytes()
+
+
 class SmartAudioWorker(QThread):
     """
     Wątek przechwytywania dźwięku w czasie rzeczywistym z detekcją Silero VAD i buforowaniem.
@@ -82,6 +155,7 @@ class SmartAudioWorker(QThread):
         self.vad_detector_sys = SileroVADDetector(speech_threshold=sys_th, default_samplerate=16000)
         self.vad_detector = self.vad_detector_mic  # Kompatybilność wsteczna
 
+        self.audio_mixer = RealtimeAudioMixer()
         self.state = SmartRecordState.STOPPED
         self.frames = []
         self.silence_samples_count = 0
@@ -162,10 +236,12 @@ class SmartAudioWorker(QThread):
         self.pre_speech_buffer.clear()
         self.silence_in_phrase_samples = 0
         self.phrase_speech_detected = False
+        self.audio_mixer.reset()
 
         if save_wav_path:
-            # Zapisujemy strumieniowo audio mono 16kHz z zachowaniem jakości
-            self.wav_writer = StreamingWavWriter(save_wav_path, channels=1, samplerate=16000)
+            is_hybrid = (self.source_mode == RecordSourceMode.HYBRID_DUAL) and HAS_PYAUDIOWPATCH
+            wav_ch = 2 if is_hybrid else 1
+            self.wav_writer = StreamingWavWriter(save_wav_path, channels=wav_ch, samplerate=16000)
 
         self.state = SmartRecordState.RECORDING_SPEECH
         self._is_running = True
@@ -189,9 +265,12 @@ class SmartAudioWorker(QThread):
         self.sys_block_start_samples = 0
         self.continuous_silence_samples = 0
         self.session_has_speech = False
+        self.audio_mixer.reset()
 
         if new_wav_path:
-            self.wav_writer = StreamingWavWriter(new_wav_path, channels=1, samplerate=16000)
+            is_hybrid = (self.source_mode == RecordSourceMode.HYBRID_DUAL) and HAS_PYAUDIOWPATCH
+            wav_ch = 2 if is_hybrid else 1
+            self.wav_writer = StreamingWavWriter(new_wav_path, channels=wav_ch, samplerate=16000)
 
     def get_remaining_blocks(self) -> List[Tuple[int, float, float, np.ndarray, str]]:
         """Zwraca wszystkie nieprzetworzone jeszcze bloki nagrania (dla obu kanałów) po kliknięciu Stop."""
@@ -224,7 +303,7 @@ class SmartAudioWorker(QThread):
 
         return blocks
 
-    def get_remaining_block(self) -> Optional[tuple]:
+    def get_first_completed_block(self) -> Optional[Tuple[int, float, float, np.ndarray]]:
         """Kompatybilność wsteczna: zwraca pierwszy zaległy blok."""
         blocks = self.get_remaining_blocks()
         if blocks:
@@ -245,6 +324,13 @@ class SmartAudioWorker(QThread):
         self.state = SmartRecordState.STOPPED
         self._is_running = False
         if self.wav_writer:
+            run_mic = self.source_mode in (RecordSourceMode.HYBRID_DUAL, RecordSourceMode.MIC_ONLY)
+            run_sys = self.source_mode in (RecordSourceMode.HYBRID_DUAL, RecordSourceMode.SYSTEM_ONLY) and HAS_PYAUDIOWPATCH
+            is_hybrid = (self.source_mode == RecordSourceMode.HYBRID_DUAL) and run_mic and run_sys
+            rem_bytes = self.audio_mixer.pop_mixed_frames(is_hybrid, run_mic, run_sys)
+            if rem_bytes:
+                self.frames.append(rem_bytes)
+                self.wav_writer.write_frames(rem_bytes)
             self.wav_writer.close()
             self.wav_writer = None
         if self.phrase_speech_detected and self.current_phrase_chunks:
@@ -357,13 +443,9 @@ class SmartAudioWorker(QThread):
                                     else:
                                         self.sys_silence_samples += len(chunk_16k)
 
-                                # Zapis próbek do pliku WAV
+                                # Zapis próbek do miksera audio WAV
                                 if self.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:
-                                    audio_int16 = (chunk_16k * 32767).clip(-32768, 32767).astype(np.int16)
-                                    raw_b = audio_int16.tobytes()
-                                    self.frames.append(raw_b)
-                                    if self.wav_writer:
-                                        self.wav_writer.write_frames(raw_b)
+                                    self.audio_mixer.add_sys_chunk(chunk_16k.copy())
                                     self.current_sys_block_chunks.append(chunk_16k.copy())
 
                                 # Cięcie bloków VAD dla kanału systemu
@@ -473,14 +555,9 @@ class SmartAudioWorker(QThread):
                                     else:
                                         self.mic_silence_samples += len(chunk_16k)
 
-                                # Zapis do pliku WAV (jeśli tryb to tylko mikrofon)
+                                # Zapis próbek do miksera audio WAV
                                 if self.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:
-                                    audio_int16 = (chunk_16k * 32767).clip(-32768, 32767).astype(np.int16)
-                                    raw_bytes = audio_int16.tobytes()
-                                    if not run_sys:
-                                        self.frames.append(raw_bytes)
-                                        if self.wav_writer:
-                                            self.wav_writer.write_frames(raw_bytes)
+                                    self.audio_mixer.add_mic_chunk(chunk_16k.copy())
                                     self.current_mic_block_chunks.append(chunk_16k.copy())
 
                                 # Cięcie bloków VAD dla kanału mikrofonu
@@ -522,9 +599,17 @@ class SmartAudioWorker(QThread):
             except Exception as e:
                 print(f"[SmartAudioWorker] Nie udało się otworzyć mikrofonu w PyAudio: {e}")
 
-        # Pętla monitorowania poziomów i stanu ciszy
+        # Pętla monitorowania poziomów, stanu ciszy i strumieniowego zapisu zmiksowanego audio
         try:
             while self._is_running:
+                # Opróżnienie miksera i ciągły zapis zsynchronizowanego audio do pliku WAV
+                is_hybrid = (self.source_mode == RecordSourceMode.HYBRID_DUAL) and run_mic and run_sys
+                mixed_bytes = self.audio_mixer.pop_mixed_frames(is_hybrid, run_mic, run_sys)
+                if mixed_bytes and self.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:
+                    self.frames.append(mixed_bytes)
+                    if self.wav_writer:
+                        self.wav_writer.write_frames(mixed_bytes)
+
                 # Emisja poziomów VU Meter
                 m_lvl = float(self.mic_level)
                 s_lvl = float(self.sys_level)
@@ -597,7 +682,9 @@ class SmartAudioWorker(QThread):
             self.frames = []
             if os.path.exists(file_path) and os.path.getsize(file_path) > 44:
                 return True
-        saved = save_wav_file(file_path, self.frames, channels=1, samplerate=16000)
+        is_hybrid = (self.source_mode == RecordSourceMode.HYBRID_DUAL) and HAS_PYAUDIOWPATCH
+        wav_ch = 2 if is_hybrid else 1
+        saved = save_wav_file(file_path, self.frames, channels=wav_ch, samplerate=16000)
         self.frames = []
         return saved
 
