@@ -849,15 +849,16 @@ class SmartDictaphoneWindow(QMainWindow):
             pass
 
     def _refresh_recordings_list(self):
+        """Odświeża listę nagrań WAV posortowaną chronologicznie (najnowsze na samej górze)."""
         self.list_recordings.clear()
         if not os.path.exists(self.recordings_dir):
             return
 
-        files = [f for f in os.listdir(self.recordings_dir) if f.endswith(".wav")]
-        files.sort(reverse=True)
+        full_paths = [os.path.join(self.recordings_dir, f) for f in os.listdir(self.recordings_dir) if f.endswith(".wav")]
+        full_paths.sort(key=lambda p: os.path.getmtime(p), reverse=True)
 
-        for filename in files:
-            full_path = os.path.join(self.recordings_dir, filename)
+        for full_path in full_paths:
+            filename = os.path.basename(full_path)
             size_kb = os.path.getsize(full_path) / 1024
             mtime = datetime.fromtimestamp(os.path.getmtime(full_path)).strftime("%Y-%m-%d %H:%M:%S")
             
@@ -1825,15 +1826,16 @@ class SmartDictaphoneWindow(QMainWindow):
         self.lbl_cloud_status.setStyleSheet("color: #10b981; font-size: 11px; font-weight: bold;")
 
     def _refresh_transcriptions_list(self):
+        """Odświeża listę transkrypcji TXT posortowaną chronologicznie (najnowsze na samej górze)."""
         self.list_transcriptions.clear()
         if not os.path.exists(self.transcriptions_dir):
             return
 
-        files = [f for f in os.listdir(self.transcriptions_dir) if f.endswith(".txt")]
-        files.sort(reverse=True)
+        full_paths = [os.path.join(self.transcriptions_dir, f) for f in os.listdir(self.transcriptions_dir) if f.endswith(".txt")]
+        full_paths.sort(key=lambda p: os.path.getmtime(p), reverse=True)
 
-        for filename in files:
-            full_path = os.path.join(self.transcriptions_dir, filename)
+        for full_path in full_paths:
+            filename = os.path.basename(full_path)
             size_kb = os.path.getsize(full_path) / 1024
             mtime = datetime.fromtimestamp(os.path.getmtime(full_path)).strftime("%Y-%m-%d %H:%M:%S")
 
