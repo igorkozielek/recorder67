@@ -3,9 +3,9 @@
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <SchemaVersion>2.0</SchemaVersion>
     <ProjectGuid>2fbdf51b-144e-45b3-83a6-930e9b627a4d</ProjectGuid>
-    <ProjectHome>.</ProjectHome>
-    <StartupFile>main.py</StartupFile>
-    <SearchPath>..</SearchPath>
+    <ProjectHome>..</ProjectHome>
+    <StartupFile>recorder\main.py</StartupFile>
+    <SearchPath>.</SearchPath>
     <WorkingDirectory>.</WorkingDirectory>
     <OutputPath>.</OutputPath>
     <Name>recorder</Name>
@@ -13,7 +13,8 @@
     <InterpreterId>MSBuild|env|$(MSBuildProjectFullPath)</InterpreterId>
     <IsWindowsApplication>True</IsWindowsApplication>
     <UnitTestFramework>PyTest</UnitTestFramework>
-    <UnitTestRootDirectory>.</UnitTestRootDirectory>
+    <UnitTestRootDirectory>tests</UnitTestRootDirectory>
+    <TestFramework>Pytest</TestFramework>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
     <DebugSymbols>true</DebugSymbols>
@@ -24,66 +25,66 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
-    <Folder Include="audio\" />
-    <Folder Include="core\" />
-    <Folder Include="resources\" />
-    <Folder Include="ui\" />
+    <Folder Include="recorder\" />
+    <Folder Include="recorder\audio\" />
+    <Folder Include="recorder\core\" />
+    <Folder Include="recorder\resources\" />
+    <Folder Include="recorder\ui\" />
+    <Folder Include="scripts\" />
     <Folder Include="tests\" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="__init__.py" />
-    <Compile Include="config.py" />
     <Compile Include="main.py" />
-    <Compile Include="recorder.py" />
-    <Compile Include="audio\__init__.py" />
-    <Compile Include="audio\capture.py" />
-    <Compile Include="audio\converter.py" />
-    <Compile Include="audio\devices.py" />
-    <Compile Include="core\__init__.py" />
-    <Compile Include="core\cloud_sync.py" />
-    <Compile Include="core\diarizer.py" />
-    <Compile Include="core\rolling_transcriber.py" />
-    <Compile Include="core\session.py" />
-    <Compile Include="core\speakers.py" />
-    <Compile Include="core\transcriber.py" />
-    <Compile Include="core\updater.py" />
-    <Compile Include="core\vad.py" />
-    <Compile Include="ui\__init__.py" />
-    <Compile Include="ui\settings_dialog.py" />
-    <Compile Include="ui\theme.py" />
-    <Compile Include="ui\window.py" />
-    <Compile Include="ui\windows_integration.py" />
-    <Compile Include="ui\workers.py" />
-    <Compile Include="..\tests\test_live_streaming_sync.py">
-      <Link>tests\test_live_streaming_sync.py</Link>
-    </Compile>
-    <Compile Include="..\tests\test_modular_diarization.py">
-      <Link>tests\test_modular_diarization.py</Link>
-    </Compile>
-    <Compile Include="..\tests\test_preview_order.py">
-      <Link>tests\test_preview_order.py</Link>
-    </Compile>
-    <Compile Include="..\tests\test_rolling.py">
-      <Link>tests\test_rolling.py</Link>
-    </Compile>
-    <Compile Include="..\tests\test_silence_alert.py">
-      <Link>tests\test_silence_alert.py</Link>
-    </Compile>
-    <Compile Include="..\tests\test_speakers_dedup.py">
-      <Link>tests\test_speakers_dedup.py</Link>
-    </Compile>
-    <Compile Include="..\tests\test_updater.py">
-      <Link>tests\test_updater.py</Link>
-    </Compile>
+    <Compile Include="run.py" />
+    <Compile Include="recorder\__init__.py" />
+    <Compile Include="recorder\config.py" />
+    <Compile Include="recorder\main.py" />
+    <Compile Include="recorder\recorder.py" />
+    <Compile Include="recorder\audio\__init__.py" />
+    <Compile Include="recorder\audio\capture.py" />
+    <Compile Include="recorder\audio\converter.py" />
+    <Compile Include="recorder\audio\devices.py" />
+    <Compile Include="recorder\core\__init__.py" />
+    <Compile Include="recorder\core\cloud_sync.py" />
+    <Compile Include="recorder\core\diarizer.py" />
+    <Compile Include="recorder\core\rolling_transcriber.py" />
+    <Compile Include="recorder\core\session.py" />
+    <Compile Include="recorder\core\speakers.py" />
+    <Compile Include="recorder\core\transcriber.py" />
+    <Compile Include="recorder\core\updater.py" />
+    <Compile Include="recorder\core\vad.py" />
+    <Compile Include="recorder\ui\__init__.py" />
+    <Compile Include="recorder\ui\settings_dialog.py" />
+    <Compile Include="recorder\ui\theme.py" />
+    <Compile Include="recorder\ui\window.py" />
+    <Compile Include="recorder\ui\windows_integration.py" />
+    <Compile Include="recorder\ui\workers.py" />
+    <Compile Include="scripts\build_exe.py" />
+    <Compile Include="scripts\generate_icon.py" />
+    <Compile Include="tests\test_live_streaming_sync.py" />
+    <Compile Include="tests\test_modular_diarization.py" />
+    <Compile Include="tests\test_preview_order.py" />
+    <Compile Include="tests\test_rolling.py" />
+    <Compile Include="tests\test_silence_alert.py" />
+    <Compile Include="tests\test_speakers_dedup.py" />
+    <Compile Include="tests\test_updater.py" />
   </ItemGroup>
   <ItemGroup>
-    <Content Include="resources\app_icon.ico" />
-    <Content Include="resources\app_icon.png" />
-    <Content Include="user_settings.json" />
+    <Content Include=".env" Condition="Exists('.env')" />
+    <Content Include=".env.example" />
+    <Content Include=".gitignore" />
+    <Content Include="build_exe.bat" />
+    <Content Include="build_exe.ps1" />
+    <Content Include="PROJECT_GOAL.md" />
+    <Content Include="README.md" />
+    <Content Include="requirements.txt" />
     <Content Include="pytest.ini" />
+    <Content Include="recorder\resources\app_icon.ico" />
+    <Content Include="recorder\resources\app_icon.png" />
+    <Content Include="user_settings.json" />
   </ItemGroup>
   <ItemGroup>
-    <Interpreter Include="..\env\">
+    <Interpreter Include="env\">
       <Id>env</Id>
       <Version>3.13</Version>
       <Description>env (Python 3.13 (64-bit))</Description>

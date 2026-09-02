@@ -24,6 +24,9 @@ __pycache__/
 [Rr]elease/
 x64/
 x86/
+TestResults/
+[Tt]est[Rr]esults/
+.pytest_cache/
 
 # Audio Recordings & Output Files (Pliki nagrań audio)
 recordings/
