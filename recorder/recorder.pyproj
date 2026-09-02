@@ -13,7 +13,7 @@
     <InterpreterId>MSBuild|env|$(MSBuildProjectFullPath)</InterpreterId>
     <IsWindowsApplication>True</IsWindowsApplication>
     <UnitTestFramework>PyTest</UnitTestFramework>
-    <UnitTestRootDirectory>../tests</UnitTestRootDirectory>
+    <UnitTestRootDirectory>.</UnitTestRootDirectory>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
     <DebugSymbols>true</DebugSymbols>
@@ -28,6 +28,7 @@
     <Folder Include="core\" />
     <Folder Include="resources\" />
     <Folder Include="ui\" />
+    <Folder Include="tests\" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="__init__.py" />
@@ -53,11 +54,33 @@
     <Compile Include="ui\window.py" />
     <Compile Include="ui\windows_integration.py" />
     <Compile Include="ui\workers.py" />
+    <Compile Include="..\tests\test_live_streaming_sync.py">
+      <Link>tests\test_live_streaming_sync.py</Link>
+    </Compile>
+    <Compile Include="..\tests\test_modular_diarization.py">
+      <Link>tests\test_modular_diarization.py</Link>
+    </Compile>
+    <Compile Include="..\tests\test_preview_order.py">
+      <Link>tests\test_preview_order.py</Link>
+    </Compile>
+    <Compile Include="..\tests\test_rolling.py">
+      <Link>tests\test_rolling.py</Link>
+    </Compile>
+    <Compile Include="..\tests\test_silence_alert.py">
+      <Link>tests\test_silence_alert.py</Link>
+    </Compile>
+    <Compile Include="..\tests\test_speakers_dedup.py">
+      <Link>tests\test_speakers_dedup.py</Link>
+    </Compile>
+    <Compile Include="..\tests\test_updater.py">
+      <Link>tests\test_updater.py</Link>
+    </Compile>
   </ItemGroup>
   <ItemGroup>
     <Content Include="resources\app_icon.ico" />
     <Content Include="resources\app_icon.png" />
     <Content Include="user_settings.json" />
+    <Content Include="pytest.ini" />
   </ItemGroup>
   <ItemGroup>
     <Interpreter Include="..\env\">
