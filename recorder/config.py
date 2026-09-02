@@ -160,6 +160,7 @@ DEFAULT_SESSION_SPLIT_MINUTES = float(get_env_variable("SESSION_SPLIT_MINUTES", 
 SESSION_SPLIT_SILENCE_SEC = DEFAULT_SESSION_SPLIT_MINUTES * 60.0  # Domyślnie 15 min ciągłej ciszy
 MAX_SESSION_DURATION_SEC = float(get_env_variable("MAX_SESSION_HOURS", "2.0")) * 3600.0  # Max 2h na sesję
 LIVE_STREAMING_ENABLED = get_env_variable("LIVE_STREAMING_ENABLED", "true").lower() in ("1", "true", "yes")
+DEFAULT_SILENCE_ALERT_MINUTES = float(get_env_variable("SILENCE_ALERT_MINUTES", "5.0"))
 
 # Parametry szybkiej transmisji bloków mowy na żywo do CRM (zamiast czekania 2 minut)
 LIVE_BLOCK_MIN_SEC = float(get_env_variable("LIVE_BLOCK_MIN_SEC", "15.0"))          # Szybki podgląd po min. 15s mowy
@@ -197,6 +198,7 @@ def load_user_settings() -> dict:
         "target_app_filter": get_env_variable("TARGET_APP_FILTER", ""),
         "auto_pause_sec": float(get_env_variable("AUTO_PAUSE_SEC", "5.0")),
         "session_split_silence_sec": float(get_env_variable("SESSION_SPLIT_SILENCE_SEC", "900.0")),  # 15 min
+        "silence_alert_minutes": float(get_env_variable("SILENCE_ALERT_MINUTES", "5.0")),  # 5 min ostrzeżenie strażnika ciszy
         "timestamp_format": get_env_variable("TIMESTAMP_FORMAT", "offset_only"),
         "preview_order": get_env_variable("PREVIEW_ORDER", "newest_first"),
         "auto_scroll_chronological": get_env_variable("AUTO_SCROLL_CHRONOLOGICAL", "true").lower() in ("1", "true", "yes"),
@@ -303,6 +305,26 @@ def get_session_split_silence_sec() -> float:
         return float(st.get("session_split_silence_sec", 900.0))
     except Exception:
         return 900.0
+
+
+def get_silence_alert_minutes() -> float:
+    """Zwraca czas ciszy wymagany do wyświetlenia ostrzeżenia o braku głosu (minuty). 0.0 oznacza wyłączone."""
+    st = load_user_settings()
+    try:
+        return float(st.get("silence_alert_minutes", DEFAULT_SILENCE_ALERT_MINUTES))
+    except Exception:
+        return DEFAULT_SILENCE_ALERT_MINUTES
+
+
+def get_silence_alert_seconds() -> float:
+    """Zwraca czas ciszy wymagany do wyświetlenia ostrzeżenia o braku głosu (sekundy). 0.0 oznacza wyłączone."""
+    mins = get_silence_alert_minutes()
+    return max(0.0, mins * 60.0)
+
+
+def is_silence_alert_enabled() -> bool:
+    """Sprawdza, czy funkcja strażnika ciszy jest aktywna."""
+    return get_silence_alert_seconds() > 0.0
 
 
 def get_preview_order() -> str:

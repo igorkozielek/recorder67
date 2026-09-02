@@ -4,14 +4,14 @@ import uuid
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
-from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QFont, QDesktopServices
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QFont, QDesktopServices, QIcon, QPixmap, QPainter, QColor
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QComboBox, QProgressBar, QListWidget,
     QListWidgetItem, QGroupBox, QMessageBox, QFrame,
     QSlider, QLineEdit, QTextEdit, QScrollArea, QFileDialog, QCheckBox,
-    QSizePolicy
+    QSizePolicy, QDialog, QSystemTrayIcon, QMenu
 )
 
 from recorder.config import (
@@ -32,7 +32,8 @@ from recorder.config import (
     get_vad_speech_threshold,
     get_system_vad_speech_threshold,
     get_record_source_mode,
-    get_loopback_device_index
+    get_loopback_device_index,
+    get_silence_alert_seconds
 )
 from recorder.audio.devices import (
     get_working_input_devices,
@@ -66,6 +67,225 @@ from recorder.core.session import (
 from recorder.core.cloud_sync import CloudSyncManager
 
 
+class SilenceToastBanner(QWidget):
+    """
+    Dyskretny, kompaktowy baner powiadomienia (Toast) w prawym dolnym rogu ekranu.
+    Zaprojektowany w stylu Windows 11 Fluent: odtwarza dźwięk systemowy, nie kradnie fokusu z aktywnego okna
+    i w przypadku braku reakcji przekazuje powiadomienie do Centrum Akcji Windows.
+    """
+    confirmed = Signal()
+    inspect_requested = Signal()
+    dismissed = Signal()
+    timed_out = Signal()
+
+    def __init__(self, parent=None, silence_sec: float = 600.0, source_mode: str = RecordSourceMode.HYBRID_DUAL, timeout_sec: int = 45):
+        super().__init__(None)
+        self.silence_sec = silence_sec
+        self.source_mode = source_mode
+        self.remaining_sec = timeout_sec
+
+        # Odtworzenie natywnego dźwięku systemowego Windows (chime powiadomienia)
+        try:
+            import winsound
+            winsound.MessageBeep(winsound.MB_ICONASTERISK)
+        except Exception:
+            pass
+
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint |
+            Qt.WindowType.Tool
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+
+        self.setFixedWidth(380)
+
+        card = QFrame(self)
+        card.setObjectName("ToastCard")
+        card.setStyleSheet("""
+            #ToastCard {
+                background-color: #1e1e2f;
+                border: 1px solid #3b82f6;
+                border-radius: 10px;
+            }
+        """)
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(card)
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(8)
+
+        # 1. Nagłówek aplikacji (Ikona + Nazwa + Zamknij)
+        app_header = QHBoxLayout()
+        app_header.setSpacing(6)
+        from recorder.ui.windows_integration import get_app_icon_path
+        png_icon = get_app_icon_path("png")
+        if png_icon and os.path.exists(png_icon):
+            lbl_app_logo = QLabel()
+            pix = QPixmap(png_icon).scaled(15, 15, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            lbl_app_logo.setPixmap(pix)
+            app_header.addWidget(lbl_app_logo)
+        lbl_app_name = QLabel("Inteligentny Dyktafon AI")
+        lbl_app_name.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        lbl_app_name.setStyleSheet("color: #8d99ae;")
+        app_header.addWidget(lbl_app_name, stretch=1)
+
+        btn_close = QPushButton("✕")
+        btn_close.setFixedSize(22, 22)
+        btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_close.setToolTip("Zamknij powiadomienie")
+        btn_close.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #94a3b8;
+                border: none;
+                padding: 0px;
+                margin: 0px;
+                font-size: 13px;
+                font-weight: bold;
+                border-radius: 11px;
+            }
+            QPushButton:hover {
+                color: #ffffff;
+                background-color: #ef4444;
+            }
+        """)
+        btn_close.clicked.connect(self._on_close_clicked)
+        app_header.addWidget(btn_close)
+        layout.addLayout(app_header)
+
+        # 2. Treść monitu (Ikona ostrzeżenia + Tytuł i krótki opis)
+        content_row = QHBoxLayout()
+        content_row.setSpacing(10)
+
+        lbl_icon = QLabel("⚠️")
+        lbl_icon.setFont(QFont("Segoe UI Emoji", 18))
+        lbl_icon.setAlignment(Qt.AlignmentFlag.AlignTop)
+        content_row.addWidget(lbl_icon)
+
+        mins = int(silence_sec // 60)
+        mins_str = f"{mins} min" if mins > 0 else f"{int(silence_sec)} s"
+
+        text_layout = QVBoxLayout()
+        text_layout.setSpacing(2)
+
+        lbl_title = QLabel(f"Brak dźwięku od {mins_str}")
+        lbl_title.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        lbl_title.setStyleSheet("color: #f59e0b;")
+        text_layout.addWidget(lbl_title)
+
+        if source_mode == RecordSourceMode.SYSTEM_ONLY:
+            desc_text = "Brak zarejestrowanego dźwięku z komputera."
+        elif source_mode == RecordSourceMode.MIC_ONLY:
+            desc_text = "Brak zarejestrowanej mowy z mikrofonu."
+        else:
+            desc_text = "Brak mowy w mikrofonie oraz dźwięku z systemu."
+
+        lbl_desc = QLabel(desc_text)
+        lbl_desc.setWordWrap(True)
+        lbl_desc.setFont(QFont("Segoe UI", 8))
+        lbl_desc.setStyleSheet("color: #cbd5e1;")
+        text_layout.addWidget(lbl_desc)
+
+        content_row.addLayout(text_layout, stretch=1)
+        layout.addLayout(content_row)
+
+        # 3. Pasek akcji (Licznik czasu + Dyskretne przyciski)
+        action_row = QHBoxLayout()
+        action_row.setSpacing(8)
+
+        self.lbl_timer = QLabel(f"Zniknie za {self.remaining_sec}s")
+        self.lbl_timer.setFont(QFont("Segoe UI", 8))
+        self.lbl_timer.setStyleSheet("color: #64748b;")
+        action_row.addWidget(self.lbl_timer, stretch=1)
+
+        self.btn_ok = QPushButton("Wszystko gra")
+        self.btn_ok.setFont(QFont("Segoe UI", 8, QFont.Weight.Medium))
+        self.btn_ok.setFixedHeight(26)
+        self.btn_ok.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_ok.setStyleSheet("""
+            QPushButton {
+                background-color: #252836;
+                color: #e2e8f0;
+                border: 1px solid #3a3f55;
+                border-radius: 4px;
+                padding: 3px 10px;
+            }
+            QPushButton:hover {
+                background-color: #353a4e;
+                color: #ffffff;
+            }
+        """)
+        self.btn_ok.clicked.connect(self._on_ok_clicked)
+        action_row.addWidget(self.btn_ok)
+
+        self.btn_err = QPushButton("Sprawdź dźwięk")
+        self.btn_err.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        self.btn_err.setFixedHeight(26)
+        self.btn_err.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_err.setStyleSheet("""
+            QPushButton {
+                background-color: #4361ee;
+                color: #ffffff;
+                border: none;
+                border-radius: 4px;
+                padding: 3px 10px;
+            }
+            QPushButton:hover {
+                background-color: #3a0ca3;
+            }
+        """)
+        self.btn_err.clicked.connect(self._on_err_clicked)
+        action_row.addWidget(self.btn_err)
+
+        layout.addLayout(action_row)
+
+        self._reposition()
+
+        self.auto_timer = QTimer(self)
+        self.auto_timer.setInterval(1000)
+        self.auto_timer.timeout.connect(self._on_tick)
+        self.auto_timer.start()
+
+    def _reposition(self):
+        screen = QApplication.primaryScreen()
+        if screen:
+            geom = screen.availableGeometry()
+            self.adjustSize()
+            w = self.width()
+            h = self.height()
+            x = geom.right() - w - 24
+            y = geom.bottom() - h - 24
+            self.move(x, y)
+
+    def _on_tick(self):
+        self.remaining_sec -= 1
+        if self.remaining_sec <= 0:
+            self.auto_timer.stop()
+            self.timed_out.emit()
+            self.close()
+        else:
+            self.lbl_timer.setText(f"Zniknie za {self.remaining_sec}s")
+
+    def _on_ok_clicked(self):
+        self.auto_timer.stop()
+        self.confirmed.emit()
+        self.close()
+
+    def _on_err_clicked(self):
+        self.auto_timer.stop()
+        self.inspect_requested.emit()
+        self.close()
+
+    def _on_close_clicked(self):
+        self.auto_timer.stop()
+        self.dismissed.emit()
+        self.close()
+
 
 class SmartDictaphoneWindow(QMainWindow):
     """
@@ -74,6 +294,10 @@ class SmartDictaphoneWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Inteligentny Dyktafon AI - Wykrywanie Mowy (VAD)")
+        from recorder.ui.windows_integration import get_app_icon_path
+        ico = get_app_icon_path("ico")
+        if ico and os.path.exists(ico):
+            self.setWindowIcon(QIcon(ico))
         self.resize(780, 950)
         self.setMinimumSize(620, 720)
 
@@ -102,6 +326,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self._active_threads = []
         self._finalize_pending = False       # Guard: blokuje Start gdy trwa finalizacja poprzedniej sesji
         self.session_start_time = None       # Realna godzina startu bieżącego nagrania (datetime)
+        self._active_silence_dialog = None
 
         # Moduł Cloud Sync (Supabase / EMANAGER.PRO / Webhook)
         self.cloud_sync = CloudSyncManager()
@@ -118,6 +343,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.worker.vad_info_signal.connect(self._update_vad_info)
         self.worker.state_changed_signal.connect(self._on_worker_state_changed)
         self.worker.session_split_signal.connect(self._on_session_split_triggered)
+        self.worker.silence_alert_signal.connect(self._on_silence_alert)
         self.worker.error_signal.connect(self._handle_audio_error)
 
         self._init_ui()
@@ -125,6 +351,10 @@ class SmartDictaphoneWindow(QMainWindow):
         self._refresh_audio_devices()
         self._refresh_recordings_list()
         self._refresh_transcriptions_list()
+
+        self._active_silence_toast = None
+        self._active_silence_dialog = None
+        self._setup_tray_icon()
 
         # Uruchomienie przetwarzania zaległej kolejki offline
         self.cloud_sync.process_offline_queue_async()
@@ -247,6 +477,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.lbl_app_input.setFont(QFont("Segoe UI", 9))
         self.lbl_app_input.setStyleSheet("min-width: 120px;")
         self.combo_target_apps = QComboBox()
+        self.combo_target_apps.currentIndexChanged.connect(self._on_target_app_changed)
         self.btn_refresh_apps = QPushButton("🔄")
         self.btn_refresh_apps.setFixedWidth(40)
         self.btn_refresh_apps.setToolTip("Odśwież tylko listę aktywnych programów z dźwiękiem (np. Discord, Firefox, Chrome)")
@@ -359,8 +590,28 @@ class SmartDictaphoneWindow(QMainWindow):
                 border-radius: 3px;
             }
         """)
+        self.btn_mute_mic = QPushButton("🔊")
+        self.btn_mute_mic.setFixedSize(36, 22)
+        self.btn_mute_mic.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_mute_mic.setToolTip("Wycisz mikrofon")
+        self.btn_mute_mic.setStyleSheet("""
+            QPushButton {
+                background-color: #2b2d42;
+                color: #edf2f4;
+                border: 1px solid #4a4e69;
+                border-radius: 4px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #3d405b;
+                border-color: #4cc9f0;
+            }
+        """)
+        self.btn_mute_mic.clicked.connect(self._toggle_mic_mute)
+
         mic_vu_row.addWidget(self.lbl_vu_mic_title)
         mic_vu_row.addWidget(self.progress_vu_mic, stretch=1)
+        mic_vu_row.addWidget(self.btn_mute_mic)
         vu_grid.addLayout(mic_vu_row)
 
         sys_vu_row = QHBoxLayout()
@@ -383,8 +634,28 @@ class SmartDictaphoneWindow(QMainWindow):
                 border-radius: 3px;
             }
         """)
+        self.btn_mute_sys = QPushButton("🔊")
+        self.btn_mute_sys.setFixedSize(36, 22)
+        self.btn_mute_sys.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_mute_sys.setToolTip("Wycisz dźwięk systemu")
+        self.btn_mute_sys.setStyleSheet("""
+            QPushButton {
+                background-color: #2b2d42;
+                color: #edf2f4;
+                border: 1px solid #4a4e69;
+                border-radius: 4px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #3d405b;
+                border-color: #a370f7;
+            }
+        """)
+        self.btn_mute_sys.clicked.connect(self._toggle_sys_mute)
+
         sys_vu_row.addWidget(self.lbl_vu_sys_title)
         sys_vu_row.addWidget(self.progress_vu_sys, stretch=1)
+        sys_vu_row.addWidget(self.btn_mute_sys)
         vu_grid.addLayout(sys_vu_row)
 
         self.progress_vu = self.progress_vu_mic  # Kompatybilność
@@ -670,6 +941,7 @@ class SmartDictaphoneWindow(QMainWindow):
             self.slider_silence.setValue(new_pause)
             if hasattr(self, "worker"):
                 self.worker.set_auto_pause_sec(float(new_pause))
+                self.worker.set_silence_alert_seconds(get_silence_alert_seconds())
 
             # 4. Natychmiastowe odświeżenie widoku podglądu transkrypcji (kolejność / format)
             self._refresh_current_transcript_view()
@@ -837,6 +1109,7 @@ class SmartDictaphoneWindow(QMainWindow):
     def _refresh_target_apps(self):
         """Odświeża wyłącznie listę aktywnych programów z dźwiękiem (np. Discord, Firefox, Chrome)."""
         current_exe = self.combo_target_apps.currentData()
+        self.combo_target_apps.blockSignals(True)
         self.combo_target_apps.clear()
         self.combo_target_apps.addItem("Wszystkie programy (cały mikser)", userData="")
         try:
@@ -851,6 +1124,17 @@ class SmartDictaphoneWindow(QMainWindow):
                 self.combo_target_apps.setCurrentIndex(match_idx)
         except Exception:
             pass
+        finally:
+            self.combo_target_apps.blockSignals(False)
+
+    def _on_target_app_changed(self):
+        """Dynamicznie aktualizuje filtr wybranej aplikacji audio w locie."""
+        new_filter = self.combo_target_apps.currentData() or ""
+        if hasattr(self, "worker") and self.worker is not None and self.worker.state != SmartRecordState.STOPPED:
+            self.worker.update_target_app_filter(new_filter)
+            app_text = self.combo_target_apps.currentText()
+            self.lbl_cloud_status.setText(f"🎯 Przełączono nasłuch w locie: {app_text}")
+            self.lbl_cloud_status.setStyleSheet("color: #a370f7; font-size: 11px; font-weight: bold;")
 
     def _refresh_audio_devices(self):
         """Pełne odświeżenie wszystkich źródeł dźwięku."""
@@ -862,9 +1146,11 @@ class SmartDictaphoneWindow(QMainWindow):
     def _on_source_mode_changed(self):
         """Dopasowuje dostępność kontrolek i wskaźników VU do wybranego trybu źródła."""
         mode = self.combo_source_mode.currentData() or RecordSourceMode.HYBRID_DUAL
+        is_recording = (hasattr(self, "worker") and self.worker is not None and self.worker.state != SmartRecordState.STOPPED)
+
         if mode == RecordSourceMode.MIC_ONLY:
-            self.combo_devices.setEnabled(True)
-            self.btn_refresh_dev.setEnabled(True)
+            self.combo_devices.setEnabled(not is_recording)
+            self.btn_refresh_dev.setEnabled(not is_recording)
             self.combo_loopback_devices.setEnabled(False)
             self.btn_refresh_loop.setEnabled(False)
             self.combo_target_apps.setEnabled(False)
@@ -874,13 +1160,15 @@ class SmartDictaphoneWindow(QMainWindow):
             self.lbl_app_input.setStyleSheet("color: #8d99ae; min-width: 120px;")
             self.lbl_vu_mic_title.setVisible(True)
             self.progress_vu_mic.setVisible(True)
+            self.btn_mute_mic.setVisible(True)
             self.lbl_vu_sys_title.setVisible(False)
             self.progress_vu_sys.setVisible(False)
+            self.btn_mute_sys.setVisible(False)
         elif mode == RecordSourceMode.SYSTEM_ONLY:
             self.combo_devices.setEnabled(False)
             self.btn_refresh_dev.setEnabled(False)
-            self.combo_loopback_devices.setEnabled(True)
-            self.btn_refresh_loop.setEnabled(True)
+            self.combo_loopback_devices.setEnabled(not is_recording)
+            self.btn_refresh_loop.setEnabled(not is_recording)
             self.combo_target_apps.setEnabled(True)
             self.btn_refresh_apps.setEnabled(True)
             self.lbl_mic_input.setStyleSheet("color: #8d99ae; min-width: 120px;")
@@ -888,13 +1176,15 @@ class SmartDictaphoneWindow(QMainWindow):
             self.lbl_app_input.setStyleSheet("color: #a370f7; min-width: 120px; font-weight: bold;")
             self.lbl_vu_mic_title.setVisible(False)
             self.progress_vu_mic.setVisible(False)
+            self.btn_mute_mic.setVisible(False)
             self.lbl_vu_sys_title.setVisible(True)
             self.progress_vu_sys.setVisible(True)
+            self.btn_mute_sys.setVisible(True)
         else:  # HYBRID_DUAL
-            self.combo_devices.setEnabled(True)
-            self.btn_refresh_dev.setEnabled(True)
-            self.combo_loopback_devices.setEnabled(True)
-            self.btn_refresh_loop.setEnabled(True)
+            self.combo_devices.setEnabled(not is_recording)
+            self.btn_refresh_dev.setEnabled(not is_recording)
+            self.combo_loopback_devices.setEnabled(not is_recording)
+            self.btn_refresh_loop.setEnabled(not is_recording)
             self.combo_target_apps.setEnabled(True)
             self.btn_refresh_apps.setEnabled(True)
             self.lbl_mic_input.setStyleSheet("color: #4cc9f0; min-width: 120px; font-weight: bold;")
@@ -902,14 +1192,124 @@ class SmartDictaphoneWindow(QMainWindow):
             self.lbl_app_input.setStyleSheet("color: #a370f7; min-width: 120px; font-weight: bold;")
             self.lbl_vu_mic_title.setVisible(True)
             self.progress_vu_mic.setVisible(True)
+            self.btn_mute_mic.setVisible(True)
             self.lbl_vu_sys_title.setVisible(True)
             self.progress_vu_sys.setVisible(True)
+            self.btn_mute_sys.setVisible(True)
+
+        if is_recording:
+            self.combo_source_mode.setEnabled(False)
+            self.combo_devices.setToolTip("Fizyczny mikrofon można zmienić przed lub po zakończeniu nagrania.")
+            self.combo_loopback_devices.setToolTip("Fizyczne urządzenie wyjściowe można zmienić przed lub po zakończeniu nagrania.")
+            self.combo_target_apps.setToolTip("Aplikację audio możesz w dowolnym momencie przełączyć w locie bez zatrzymywania nagrania!")
+        else:
+            self.combo_devices.setToolTip("")
+            self.combo_loopback_devices.setToolTip("")
+            self.combo_target_apps.setToolTip("Wybierz aplikację, z której dźwięk ma być rejestrowany.")
+
+    def _toggle_mic_mute(self):
+        """Wycisza lub przywraca nasłuch z mikrofonu w locie."""
+        new_state = not getattr(self, "_mic_is_muted", False)
+        self._mic_is_muted = new_state
+        if new_state:
+            self.btn_mute_mic.setText("🔇")
+            self.btn_mute_mic.setToolTip("Włącz mikrofon")
+            self.btn_mute_mic.setStyleSheet("""
+                QPushButton {
+                    background-color: #ef4444;
+                    color: #ffffff;
+                    border: 1px solid #dc2626;
+                    border-radius: 4px;
+                    font-size: 11px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #dc2626;
+                }
+            """)
+            self.lbl_vu_mic_title.setText("🎙️ Mikrofon (Wyciszony):")
+            self.progress_vu_mic.setValue(0)
+            if hasattr(self, "worker") and self.worker is not None:
+                self.worker.set_mic_muted(True)
+            self.lbl_cloud_status.setText("🔇 Wyciszono mikrofon.")
+            self.lbl_cloud_status.setStyleSheet("color: #ef4444; font-size: 11px; font-weight: bold;")
+        else:
+            self.btn_mute_mic.setText("🔊")
+            self.btn_mute_mic.setToolTip("Wycisz mikrofon")
+            self.btn_mute_mic.setStyleSheet("""
+                QPushButton {
+                    background-color: #2b2d42;
+                    color: #edf2f4;
+                    border: 1px solid #4a4e69;
+                    border-radius: 4px;
+                    font-size: 11px;
+                }
+                QPushButton:hover {
+                    background-color: #3d405b;
+                    border-color: #4cc9f0;
+                }
+            """)
+            self.lbl_vu_mic_title.setText("🎙️ Mikrofon:")
+            if hasattr(self, "worker") and self.worker is not None:
+                self.worker.set_mic_muted(False)
+            self.lbl_cloud_status.setText("🎙️ Włączono mikrofon.")
+            self.lbl_cloud_status.setStyleSheet("color: #4cc9f0; font-size: 11px; font-weight: bold;")
+
+    def _toggle_sys_mute(self):
+        """Wycisza lub przywraca nasłuch dźwięku systemu w locie."""
+        new_state = not getattr(self, "_sys_is_muted", False)
+        self._sys_is_muted = new_state
+        if new_state:
+            self.btn_mute_sys.setText("🔇")
+            self.btn_mute_sys.setToolTip("Włącz dźwięk systemu")
+            self.btn_mute_sys.setStyleSheet("""
+                QPushButton {
+                    background-color: #ef4444;
+                    color: #ffffff;
+                    border: 1px solid #dc2626;
+                    border-radius: 4px;
+                    font-size: 11px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #dc2626;
+                }
+            """)
+            self.lbl_vu_sys_title.setText("🎧 Dźwięk Systemu (Wyciszony):")
+            self.progress_vu_sys.setValue(0)
+            if hasattr(self, "worker") and self.worker is not None:
+                self.worker.set_sys_muted(True)
+            self.lbl_cloud_status.setText("🔇 Wyciszono dźwięk systemu.")
+            self.lbl_cloud_status.setStyleSheet("color: #ef4444; font-size: 11px; font-weight: bold;")
+        else:
+            self.btn_mute_sys.setText("🔊")
+            self.btn_mute_sys.setToolTip("Wycisz dźwięk systemu")
+            self.btn_mute_sys.setStyleSheet("""
+                QPushButton {
+                    background-color: #2b2d42;
+                    color: #edf2f4;
+                    border: 1px solid #4a4e69;
+                    border-radius: 4px;
+                    font-size: 11px;
+                }
+                QPushButton:hover {
+                    background-color: #3d405b;
+                    border-color: #a370f7;
+                }
+            """)
+            self.lbl_vu_sys_title.setText("🎧 Dźwięk Systemu:")
+            if hasattr(self, "worker") and self.worker is not None:
+                self.worker.set_sys_muted(False)
+            self.lbl_cloud_status.setText("🎧 Włączono dźwięk systemu.")
+            self.lbl_cloud_status.setStyleSheet("color: #a370f7; font-size: 11px; font-weight: bold;")
 
     def _update_dual_audio_level(self, mic_lvl: float, sys_lvl: float):
         """Aktualizacja podwójnego wskaźnika poziomu głośności VU meter w UI."""
         try:
-            self.progress_vu_mic.setValue(int(max(0, min(100, mic_lvl))))
-            self.progress_vu_sys.setValue(int(max(0, min(100, sys_lvl))))
+            m_val = 0 if getattr(self, "_mic_is_muted", False) else int(max(0, min(100, mic_lvl)))
+            s_val = 0 if getattr(self, "_sys_is_muted", False) else int(max(0, min(100, sys_lvl)))
+            self.progress_vu_mic.setValue(m_val)
+            self.progress_vu_sys.setValue(s_val)
         except Exception:
             pass
 
@@ -1051,7 +1451,9 @@ class SmartDictaphoneWindow(QMainWindow):
             loopback_device_index=selected_loopback,
             source_mode=selected_mode,
             target_app_filter=selected_target_app,
-            save_wav_path=self.current_live_wav_path
+            save_wav_path=self.current_live_wav_path,
+            mic_muted=getattr(self, "_mic_is_muted", False),
+            sys_muted=getattr(self, "_sys_is_muted", False)
         )
         self.timer.start()
 
@@ -1069,8 +1471,11 @@ class SmartDictaphoneWindow(QMainWindow):
         self.combo_devices.setEnabled(False)
         self.combo_loopback_devices.setEnabled(False)
         if hasattr(self, "combo_target_apps"):
-            self.combo_target_apps.setEnabled(False)
-            self.btn_refresh_apps.setEnabled(False)
+            mode = self.combo_source_mode.currentData() or RecordSourceMode.HYBRID_DUAL
+            allow_apps = mode in (RecordSourceMode.SYSTEM_ONLY, RecordSourceMode.HYBRID_DUAL)
+            self.combo_target_apps.setEnabled(allow_apps)
+            self.btn_refresh_apps.setEnabled(allow_apps)
+            self.combo_target_apps.setToolTip("Aplikację audio możesz w dowolnym momencie przełączyć w locie bez zatrzymywania nagrania!")
         self.btn_refresh_dev.setEnabled(False)
         self.btn_refresh_loop.setEnabled(False)
         self.combo_models.setEnabled(False)
@@ -1078,7 +1483,8 @@ class SmartDictaphoneWindow(QMainWindow):
         self.check_enable_diarization.setEnabled(False)
         self.combo_speakers.setEnabled(False)
         self.input_token.setEnabled(False)
-        self.slider_silence.setEnabled(False)
+        self.slider_silence.setEnabled(True)
+        self.slider_silence.setToolTip("Możesz w dowolnym momencie regulować próg braku mowy w trakcie nagrywania!")
 
     def _on_rolling_block_processed(self, block_idx, proc_sec, tot_sec, all_turns, full_plain, full_html):
         """Odebranie przetworzonego w tle bloku mowy z pełnymi word-level timestampami i synchronizacja na żywo."""
@@ -1166,6 +1572,11 @@ class SmartDictaphoneWindow(QMainWindow):
         self.combo_speakers.setEnabled(is_diar)
         self.input_token.setEnabled(is_diar)
         self.slider_silence.setEnabled(True)
+
+        if getattr(self, "_mic_is_muted", False):
+            self._toggle_mic_mute()
+        if getattr(self, "_sys_is_muted", False):
+            self._toggle_sys_mute()
 
         if saved:
             self._refresh_recordings_list()
@@ -2263,26 +2674,31 @@ class SmartDictaphoneWindow(QMainWindow):
             self.lbl_status_badge.setObjectName("StatusStopped")
             self.btn_pause.setText("⏸ Wstrzymaj Ręcznie")
             self.btn_pause.setObjectName("BtnPause")
+            self._update_tray_tooltip("Gotowy")
         elif state == SmartRecordState.RECORDING_SPEECH:
             self.lbl_status_badge.setText("🟢 NAGRYWANIE (WYKRYTO MOWĘ)")
             self.lbl_status_badge.setObjectName("StatusSpeech")
             self.btn_pause.setText("⏸ Wstrzymaj Ręcznie")
             self.btn_pause.setObjectName("BtnPause")
+            self._update_tray_tooltip("Nagrywanie trwa")
         elif state == SmartRecordState.RECORDING_SILENCE_COUNTDOWN:
             self.lbl_status_badge.setText("⏳ ODLICZANIE BRAKU MOWY (NAGRYWANIE)")
             self.lbl_status_badge.setObjectName("StatusCountdown")
             self.btn_pause.setText("⏸ Wstrzymaj Ręcznie")
             self.btn_pause.setObjectName("BtnPause")
+            self._update_tray_tooltip("Nagrywanie trwa")
         elif state == SmartRecordState.AUTO_PAUSED:
             self.lbl_status_badge.setText(f"🟡 AUTOMATYCZNIE WSTRZYMANO (BRAK MOWY > {thresh_val}s)")
             self.lbl_status_badge.setObjectName("StatusAutoPaused")
             self.btn_pause.setText("⏸ Wstrzymaj Ręcznie")
             self.btn_pause.setObjectName("BtnPause")
+            self._update_tray_tooltip("Wstrzymano (cisza)")
         elif state == SmartRecordState.MANUAL_PAUSED:
             self.lbl_status_badge.setText("⏸ WSTRZYMANO RĘCZNIE")
             self.lbl_status_badge.setObjectName("StatusManualPaused")
             self.btn_pause.setText("▶ Wznów Nagrywanie")
             self.btn_pause.setObjectName("BtnResume")
+            self._update_tray_tooltip("Wstrzymano ręcznie")
             t_min, t_sec = int(self.recorded_seconds // 60), int(self.recorded_seconds % 60)
             proc_sec = getattr(self.rolling_worker, "total_processed_seconds", 0.0) if getattr(self, "rolling_worker", None) else 0.0
             if proc_sec > 0:
@@ -2299,6 +2715,208 @@ class SmartDictaphoneWindow(QMainWindow):
         self.btn_pause.style().unpolish(self.btn_pause)
         self.btn_pause.style().polish(self.btn_pause)
         self.btn_pause.update()
+
+    def _setup_tray_icon(self):
+        """Inicjalizuje ikonę zasobnika systemowego Windows dla dyskretnych powiadomień."""
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray_icon = None
+            return
+
+        try:
+            self.tray_icon = QSystemTrayIcon(self)
+            from recorder.ui.windows_integration import get_app_icon_path
+            ico_path = get_app_icon_path("ico")
+            if ico_path and os.path.exists(ico_path):
+                icon = QIcon(ico_path)
+            else:
+                icon = self.windowIcon()
+            if icon.isNull():
+                pix = QPixmap(32, 32)
+                pix.fill(Qt.GlobalColor.transparent)
+                p = QPainter(pix)
+                p.setRenderHint(QPainter.RenderHint.Antialiasing)
+                p.setBrush(QColor("#4361ee"))
+                p.setPen(Qt.PenStyle.NoPen)
+                p.drawRoundedRect(2, 2, 28, 28, 6, 6)
+                p.setPen(QColor("#ffffff"))
+                p.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+                p.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, "🎙")
+                p.end()
+                icon = QIcon(pix)
+            self.tray_icon.setIcon(icon)
+            self.tray_icon.setToolTip("Inteligentny Dyktafon AI — Gotowy")
+            self.tray_icon.messageClicked.connect(self._on_tray_message_clicked)
+            self.tray_icon.activated.connect(self._on_tray_icon_activated)
+
+            # Menu podręczne pod prawym przyciskiem myszy
+            tray_menu = QMenu(self)
+            tray_menu.setStyleSheet("""
+                QMenu {
+                    background-color: #1e1e2f;
+                    color: #edf2f4;
+                    border: 1px solid #2b2d42;
+                    border-radius: 6px;
+                    padding: 4px;
+                    font-family: "Segoe UI", sans-serif;
+                    font-size: 12px;
+                }
+                QMenu::item {
+                    padding: 6px 18px;
+                    border-radius: 4px;
+                }
+                QMenu::item:selected {
+                    background-color: #4361ee;
+                    color: #ffffff;
+                }
+                QMenu::separator {
+                    height: 1px;
+                    background-color: #2b2d42;
+                    margin: 4px 6px;
+                }
+            """)
+            act_restore = tray_menu.addAction("🎙️ Otwórz okno")
+            act_restore.triggered.connect(self._restore_from_tray)
+
+            act_settings = tray_menu.addAction("⚙️ Ustawienia...")
+            act_settings.triggered.connect(self._open_settings_dialog)
+
+            tray_menu.addSeparator()
+            act_quit = tray_menu.addAction("❌ Zakończ")
+            act_quit.triggered.connect(self.close)
+
+            self.tray_icon.setContextMenu(tray_menu)
+            self.tray_icon.show()
+        except Exception as e:
+            print(f"[Tray] Nie udało się zainicjalizować ikony zasobnika: {e}")
+            self.tray_icon = None
+
+    def _on_tray_icon_activated(self, reason):
+        """Obsługa kliknięcia ikony w zasobniku systemowym."""
+        if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
+            self._restore_from_tray()
+
+    def _restore_from_tray(self):
+        """Przywraca i aktywuje okno główne z zasobnika."""
+        if self.isMinimized():
+            self.showNormal()
+        else:
+            self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _update_tray_tooltip(self, state_text: str = ""):
+        """Aktualizuje opis ikony w zasobniku systemowym."""
+        if getattr(self, "tray_icon", None) is not None:
+            if state_text:
+                self.tray_icon.setToolTip(f"Inteligentny Dyktafon AI — {state_text}")
+            else:
+                self.tray_icon.setToolTip("Inteligentny Dyktafon AI")
+
+    def _on_tray_message_clicked(self):
+        self._restore_from_tray()
+        self._show_audio_inspection_dialog(self.combo_source_mode.currentData() or RecordSourceMode.HYBRID_DUAL)
+
+    def _show_audio_inspection_dialog(self, source_mode: str):
+        # 1. Przywrócenie okna głównego, aby użytkownik widział wskaźniki VU i urządzenia
+        if self.isMinimized():
+            self.showNormal()
+        else:
+            self.show()
+        self.raise_()
+        self.activateWindow()
+
+        self._refresh_audio_devices()
+        if source_mode == RecordSourceMode.SYSTEM_ONLY:
+            msg_body = (
+                "Dyktafon odświeżył listę urządzeń audio i aplikacji w systemie Windows.\n\n"
+                "Zalecane kroki sprawdzające:\n"
+                "1. Upewnij się, że wybrany program (np. Discord) faktycznie odtwarza dźwięk.\n"
+                "2. Sprawdź, czy w polu «Aplikacja audio» wybrano właściwy program lub «Wszystkie programy».\n"
+                "3. Upewnij się, że aplikacja nie została wyciszona w mikserze głośności Windows.\n"
+                "4. W razie potrzeby kliknij «Stop i Zapisz» i rozpocznij nowe nagranie."
+            )
+        else:
+            msg_body = (
+                "Dyktafon odświeżył listę urządzeń audio w systemie Windows.\n\n"
+                "Zalecane kroki sprawdzające:\n"
+                "1. Sprawdź fizyczny przycisk MUTE na mikrofonie lub nadajniku bezprzewodowym.\n"
+                "2. Upewnij się, że wybrany mikrofon na liście w programie jest poprawny.\n"
+                "3. Jeśli mikrofon został odłączony lub zawieszony, kliknij «Stop i Zapisz», a następnie rozpocznij nowe nagranie."
+            )
+
+        msg_box = QMessageBox(self)
+        msg_box.setIcon(QMessageBox.Icon.Warning)
+        msg_box.setWindowTitle("Weryfikacja Urządzeń Audio")
+        msg_box.setText(msg_body)
+        msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+
+        # Precyzyjne wyśrodkowanie okna komunikatu na środku ekranu monitora
+        screen = QApplication.primaryScreen()
+        if screen:
+            geom = screen.availableGeometry()
+            hint = msg_box.sizeHint()
+            x = max(0, geom.center().x() - (hint.width() // 2))
+            y = max(0, geom.center().y() - (hint.height() // 2))
+            msg_box.move(x, y)
+
+        msg_box.exec()
+
+    def _handle_silence_confirmed(self, mins_str: str):
+        if hasattr(self, "worker"):
+            self.worker.reset_silence_alert()
+        self.lbl_cloud_status.setText("✅ Nagrywanie trwa (aktywność potwierdzona).")
+        self.lbl_cloud_status.setStyleSheet("color: #10b981; font-size: 11px; font-weight: bold;")
+        self._update_tray_tooltip("Nagrywanie trwa")
+
+    def _handle_silence_inspect_requested(self, source_mode: str):
+        if hasattr(self, "worker"):
+            self.worker.reset_silence_alert()
+        self._update_tray_tooltip("Nagrywanie trwa")
+        self._show_audio_inspection_dialog(source_mode)
+
+    def show_silence_alert_preview(self, silence_sec: float):
+        """Wyświetla próbkę powiadomienia na żądanie z okna ustawień."""
+        src_mode = self.combo_source_mode.currentData() or RecordSourceMode.HYBRID_DUAL
+        self._on_silence_alert(silence_sec, src_mode)
+
+    def _on_silence_alert(self, silence_sec: float, source_mode: str):
+        """Obsługuje sygnał strażnika ciszy z wątku SmartAudioWorker lub testu ustawień."""
+        mins = int(silence_sec // 60)
+        mins_str = f"{mins} min" if mins > 0 else f"{int(silence_sec)} s"
+
+        if getattr(self, "_active_silence_toast", None) is not None:
+            try:
+                self._active_silence_toast.close()
+            except Exception:
+                pass
+
+        if hasattr(self, "worker") and self.worker is not None:
+            self.worker.suppress_sys_audio_for(0.8)
+
+        toast = SilenceToastBanner(self, silence_sec=silence_sec, source_mode=source_mode)
+        self._active_silence_toast = toast
+        toast.confirmed.connect(lambda: self._handle_silence_confirmed(mins_str))
+        toast.inspect_requested.connect(lambda: self._handle_silence_inspect_requested(source_mode))
+        toast.dismissed.connect(lambda: self._handle_silence_confirmed(mins_str))
+        toast.timed_out.connect(lambda: self._handle_silence_timed_out_to_tray(mins_str, source_mode))
+        toast.show()
+
+    def _handle_silence_timed_out_to_tray(self, mins_str: str, source_mode: str):
+        """Gdy nikt nie kliknął toasta przez 45s (nieobecność), przekazuje powiadomienie do Centrum Akcji Windows."""
+        if hasattr(self, "worker"):
+            self.worker.reset_silence_alert()
+        title = f"⚠️ Brak dźwięku od {mins_str}"
+        msg = f"Dyktafon rejestruje czas, ale nie wykryto mowy ani dźwięku.\nKliknij tutaj, aby sprawdzić stan urządzeń."
+        if getattr(self, "tray_icon", None) is not None:
+            self._update_tray_tooltip(f"Brak dźwięku ({mins_str})")
+            self.tray_icon.showMessage(
+                title,
+                msg,
+                QSystemTrayIcon.MessageIcon.Warning,
+                15000
+            )
+        self.lbl_cloud_status.setText(f"⚠️ Brak dźwięku od {mins_str}.")
+        self.lbl_cloud_status.setStyleSheet("color: #f59e0b; font-size: 11px; font-weight: bold;")
 
     def _handle_audio_error(self, err_msg):
         self._on_stop_clicked()
@@ -2321,27 +2939,76 @@ class SmartDictaphoneWindow(QMainWindow):
     def closeEvent(self, event):
         try:
             self.timer.stop()
-            if self.worker is not None and self.worker.state != SmartRecordState.STOPPED:
-                self.worker.stop_recording()
-                self.worker.wait(1500)
+            self.blockSignals(True)
 
-            if getattr(self, "rolling_worker", None) is not None and self.rolling_worker.isRunning():
-                self.rolling_worker.stop()
-                self.rolling_worker.wait(1500)
-                self.rolling_worker = None
+            # 1. Zablokowanie sygnałów i natychmiastowe zatrzymanie transkrypcji w tle
+            if getattr(self, "rolling_worker", None) is not None:
+                try:
+                    self.rolling_worker.blockSignals(True)
+                except Exception:
+                    pass
+                if self.rolling_worker.isRunning():
+                    self.rolling_worker.stop()
+                    self.rolling_worker.wait(1500)
 
-            if self.live_transcription_worker is not None and self.live_transcription_worker.isRunning():
-                self.live_transcription_worker.stop()
-                self.live_transcription_worker.wait(1000)
-                self.live_transcription_worker = None
+            # 2. Zablokowanie sygnałów i zatrzymanie wątku audio oraz zapis audio
+            if self.worker is not None:
+                try:
+                    self.worker.blockSignals(True)
+                except Exception:
+                    pass
+                if self.worker.isRunning() or self.worker.state != SmartRecordState.STOPPED:
+                    timestamp = getattr(self, "current_live_timestamp", datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
+                    save_path = getattr(self, "current_live_wav_path", None) or os.path.join(self.recordings_dir, f"inteligentne_nagranie_{timestamp}.wav")
+                    self.worker.stop_recording()
+                    self.worker.wait(1500)
+                    try:
+                        self.worker.save_wav(save_path)
+                    except Exception:
+                        pass
 
-            if self.transcription_thread is not None and self.transcription_thread.isRunning():
-                self.transcription_thread.quit()
-                self.transcription_thread.wait(1000)
+            # 3. Pozostałe wątki pomocnicze
+            if getattr(self, "live_transcription_worker", None) is not None:
+                try:
+                    self.live_transcription_worker.blockSignals(True)
+                except Exception:
+                    pass
+                if self.live_transcription_worker.isRunning():
+                    self.live_transcription_worker.stop()
+                    self.live_transcription_worker.wait(1000)
 
-            if self.file_processing_worker is not None and self.file_processing_worker.isRunning():
-                self.file_processing_worker.quit()
-                self.file_processing_worker.wait(1000)
-        except Exception:
-            pass
-        event.accept()
+            if getattr(self, "transcription_thread", None) is not None:
+                try:
+                    self.transcription_thread.blockSignals(True)
+                except Exception:
+                    pass
+                if self.transcription_thread.isRunning():
+                    self.transcription_thread.quit()
+                    self.transcription_thread.wait(1000)
+
+            if getattr(self, "file_processing_worker", None) is not None:
+                try:
+                    self.file_processing_worker.blockSignals(True)
+                except Exception:
+                    pass
+                if self.file_processing_worker.isRunning():
+                    self.file_processing_worker.quit()
+                    self.file_processing_worker.wait(1000)
+
+            if getattr(self, "_active_silence_toast", None) is not None:
+                try:
+                    self._active_silence_toast.close()
+                except Exception:
+                    pass
+
+            if getattr(self, "tray_icon", None) is not None:
+                try:
+                    self.tray_icon.hide()
+                except Exception:
+                    pass
+
+        except Exception as e:
+            print(f"[closeEvent] Błąd zamykania okna: {e}")
+
+        if event:
+            event.accept()

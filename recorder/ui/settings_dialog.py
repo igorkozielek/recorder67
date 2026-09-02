@@ -43,6 +43,10 @@ class SettingsDialog(QDialog):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setWindowTitle("⚙️ Ustawienia Dyktafonu AI")
+        from recorder.ui.windows_integration import get_app_icon_path
+        ico = get_app_icon_path("ico")
+        if ico and os.path.exists(ico):
+            self.setWindowIcon(QIcon(ico))
         self.setMinimumSize(640, 560)
         self.resize(680, 600)
         self._setup_ui()
@@ -363,6 +367,38 @@ class SettingsDialog(QDialog):
         self.combo_session_split.setStyleSheet("background: #181824; color: #edf2f4; border: 1px solid #2b2d42; padding: 4px 8px; border-radius: 4px;")
         time_layout.addRow(QLabel("Automatyczny podział sesji:"), self.combo_session_split)
 
+        self.combo_silence_alert = QComboBox()
+        self.combo_silence_alert.addItem("1 minuta braku głosu (Szybki alert)", 1.0)
+        self.combo_silence_alert.addItem("2 minuty braku głosu", 2.0)
+        self.combo_silence_alert.addItem("3 minuty braku głosu", 3.0)
+        self.combo_silence_alert.addItem("5 minut braku głosu (Zalecane / Domyślne)", 5.0)
+        self.combo_silence_alert.addItem("10 minut braku głosu", 10.0)
+        self.combo_silence_alert.addItem("15 minut braku głosu", 15.0)
+        self.combo_silence_alert.addItem("20 minut braku głosu", 20.0)
+        self.combo_silence_alert.addItem("Wyłączone (Brak ostrzeżeń)", 0.0)
+        self.combo_silence_alert.setStyleSheet("background: #181824; color: #edf2f4; border: 1px solid #2b2d42; padding: 4px 8px; border-radius: 4px;")
+        time_layout.addRow(QLabel("Ostrzeżenie o braku dźwięku:"), self.combo_silence_alert)
+
+        self.btn_test_alert = QPushButton("🔔 Przetestuj powiadomienie")
+        self.btn_test_alert.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_test_alert.setStyleSheet("""
+            QPushButton {
+                background: #2b2d42;
+                color: #4cc9f0;
+                border: 1px solid #4361ee;
+                border-radius: 4px;
+                padding: 6px 14px;
+                font-weight: bold;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background: #3a0ca3;
+                color: #ffffff;
+            }
+        """)
+        self.btn_test_alert.clicked.connect(self._on_test_alert_clicked)
+        time_layout.addRow("", self.btn_test_alert)
+
         self.combo_timestamp_format = QComboBox()
         self.combo_timestamp_format.addItem("Tylko offset [00:12 - 00:18] (Domyślne)", "offset_only")
         self.combo_timestamp_format.addItem("Offset + Godzina realna [00:12 | 13:47:12]", "offset+clock")
@@ -486,6 +522,14 @@ class SettingsDialog(QDialog):
         is_chrono = (self.combo_preview_order.currentData() == "chronological")
         self.chk_auto_scroll.setEnabled(is_chrono)
 
+    def _on_test_alert_clicked(self):
+        mins = float(self.combo_silence_alert.currentData() if self.combo_silence_alert.currentData() is not None else 5.0)
+        silence_sec = 300.0 if mins <= 0.0 else mins * 60.0
+        if self.parent() and hasattr(self.parent(), "show_silence_alert_preview"):
+            self.parent().show_silence_alert_preview(silence_sec)
+        else:
+            QMessageBox.information(self, "Test powiadomienia", "Wysłano testowe powiadomienie o braku dźwięku.")
+
     def _load_values(self):
         """Ładuje aktualne ustawienia do kontrolek UI."""
         st = load_user_settings()
@@ -518,6 +562,13 @@ class SettingsDialog(QDialog):
         s_idx = self.combo_session_split.findData(split_sec)
         if s_idx != -1:
             self.combo_session_split.setCurrentIndex(s_idx)
+
+        alert_mins = float(st.get("silence_alert_minutes", 5.0))
+        a_idx = self.combo_silence_alert.findData(alert_mins)
+        if a_idx != -1:
+            self.combo_silence_alert.setCurrentIndex(a_idx)
+        else:
+            self.combo_silence_alert.setCurrentIndex(self.combo_silence_alert.findData(5.0))
 
         ts_fmt = st.get("timestamp_format", "offset_only")
         ts_idx = self.combo_timestamp_format.findData(ts_fmt)
@@ -565,6 +616,7 @@ class SettingsDialog(QDialog):
             self.slider_vad_sys.setValue(42)
             self.spin_auto_pause.setValue(5)
             self.combo_session_split.setCurrentIndex(self.combo_session_split.findData(900.0))
+            self.combo_silence_alert.setCurrentIndex(self.combo_silence_alert.findData(5.0))
             self.combo_timestamp_format.setCurrentIndex(self.combo_timestamp_format.findData("offset_only"))
             self.combo_preview_order.setCurrentIndex(self.combo_preview_order.findData("newest_first"))
             self.chk_auto_scroll.setChecked(True)
@@ -583,6 +635,7 @@ class SettingsDialog(QDialog):
             "system_vad_speech_threshold": round(self.slider_vad_sys.value() / 100.0, 2),
             "auto_pause_sec": float(self.spin_auto_pause.value()),
             "session_split_silence_sec": float(self.combo_session_split.currentData() or 900.0),
+            "silence_alert_minutes": float(self.combo_silence_alert.currentData() if self.combo_silence_alert.currentData() is not None else 5.0),
             "timestamp_format": self.combo_timestamp_format.currentData() or "offset_only",
             "preview_order": self.combo_preview_order.currentData() or "newest_first",
             "auto_scroll_chronological": self.chk_auto_scroll.isChecked(),
