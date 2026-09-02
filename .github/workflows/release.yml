@@ -51,9 +51,17 @@ jobs:
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ZIP_NAME }}
-          path: ${{ env.ZIP_NAME }}
+          name: InteligentnyDyktafonAI-Windows
+          path: dist/InteligentnyDyktafonAI
           if-no-files-found: error
+
+      - name: Upload Build Log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build_log
+          path: build_log.txt
+          if-no-files-found: ignore
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
