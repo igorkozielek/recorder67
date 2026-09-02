@@ -5,14 +5,15 @@
     <ProjectGuid>2fbdf51b-144e-45b3-83a6-930e9b627a4d</ProjectGuid>
     <ProjectHome>.</ProjectHome>
     <StartupFile>main.py</StartupFile>
-    <SearchPath>
-    </SearchPath>
+    <SearchPath>..</SearchPath>
     <WorkingDirectory>.</WorkingDirectory>
     <OutputPath>.</OutputPath>
     <Name>recorder</Name>
     <RootNamespace>recorder</RootNamespace>
     <InterpreterId>MSBuild|env|$(MSBuildProjectFullPath)</InterpreterId>
     <IsWindowsApplication>True</IsWindowsApplication>
+    <UnitTestFramework>PyTest</UnitTestFramework>
+    <UnitTestRootDirectory>../tests</UnitTestRootDirectory>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
     <DebugSymbols>true</DebugSymbols>
