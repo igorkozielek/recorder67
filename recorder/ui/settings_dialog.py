@@ -5,17 +5,24 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QTabWidget, QWidget, QTextEdit, QComboBox,
     QSlider, QSpinBox, QCheckBox, QGroupBox, QFormLayout,
-    QMessageBox, QFrame, QSizePolicy
+    QMessageBox, QFrame, QSizePolicy, QProgressBar
 )
-from PySide6.QtCore import Qt, Signal as pyqtSignal
-from PySide6.QtGui import QFont, QIcon
+from PySide6.QtCore import Qt, Signal as pyqtSignal, QUrl
+from PySide6.QtGui import QFont, QIcon, QDesktopServices
 
 from recorder.config import (
     load_user_settings,
     save_user_settings,
     WHISPER_MODELS,
     DEFAULT_WHISPER_MODEL,
-    RecordSourceMode
+    RecordSourceMode,
+    APP_VERSION,
+    GITHUB_REPO
+)
+from recorder.core.updater import (
+    CheckUpdateWorker,
+    DownloadUpdateWorker,
+    apply_in_place_update
 )
 
 
@@ -97,6 +104,7 @@ class SettingsDialog(QDialog):
         self._create_tab_dictionary()
         self._create_tab_vad()
         self._create_tab_cloud()
+        self._create_tab_updates()
 
         main_layout.addWidget(self.tabs, stretch=1)
 
@@ -530,6 +538,238 @@ class SettingsDialog(QDialog):
         else:
             QMessageBox.information(self, "Test powiadomienia", "Wysłano testowe powiadomienie o braku dźwięku.")
 
+    def _create_tab_updates(self):
+        """Karta 4: Aktualizacje programu z GitHub Releases."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(12)
+
+        # Informacja o bieżącej wersji
+        grp_cur = QGroupBox("📌 Informacje o Aplikacji")
+        grp_cur.setStyleSheet("QGroupBox { font-weight: bold; color: #4cc9f0; }")
+        cur_layout = QFormLayout(grp_cur)
+        cur_layout.setContentsMargins(12, 12, 12, 12)
+        cur_layout.setSpacing(10)
+
+        lbl_v = QLabel(f"<b>v{APP_VERSION}</b>")
+        lbl_v.setStyleSheet("font-size: 13px; color: #10b981;")
+        cur_layout.addRow("Zainstalowana wersja:", lbl_v)
+
+        lbl_repo = QLabel(f"<code>{GITHUB_REPO}</code>")
+        lbl_repo.setStyleSheet("color: #8d99ae;")
+        cur_layout.addRow("Repozytorium wydań:", lbl_repo)
+
+        self.chk_check_prereleases = QCheckBox("Uwzględniaj wersje testowe (Pre-release / Alpha / Beta)")
+        self.chk_check_prereleases.setChecked(True)
+        self.chk_check_prereleases.setStyleSheet("color: #edf2f4;")
+        cur_layout.addRow("", self.chk_check_prereleases)
+
+        layout.addWidget(grp_cur)
+
+        # Pasek sprawdzania aktualizacji
+        check_box = QHBoxLayout()
+        self.btn_check_updates = QPushButton("🔍 Sprawdź dostępność aktualizacji")
+        self.btn_check_updates.setStyleSheet("""
+            QPushButton {
+                background-color: #4361ee;
+                color: #ffffff;
+                border: none;
+                border-radius: 6px;
+                padding: 10px 18px;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #3a0ca3;
+            }
+            QPushButton:disabled {
+                background-color: #3d405b;
+                color: #8d99ae;
+            }
+        """)
+        self.btn_check_updates.clicked.connect(self._on_check_updates_clicked)
+        check_box.addWidget(self.btn_check_updates)
+
+        self.lbl_update_status = QLabel("Kliknij przycisk, aby sprawdzić najnowsze wydanie na GitHubie.")
+        self.lbl_update_status.setStyleSheet("color: #8d99ae; font-size: 11px;")
+        check_box.addWidget(self.lbl_update_status, stretch=1)
+        layout.addLayout(check_box)
+
+        # Pasek postępu pobierania
+        self.progress_download = QProgressBar()
+        self.progress_download.setRange(0, 100)
+        self.progress_download.setTextVisible(True)
+        self.progress_download.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #3d405b;
+                border-radius: 4px;
+                text-align: center;
+                background-color: #181824;
+                color: #edf2f4;
+                font-weight: bold;
+                height: 18px;
+            }
+            QProgressBar::chunk {
+                background-color: #10b981;
+                border-radius: 3px;
+            }
+        """)
+        self.progress_download.setVisible(False)
+        layout.addWidget(self.progress_download)
+
+        # Ramka z informacjami o nowej wersji (domyślnie ukryta)
+        self.grp_new_version = QGroupBox("🎉 Dostępna nowa wersja!")
+        self.grp_new_version.setStyleSheet("QGroupBox { font-weight: bold; color: #10b981; }")
+        new_v_layout = QVBoxLayout(self.grp_new_version)
+        new_v_layout.setContentsMargins(12, 12, 12, 12)
+        new_v_layout.setSpacing(8)
+
+        self.lbl_new_version_title = QLabel("")
+        self.lbl_new_version_title.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        self.lbl_new_version_title.setStyleSheet("color: #edf2f4;")
+        new_v_layout.addWidget(self.lbl_new_version_title)
+
+        self.txt_changelog = QTextEdit()
+        self.txt_changelog.setReadOnly(True)
+        self.txt_changelog.setMaximumHeight(130)
+        self.txt_changelog.setStyleSheet("background-color: #181824; color: #edf2f4; border: 1px solid #3d405b; border-radius: 4px; font-size: 11px;")
+        new_v_layout.addWidget(self.txt_changelog)
+
+        btn_row = QHBoxLayout()
+        self.btn_download_update = QPushButton("🚀 Pobierz i zainstaluj aktualizację")
+        self.btn_download_update.setStyleSheet("""
+            QPushButton {
+                background-color: #10b981;
+                color: #ffffff;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #059669;
+            }
+        """)
+        self.btn_download_update.clicked.connect(self._on_download_update_clicked)
+        btn_row.addWidget(self.btn_download_update)
+
+        self.btn_open_release_url = QPushButton("🌐 Strona wydania na GitHubie")
+        self.btn_open_release_url.setStyleSheet("""
+            QPushButton {
+                background-color: #2b2d42;
+                color: #edf2f4;
+                border: 1px solid #3d405b;
+                border-radius: 6px;
+                padding: 8px 14px;
+            }
+            QPushButton:hover {
+                background-color: #3d405b;
+            }
+        """)
+        self.btn_open_release_url.clicked.connect(self._on_open_release_url_clicked)
+        btn_row.addWidget(self.btn_open_release_url)
+        btn_row.addStretch()
+
+        new_v_layout.addLayout(btn_row)
+        layout.addWidget(self.grp_new_version)
+        self.grp_new_version.setVisible(False)
+
+        layout.addStretch()
+        self.tabs.addTab(tab, "🚀 Aktualizacje")
+
+    def _on_check_updates_clicked(self):
+        self.btn_check_updates.setEnabled(False)
+        self.lbl_update_status.setText("⏳ Sprawdzanie najnowszego wydania na GitHubie...")
+        self.lbl_update_status.setStyleSheet("color: #4cc9f0; font-size: 11px;")
+        
+        self.check_worker = CheckUpdateWorker(include_prereleases=self.chk_check_prereleases.isChecked())
+        self.check_worker.update_checked_signal.connect(self._on_update_check_result)
+        self.check_worker.error_signal.connect(self._on_update_check_error)
+        self.check_worker.start()
+
+    def _on_update_check_result(self, result: Optional[dict]):
+        self.btn_check_updates.setEnabled(True)
+        if result and result.get("has_update"):
+            self.latest_update_data = result
+            tag = result.get("latest_version", "")
+            title = result.get("release_title", tag)
+            is_pre = result.get("is_prerelease", False)
+            pre_badge = " (Pre-release)" if is_pre else ""
+            
+            self.lbl_update_status.setText(f"✅ Znaleziono nowe wydanie: {tag}{pre_badge}")
+            self.lbl_update_status.setStyleSheet("color: #10b981; font-size: 11px; font-weight: bold;")
+            
+            self.lbl_new_version_title.setText(f"Wydanie: {title}")
+            self.txt_changelog.setPlainText(result.get("release_notes", ""))
+            self.grp_new_version.setVisible(True)
+        else:
+            self.grp_new_version.setVisible(False)
+            self.lbl_update_status.setText(f"Posiadasz najnowszą wersję programu (v{APP_VERSION}).")
+            self.lbl_update_status.setStyleSheet("color: #10b981; font-size: 11px;")
+
+    def _on_update_check_error(self, err_msg: str):
+        self.btn_check_updates.setEnabled(True)
+        self.lbl_update_status.setText(f"⚠️ Nie udało się sprawdzić aktualizacji: {err_msg}")
+        self.lbl_update_status.setStyleSheet("color: #ef4444; font-size: 11px;")
+
+    def _on_open_release_url_clicked(self):
+        url = getattr(self, "latest_update_data", {}).get("html_url", "")
+        if url:
+            QDesktopServices.openUrl(QUrl(url))
+
+    def _on_download_update_clicked(self):
+        data = getattr(self, "latest_update_data", {})
+        download_url = data.get("download_url")
+        target_version = data.get("latest_version", "latest")
+        
+        if not download_url:
+            url = data.get("html_url", "")
+            if url:
+                QDesktopServices.openUrl(QUrl(url))
+            return
+            
+        self.btn_download_update.setEnabled(False)
+        self.progress_download.setVisible(True)
+        self.progress_download.setValue(0)
+        
+        self.download_worker = DownloadUpdateWorker(download_url, target_version)
+        self.download_worker.progress_signal.connect(self._on_download_progress)
+        self.download_worker.download_finished_signal.connect(self._on_download_finished)
+        self.download_worker.start()
+
+    def _on_download_progress(self, pct: int, status_text: str):
+        self.progress_download.setValue(pct)
+        self.lbl_update_status.setText(status_text)
+
+    def _on_download_finished(self, success: bool, path_or_err: str, version: str):
+        self.btn_download_update.setEnabled(True)
+        if success:
+            self.progress_download.setValue(100)
+            self.lbl_update_status.setText("✅ Aktualizacja została pobrana.")
+            
+            is_frozen = getattr(sys, "frozen", False)
+            if is_frozen:
+                reply = QMessageBox.question(
+                    self,
+                    "Aktualizacja Gotowa",
+                    f"Pobrano wersję {version}.\n\nCzy chcesz zamknąć aplikację i zaktualizować teraz?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    applied = apply_in_place_update(path_or_err)
+                    if applied:
+                        sys.exit(0)
+            else:
+                QMessageBox.information(
+                    self,
+                    "Pobrano Aktualizację",
+                    f"Pobrano paczkę aktualizacyjną do:\n{path_or_err}\n\n(Działasz w trybie deweloperskim ze skryptów Python)."
+                )
+        else:
+            self.lbl_update_status.setText(f"❌ {path_or_err}")
+            self.lbl_update_status.setStyleSheet("color: #ef4444; font-size: 11px;")
+
     def _load_values(self):
         """Ładuje aktualne ustawienia do kontrolek UI."""
         st = load_user_settings()
@@ -599,6 +839,7 @@ class SettingsDialog(QDialog):
         self.txt_webhook_url.setText(st.get("generic_webhook_url", ""))
         self.chk_auto_sync.setChecked(bool(st.get("auto_cloud_sync", True)))
         self.chk_upload_audio.setChecked(bool(st.get("sync_upload_audio", False)))
+        self.chk_check_prereleases.setChecked(bool(st.get("check_prereleases", True)))
 
     def _restore_defaults(self):
         """Przywraca zalecane wartości domyślne."""
@@ -623,6 +864,7 @@ class SettingsDialog(QDialog):
             self._on_preview_order_changed()
             self.chk_auto_sync.setChecked(True)
             self.chk_upload_audio.setChecked(False)
+            self.chk_check_prereleases.setChecked(True)
 
     def _save_and_accept(self):
         """Zapisuje wartości do pliku user_settings.json i zamyka dialog."""
@@ -647,6 +889,7 @@ class SettingsDialog(QDialog):
             "generic_webhook_url": self.txt_webhook_url.text().strip(),
             "auto_cloud_sync": self.chk_auto_sync.isChecked(),
             "sync_upload_audio": self.chk_upload_audio.isChecked(),
+            "check_prereleases": self.chk_check_prereleases.isChecked(),
         }
 
         success = save_user_settings(new_settings)

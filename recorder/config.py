@@ -13,6 +13,10 @@ TRANSCRIPTIONS_DIR = os.path.join(os.getcwd(), "transcriptions")
 os.makedirs(RECORDINGS_DIR, exist_ok=True)
 os.makedirs(TRANSCRIPTIONS_DIR, exist_ok=True)
 
+# Wersja aplikacji i repozytorium GitHub
+APP_VERSION = "0.5.0"
+GITHUB_REPO = "igorkozielek/recorder67"
+
 # Parametry audio i VAD
 SAMPLE_RATE = 16000  # Wymuszone 16000 Hz dla Silero VAD i Whisper
 AUDIO_CHANNELS = 1
@@ -202,6 +206,7 @@ def load_user_settings() -> dict:
         "timestamp_format": get_env_variable("TIMESTAMP_FORMAT", "offset_only"),
         "preview_order": get_env_variable("PREVIEW_ORDER", "newest_first"),
         "auto_scroll_chronological": get_env_variable("AUTO_SCROLL_CHRONOLOGICAL", "true").lower() in ("1", "true", "yes"),
+        "check_prereleases": True,
     }
 
     settings_paths = [

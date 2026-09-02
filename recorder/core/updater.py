@@ -1,4 +1,4 @@
-﻿"""
+"""
 Moduł automatycznych aktualizacji (Auto-Updater) z GitHub Releases dla recorder67.
 Obsługuje sprawdzanie wydań stabilnych i pre-release (alpha/beta), asynchroniczne pobieranie
 oraz automatyczną podmianę plików aplikacji (in-place update) na Windowsie.
@@ -240,29 +240,37 @@ def apply_in_place_update(zip_path: str) -> bool:
 
     app_dir = os.path.dirname(os.path.abspath(sys.executable))
     exe_path = sys.executable
+    current_pid = os.getpid()
     temp_extract = os.path.join(tempfile.gettempdir(), "InteligentnyDyktafonAI_Update")
     updater_bat = os.path.join(tempfile.gettempdir(), "run_app_update.bat")
     
     bat_content = f"""@echo off
-rem Skrypt automatycznej podmiany plików aktualizacji Recorder67
-timeout /t 2 /nobreak > nul
+rem Skrypt automatycznej podmiany plikow aktualizacji Recorder67
+echo [UPDATER] Oczekiwanie na zakonczenie glownego procesu (PID: {current_pid})...
+:wait_process
+timeout /t 1 /nobreak > nul
+tasklist /fi "pid eq {current_pid}" 2>nul | find "{current_pid}" >nul
+if not errorlevel 1 goto wait_process
 
-echo [UPDATER] Rozpakowywanie nowej wersji...
-if exist "{temp_extract}" rmdir /s /q "{temp_extract}"
+echo [UPDATER] Proces aplikacji zamkniety. Rozpakowywanie nowej wersji...
+if exist "{temp_extract}" rmdir /s /q "{temp_extract}" 2>nul
 mkdir "{temp_extract}"
 
-powershell -NoProfile -Command "Expand-Archive -Path '{zip_path}' -DestinationPath '{temp_extract}' -Force"
+tar -xf "{zip_path}" -C "{temp_extract}" 2>nul
+if not exist "{temp_extract}\\*" (
+    powershell -NoProfile -Command "Expand-Archive -Path '{zip_path}' -DestinationPath '{temp_extract}' -Force"
+)
 
 echo [UPDATER] Kopiowanie plikow do: {app_dir}
 if exist "{temp_extract}\\InteligentnyDyktafonAI" (
-    xcopy /s /e /y /q "{temp_extract}\\InteligentnyDyktafonAI\\*" "{app_dir}\\"
+    robocopy "{temp_extract}\\InteligentnyDyktafonAI" "{app_dir}" /e /np /r:5 /w:1 > nul
 ) else (
-    xcopy /s /e /y /q "{temp_extract}\\*" "{app_dir}\\"
+    robocopy "{temp_extract}" "{app_dir}" /e /np /r:5 /w:1 > nul
 )
 
 echo [UPDATER] Czyszczenie plikow tymczasowych...
-if exist "{zip_path}" del /f /q "{zip_path}"
-if exist "{temp_extract}" rmdir /s /q "{temp_extract}"
+if exist "{zip_path}" del /f /q "{zip_path}" 2>nul
+if exist "{temp_extract}" rmdir /s /q "{temp_extract}" 2>nul
 
 echo [UPDATER] Uruchamianie zaktualizowanej aplikacji...
 start "" "{exe_path}"
