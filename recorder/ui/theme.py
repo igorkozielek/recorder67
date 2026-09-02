@@ -143,14 +143,16 @@ QLabel#StatusManualPaused {
 
 /* Paski postępu */
 QProgressBar {
-    background-color: #222533;
-    border-radius: 5px;
-    border: none;
+    background-color: #161824;
+    border: 1px solid #2b2d42;
+    border-radius: 6px;
     text-align: center;
-    color: #edf2f4;
+    color: #ffffff;
+    font-weight: 600;
+    font-size: 11px;
 }
 QProgressBar::chunk {
-    background-color: #10b981;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #064e3b, stop:0.6 #065f46, stop:1 #047857);
     border-radius: 5px;
 }
 QProgressBar#SilenceProgress::chunk {

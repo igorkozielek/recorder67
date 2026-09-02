@@ -318,7 +318,8 @@ def get_speaker_samples(turns: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]
 
 
 def format_turns(turns: List[Dict[str, Any]], speaker_mapping: Optional[Dict[str, str]] = None,
-                 session_start_time: Optional[datetime] = None) -> Tuple[str, str]:
+                 session_start_time: Optional[datetime] = None,
+                 reverse_order: Optional[bool] = None) -> Tuple[str, str]:
     """
     Formatuje listę wypowiedzi do kodu HTML (dla okna aplikacji) oraz tekstu czystego (do zapisu .txt)
     z uwzględnieniem mapowania nazw mówców i preferowanego formatu timestampu.
@@ -327,11 +328,31 @@ def format_turns(turns: List[Dict[str, Any]], speaker_mapping: Optional[Dict[str
         return "Brak zarejestrowanej mowy.", "Brak zarejestrowanej mowy."
 
     from recorder.core.session import format_turn_timestamp
-    mapping = speaker_mapping or {}
-    final_html = ""
-    final_plain = ""
+    if reverse_order is None:
+        try:
+            from recorder.config import get_preview_order
+            reverse_order = (get_preview_order() == "newest_first")
+        except Exception:
+            reverse_order = True
 
-    for t in turns:
+    mapping = speaker_mapping or {}
+    chrono_turns = sorted(turns, key=lambda t: float(t.get("start", 0.0)))
+
+    final_plain = ""
+    for t in chrono_turns:
+        raw_spk = t.get("speaker", "SPEAKER")
+        display_spk = mapping.get(raw_spk, raw_spk).strip() or raw_spk
+        start = t.get("start", 0.0)
+        end = t.get("end", 0.0)
+        text = t.get("text", "").strip()
+
+        if text:
+            time_label = format_turn_timestamp(start, end, session_start_time)
+            final_plain += f"[{time_label}] {display_spk}: {text}\n\n"
+
+    final_html = ""
+    display_turns = list(reversed(chrono_turns)) if reverse_order else chrono_turns
+    for t in display_turns:
         raw_spk = t.get("speaker", "SPEAKER")
         display_spk = mapping.get(raw_spk, raw_spk).strip() or raw_spk
         start = t.get("start", 0.0)
@@ -341,10 +362,10 @@ def format_turns(turns: List[Dict[str, Any]], speaker_mapping: Optional[Dict[str
         if text:
             time_label = format_turn_timestamp(start, end, session_start_time)
             final_html += f"<b>[{time_label}] {display_spk}:</b> {text}<br><br>"
-            final_plain += f"[{time_label}] {display_spk}: {text}\n\n"
 
     if not final_html:
         final_html = "Brak zarejestrowanej mowy."
+    if not final_plain:
         final_plain = "Brak zarejestrowanej mowy."
 
     return final_html, final_plain

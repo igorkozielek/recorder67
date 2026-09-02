@@ -198,6 +198,8 @@ def load_user_settings() -> dict:
         "auto_pause_sec": float(get_env_variable("AUTO_PAUSE_SEC", "5.0")),
         "session_split_silence_sec": float(get_env_variable("SESSION_SPLIT_SILENCE_SEC", "900.0")),  # 15 min
         "timestamp_format": get_env_variable("TIMESTAMP_FORMAT", "offset_only"),
+        "preview_order": get_env_variable("PREVIEW_ORDER", "newest_first"),
+        "auto_scroll_chronological": get_env_variable("AUTO_SCROLL_CHRONOLOGICAL", "true").lower() in ("1", "true", "yes"),
     }
 
     settings_paths = [
@@ -301,6 +303,21 @@ def get_session_split_silence_sec() -> float:
         return float(st.get("session_split_silence_sec", 900.0))
     except Exception:
         return 900.0
+
+
+def get_preview_order() -> str:
+    """Zwraca preferowaną kolejność wypowiedzi w oknie podglądu ('newest_first' lub 'chronological')."""
+    st = load_user_settings()
+    order = str(st.get("preview_order", "newest_first")).strip()
+    if order in ("newest_first", "chronological"):
+        return order
+    return "newest_first"
+
+
+def is_auto_scroll_chronological() -> bool:
+    """Zwraca czy w trybie chronologicznym podgląd ma automatycznie przewijać do najnowszych wypowiedzi."""
+    st = load_user_settings()
+    return bool(st.get("auto_scroll_chronological", True))
 
 
 def get_default_beam_size() -> int:

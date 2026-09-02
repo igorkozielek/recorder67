@@ -370,6 +370,17 @@ class SettingsDialog(QDialog):
         self.combo_timestamp_format.setStyleSheet("background: #181824; color: #edf2f4; border: 1px solid #2b2d42; padding: 4px 8px; border-radius: 4px;")
         time_layout.addRow(QLabel("Format timestampów w transkrypcji:"), self.combo_timestamp_format)
 
+        self.combo_preview_order = QComboBox()
+        self.combo_preview_order.addItem("Od najnowszych", "newest_first")
+        self.combo_preview_order.addItem("Od najstarszych", "chronological")
+        self.combo_preview_order.setStyleSheet("background: #181824; color: #edf2f4; border: 1px solid #2b2d42; padding: 4px 8px; border-radius: 4px;")
+        self.combo_preview_order.currentIndexChanged.connect(self._on_preview_order_changed)
+        time_layout.addRow(QLabel("Kolejność w podglądzie:"), self.combo_preview_order)
+
+        self.chk_auto_scroll = QCheckBox("Automatycznie przewijaj widok do najnowszych wypowiedzi")
+        self.chk_auto_scroll.setStyleSheet("color: #edf2f4;")
+        time_layout.addRow("", self.chk_auto_scroll)
+
         layout.addWidget(box_time)
         layout.addStretch()
         self.tabs.addTab(tab, "🎙️ Audio i VAD")
@@ -471,6 +482,10 @@ class SettingsDialog(QDialog):
             desc = f"{f_val:.2f} (Silne tłumienie zakłóceń)"
         self.lbl_vad_sys_val.setText(desc)
 
+    def _on_preview_order_changed(self):
+        is_chrono = (self.combo_preview_order.currentData() == "chronological")
+        self.chk_auto_scroll.setEnabled(is_chrono)
+
     def _load_values(self):
         """Ładuje aktualne ustawienia do kontrolek UI."""
         st = load_user_settings()
@@ -509,6 +524,16 @@ class SettingsDialog(QDialog):
         if ts_idx != -1:
             self.combo_timestamp_format.setCurrentIndex(ts_idx)
 
+        order = st.get("preview_order", "newest_first")
+        o_idx = self.combo_preview_order.findData(order)
+        if o_idx != -1:
+            self.combo_preview_order.setCurrentIndex(o_idx)
+        else:
+            self.combo_preview_order.setCurrentIndex(0)
+
+        self.chk_auto_scroll.setChecked(bool(st.get("auto_scroll_chronological", True)))
+        self._on_preview_order_changed()
+
         # Chmura & Stanowisko
         self.txt_device_name.setText(st.get("device_name", "Biuro-Stanowisko-1"))
         self.txt_org_id.setText(st.get("organization_id", "default_org"))
@@ -541,6 +566,9 @@ class SettingsDialog(QDialog):
             self.spin_auto_pause.setValue(5)
             self.combo_session_split.setCurrentIndex(self.combo_session_split.findData(900.0))
             self.combo_timestamp_format.setCurrentIndex(self.combo_timestamp_format.findData("offset_only"))
+            self.combo_preview_order.setCurrentIndex(self.combo_preview_order.findData("newest_first"))
+            self.chk_auto_scroll.setChecked(True)
+            self._on_preview_order_changed()
             self.chk_auto_sync.setChecked(True)
             self.chk_upload_audio.setChecked(False)
 
@@ -556,6 +584,8 @@ class SettingsDialog(QDialog):
             "auto_pause_sec": float(self.spin_auto_pause.value()),
             "session_split_silence_sec": float(self.combo_session_split.currentData() or 900.0),
             "timestamp_format": self.combo_timestamp_format.currentData() or "offset_only",
+            "preview_order": self.combo_preview_order.currentData() or "newest_first",
+            "auto_scroll_chronological": self.chk_auto_scroll.isChecked(),
             "device_name": self.txt_device_name.text().strip() or "Biuro-Stanowisko-1",
             "organization_id": self.txt_org_id.text().strip() or "default_org",
             "sync_target": self.combo_sync_target.currentData() or "emanager",

@@ -215,7 +215,8 @@ class TranscriptionSession:
         return "\n".join(lines).strip()
 
     def export_to_html(self, speaker_mapping: Optional[Dict[str, str]] = None,
-                       session_start_time: Optional[datetime] = None) -> str:
+                       session_start_time: Optional[datetime] = None,
+                       reverse_order: Optional[bool] = None) -> str:
         """
         Generuje sformatowany kod HTML do wyświetlenia w QTextEdit.
         """
@@ -232,9 +233,18 @@ class TranscriptionSession:
         if base_dt is None:
             base_dt = extract_datetime_from_filename(self.prepared_wav) or extract_datetime_from_filename(self.source_audio)
 
+        if reverse_order is None:
+            try:
+                from recorder.config import get_preview_order
+                reverse_order = (get_preview_order() == "newest_first")
+            except Exception:
+                reverse_order = True
+
         sorted_turns = sorted(self.turns, key=lambda t: float(t.get("start", 0.0)))
+        display_turns = list(reversed(sorted_turns)) if reverse_order else sorted_turns
+
         html_blocks = []
-        for t in sorted_turns:
+        for t in display_turns:
             spk = t.get("speaker", "Mówca")
             display_spk = mapping.get(spk, spk)
             st = float(t.get("start", 0.0))

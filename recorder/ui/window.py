@@ -98,6 +98,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.last_plain_text = ""
         self.current_meeting_id = None
         self.synced_segment_count = 0
+        self.last_processed_block_idx = 0
         self._active_threads = []
         self._finalize_pending = False       # Guard: blokuje Start gdy trwa finalizacja poprzedniej sesji
         self.session_start_time = None       # Realna godzina startu bieżącego nagrania (datetime)
@@ -492,10 +493,12 @@ class SmartDictaphoneWindow(QMainWindow):
         outputs_main_layout.addLayout(token_layout)
 
         self.progress_transcription = QProgressBar()
+        self.progress_transcription.setObjectName("TranscriptionProgress")
         self.progress_transcription.setRange(0, 100)
         self.progress_transcription.setValue(0)
         self.progress_transcription.setTextVisible(True)
-        self.progress_transcription.setFormat("Oczekuje na nagranie lub plik...")
+        self.progress_transcription.setFixedHeight(22)
+        self.progress_transcription.setFormat("Oczekiwanie na nagranie lub plik...")
         outputs_main_layout.addWidget(self.progress_transcription)
 
         # UKŁAD DWUKOLUMNOWY: LEWA = NAGRANIA AUDIO, PRAWA = TRANSKRYPCJE TEKSTOWE
@@ -668,12 +671,74 @@ class SmartDictaphoneWindow(QMainWindow):
             if hasattr(self, "worker"):
                 self.worker.set_auto_pause_sec(float(new_pause))
 
+            # 4. Natychmiastowe odświeżenie widoku podglądu transkrypcji (kolejność / format)
+            self._refresh_current_transcript_view()
+
             QMessageBox.information(
                 self,
                 "Ustawienia Zapisane",
                 "Ustawienia zostały pomyślnie zaktualizowane!\n\n"
                 "Nowy słownik branżowy oraz parametry AI będą automatycznie stosowane przy kolejnych nagraniach i transkrypcjach."
             )
+
+    def _scroll_transcript_view(self):
+        """Automatycznie ustawia pozycję paska przewijania w oknie transkrypcji."""
+        from recorder.config import get_preview_order, is_auto_scroll_chronological
+        order = get_preview_order()
+        auto_scroll = is_auto_scroll_chronological()
+
+        def do_scroll():
+            sb = self.text_transcript.verticalScrollBar()
+            if order == "chronological":
+                if auto_scroll:
+                    sb.setValue(sb.maximum())
+            else:
+                sb.setValue(0)
+
+        do_scroll()
+        QTimer.singleShot(25, do_scroll)
+
+    def _refresh_current_transcript_view(self):
+        """Odświeża wyświetlanie bieżącej transkrypcji zgodnie z aktualną konfiguracją (kolejność, timestampy)."""
+        if not self.current_turns:
+            return
+
+        session_dt = getattr(self, "session_start_time", None) or getattr(self, "current_session_start_time", None)
+        if not session_dt and self.current_txt_path:
+            session_dt = extract_datetime_from_filename(self.current_txt_path)
+        if not session_dt and self.last_audio_save_path:
+            session_dt = extract_datetime_from_filename(self.last_audio_save_path)
+
+        if self.current_txt_path:
+            json_path = get_session_path_for_txt(self.current_txt_path)
+            if os.path.exists(json_path):
+                sess = TranscriptionSession.load_from_json(json_path)
+                if sess and sess.turns:
+                    html_content = sess.export_to_html(session_start_time=session_dt)
+                    self.text_transcript.setHtml(html_content)
+                    self._scroll_transcript_view()
+                    return
+
+        mapping = {}
+        for spk_id, fields in self.speaker_inputs.items():
+            if isinstance(fields, dict):
+                n = fields["name"].text().strip()
+                r = fields["role"].text().strip()
+                if n and r:
+                    mapping[spk_id] = f"{n} ({r})"
+                elif n:
+                    mapping[spk_id] = n
+                elif r:
+                    mapping[spk_id] = f"{spk_id} ({r})"
+            elif hasattr(fields, "text"):
+                val = fields.text().strip()
+                if val:
+                    mapping[spk_id] = val
+
+        html_content, _ = format_turns(self.current_turns, mapping, session_start_time=session_dt)
+        self.text_transcript.setHtml(html_content)
+        self._scroll_transcript_view()
+
     def _on_copy_transcript_clicked(self):
         """Kopiuje bieżącą transkrypcję do schowka systemowego."""
         text = self.last_plain_text or self.text_transcript.toPlainText()
@@ -917,6 +982,7 @@ class SmartDictaphoneWindow(QMainWindow):
             return
 
         self.recorded_seconds = 0
+        self.last_processed_block_idx = 0
         self.lbl_timer.setText("00:00:00")
 
         self.live_plain_text_lines = []
@@ -1019,6 +1085,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.current_turns = all_turns or []
         self.last_plain_text = full_plain
         self.text_transcript.setHtml(full_html)
+        self._scroll_transcript_view()
         self._populate_speaker_mapping(self.current_turns)
 
         # Transmisja na żywo nowych segmentów do Supabase / CRM
@@ -1036,11 +1103,12 @@ class SmartDictaphoneWindow(QMainWindow):
                 self.synced_segment_count = len(all_turns)
 
         # Aktualizacja paska postępu
+        self.last_processed_block_idx = block_idx
         pct = int(min(98, max(5, (proc_sec / max(1.0, tot_sec)) * 100)))
         p_min, p_sec = int(proc_sec // 60), int(proc_sec % 60)
         t_min, t_sec = int(tot_sec // 60), int(tot_sec % 60)
         self.progress_transcription.setValue(pct)
-        self.progress_transcription.setFormat(f"🟢 Przetworzono w tle: {p_min:02d}:{p_sec:02d} / {t_min:02d}:{t_sec:02d} (Blok #{block_idx} na żywo)")
+        self.progress_transcription.setFormat(f"🟢 Przetworzono w tle: {p_min:02d}:{p_sec:02d} / {t_min:02d}:{t_sec:02d} ({pct}% · blok #{block_idx})")
 
     def _on_rolling_status(self, text):
         if self.worker.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:
@@ -1154,6 +1222,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.current_turns = all_turns or []
         self.last_plain_text = final_plain
         self.text_transcript.setHtml(final_html)
+        self._scroll_transcript_view()
         self._populate_speaker_mapping(self.current_turns)
 
         enable_diar = self.check_enable_diarization.isChecked()
@@ -1266,11 +1335,13 @@ class SmartDictaphoneWindow(QMainWindow):
 
     def _on_preliminary_transcript(self, html_text: str, plain_text: str, turns: list = None):
         self.text_transcript.setHtml(html_text)
+        self._scroll_transcript_view()
         self.current_turns = turns or []
         self._populate_speaker_mapping(self.current_turns)
 
     def _on_file_preliminary_transcript(self, html_text: str, plain_text: str, prepared_wav_path: str, turns: list = None):
         self.text_transcript.setHtml(html_text)
+        self._scroll_transcript_view()
         base_name = os.path.basename(prepared_wav_path)
         file_stem = os.path.splitext(base_name)[0]
         txt_filename = f"transkrypcja_{file_stem}.txt"
@@ -1290,6 +1361,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.progress_transcription.setValue(100)
         self.progress_transcription.setFormat("Przetwarzanie pliku zakończone!")
         self.text_transcript.setHtml(html_text)
+        self._scroll_transcript_view()
 
         # Odblokowanie kontrolek
         self.btn_start.setEnabled(True)
@@ -1321,6 +1393,7 @@ class SmartDictaphoneWindow(QMainWindow):
         if suggestions and any(k != v for k, v in suggestions.items()):
             auto_html, auto_plain = format_turns(self.current_turns, suggestions)
             self.text_transcript.setHtml(auto_html)
+            self._scroll_transcript_view()
             plain_text = auto_plain
 
         try:
@@ -1392,6 +1465,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.progress_transcription.setValue(100)
         self.progress_transcription.setFormat("Transkrypcja zakończona!")
         self.text_transcript.setHtml(html_text)
+        self._scroll_transcript_view()
         self.btn_start.setEnabled(True)
         self.btn_upload.setEnabled(True)
         self.combo_devices.setEnabled(True)
@@ -1425,6 +1499,7 @@ class SmartDictaphoneWindow(QMainWindow):
             if suggestions and any(k != v for k, v in suggestions.items()):
                 auto_html, auto_plain = format_turns(self.current_turns, suggestions)
                 self.text_transcript.setHtml(auto_html)
+                self._scroll_transcript_view()
                 plain_text = auto_plain
         else:
             # Gdy diaryzacja jest wyłączona: panel mapowania jest ukryty, a w transkrypcji pozostaje neutralny 'Mówca'
@@ -1629,6 +1704,7 @@ class SmartDictaphoneWindow(QMainWindow):
 
         html_text, plain_text = format_turns(self.current_turns, mapping, session_start_time=session_dt)
         self.text_transcript.setHtml(html_text)
+        self._scroll_transcript_view()
         self.last_plain_text = plain_text
 
         if self.current_txt_path:
@@ -1979,6 +2055,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.progress_transcription.setValue(100)
         self.progress_transcription.setFormat("Diaryzacja mówców zakończona pomyślnie!")
         self.text_transcript.setHtml(html_text)
+        self._scroll_transcript_view()
         self.current_turns = turns or []
         self.last_plain_text = plain_text
 
@@ -2053,6 +2130,7 @@ class SmartDictaphoneWindow(QMainWindow):
                     self._populate_speaker_mapping(sess.turns)
                     html_content = sess.export_to_html(session_start_time=session_dt)
                     self.text_transcript.setHtml(html_content)
+                    self._scroll_transcript_view()
                 else:
                     turns = parse_txt_to_turns(content, session_start_time=session_dt)
                     self.current_turns = turns or []
@@ -2060,10 +2138,16 @@ class SmartDictaphoneWindow(QMainWindow):
                         self._populate_speaker_mapping(turns)
                         html_content, _ = format_turns(turns, session_start_time=session_dt)
                         self.text_transcript.setHtml(html_content)
+                        self._scroll_transcript_view()
                     else:
                         self.speaker_box.setVisible(False)
-                        html_content = content.replace("\n", "<br>")
+                        from recorder.config import get_preview_order
+                        lines = [l for l in content.split("\n") if l.strip()]
+                        if get_preview_order() == "newest_first":
+                            lines = list(reversed(lines))
+                        html_content = "<br><br>".join(lines)
                         self.text_transcript.setHtml(html_content)
+                        self._scroll_transcript_view()
 
                 self.btn_manual_sync.setEnabled(True)
                 target_name = self.cloud_sync.config.get("sync_target", "emanager").upper()
@@ -2110,26 +2194,38 @@ class SmartDictaphoneWindow(QMainWindow):
                     p_min, p_sec = int(proc_sec // 60), int(proc_sec % 60)
                     t_min, t_sec = int(self.recorded_seconds // 60), int(self.recorded_seconds % 60)
                     self.progress_transcription.setValue(pct)
-                    self.progress_transcription.setFormat(f"🟢 Przetworzono w tle: {p_min:02d}:{p_sec:02d} / {t_min:02d}:{t_sec:02d} ({pct}%)")
+                    blk_str = f" · blok #{self.last_processed_block_idx}" if self.last_processed_block_idx > 0 else ""
+                    self.progress_transcription.setFormat(f"🟢 Przetworzono w tle: {p_min:02d}:{p_sec:02d} / {t_min:02d}:{t_sec:02d} ({pct}%{blk_str})")
                 else:
-                    # Informacja o aktywnym buforowaniu mowy przed zamknięciem pierwszego bloku (min. 2 min)
+                    # Informacja o aktywnym zbieraniu i buforowaniu mowy przed pierwszym blokiem
                     t_min, t_sec = int(self.recorded_seconds // 60), int(self.recorded_seconds % 60)
-                    if self.recorded_seconds < 120:
-                        pct = int((self.recorded_seconds / 120.0) * 100)
-                        self.progress_transcription.setValue(min(95, max(5, pct)))
-                        self.progress_transcription.setFormat(f"🎙️ Zbieranie mowy do bloku #1: {t_min:02d}:{t_sec:02d} / 02:00...")
+                    if self.recorded_seconds < 12:
+                        pct = int(min(80, max(5, (self.recorded_seconds / 12.0) * 80)))
+                        self.progress_transcription.setValue(pct)
+                        self.progress_transcription.setFormat(f"🎙️ Zbieranie mowy do pierwszego bloku: {t_min:02d}:{t_sec:02d}...")
                     else:
-                        self.progress_transcription.setValue(95)
-                        self.progress_transcription.setFormat(f"🎙️ Nagrywanie: {t_min:02d}:{t_sec:02d} (Oczekiwanie na pauzę w mowie na cięcie bloku)...")
+                        pct = min(92, 80 + int((self.recorded_seconds - 12) * 2))
+                        self.progress_transcription.setValue(pct)
+                        self.progress_transcription.setFormat(f"⚡ Przetwarzanie pierwszego fragmentu w tle: {t_min:02d}:{t_sec:02d}...")
         elif self.worker.state == SmartRecordState.AUTO_PAUSED:
             # W stanie Auto-Pauzy stoper stoi w miejscu i pasek nie ucieka do przodu
             t_min, t_sec = int(self.recorded_seconds // 60), int(self.recorded_seconds % 60)
             proc_sec = getattr(self.rolling_worker, "total_processed_seconds", 0.0) if getattr(self, "rolling_worker", None) else 0.0
             if proc_sec > 0:
                 p_min, p_sec = int(proc_sec // 60), int(proc_sec % 60)
-                self.progress_transcription.setFormat(f"⏸️ Auto-Pauza (Cisza): {p_min:02d}:{p_sec:02d} / {t_min:02d}:{t_sec:02d}")
+                blk_str = f" · blok #{self.last_processed_block_idx}" if self.last_processed_block_idx > 0 else ""
+                self.progress_transcription.setFormat(f"⏸️ Auto-Pauza (Cisza): {p_min:02d}:{p_sec:02d} / {t_min:02d}:{t_sec:02d}{blk_str}")
             else:
-                self.progress_transcription.setFormat(f"⏸️ Auto-Pauza (Cisza): {t_min:02d}:{t_sec:02d} nagrania")
+                self.progress_transcription.setFormat(f"⏸️ Auto-Pauza (Cisza): {t_min:02d}:{t_sec:02d}")
+        elif self.worker.state == SmartRecordState.MANUAL_PAUSED:
+            t_min, t_sec = int(self.recorded_seconds // 60), int(self.recorded_seconds % 60)
+            proc_sec = getattr(self.rolling_worker, "total_processed_seconds", 0.0) if getattr(self, "rolling_worker", None) else 0.0
+            if proc_sec > 0:
+                p_min, p_sec = int(proc_sec // 60), int(proc_sec % 60)
+                blk_str = f" · blok #{self.last_processed_block_idx}" if self.last_processed_block_idx > 0 else ""
+                self.progress_transcription.setFormat(f"⏸️ Wstrzymano ręcznie: {p_min:02d}:{p_sec:02d} / {t_min:02d}:{t_sec:02d}{blk_str}")
+            else:
+                self.progress_transcription.setFormat(f"⏸️ Wstrzymano ręcznie: {t_min:02d}:{t_sec:02d}")
 
     def _update_audio_level(self, level):
         pass
@@ -2187,6 +2283,14 @@ class SmartDictaphoneWindow(QMainWindow):
             self.lbl_status_badge.setObjectName("StatusManualPaused")
             self.btn_pause.setText("▶ Wznów Nagrywanie")
             self.btn_pause.setObjectName("BtnResume")
+            t_min, t_sec = int(self.recorded_seconds // 60), int(self.recorded_seconds % 60)
+            proc_sec = getattr(self.rolling_worker, "total_processed_seconds", 0.0) if getattr(self, "rolling_worker", None) else 0.0
+            if proc_sec > 0:
+                p_min, p_sec = int(proc_sec // 60), int(proc_sec % 60)
+                blk_str = f" · blok #{self.last_processed_block_idx}" if self.last_processed_block_idx > 0 else ""
+                self.progress_transcription.setFormat(f"⏸️ Wstrzymano ręcznie: {p_min:02d}:{p_sec:02d} / {t_min:02d}:{t_sec:02d}{blk_str}")
+            else:
+                self.progress_transcription.setFormat(f"⏸️ Wstrzymano ręcznie: {t_min:02d}:{t_sec:02d}")
 
         self.lbl_status_badge.style().unpolish(self.lbl_status_badge)
         self.lbl_status_badge.style().polish(self.lbl_status_badge)
