@@ -668,12 +668,74 @@ class SmartDictaphoneWindow(QMainWindow):
             if hasattr(self, "worker"):
                 self.worker.set_auto_pause_sec(float(new_pause))
 
+            # 4. Natychmiastowe odświeżenie widoku podglądu transkrypcji (kolejność / format)
+            self._refresh_current_transcript_view()
+
             QMessageBox.information(
                 self,
                 "Ustawienia Zapisane",
                 "Ustawienia zostały pomyślnie zaktualizowane!\n\n"
                 "Nowy słownik branżowy oraz parametry AI będą automatycznie stosowane przy kolejnych nagraniach i transkrypcjach."
             )
+
+    def _scroll_transcript_view(self):
+        """Automatycznie ustawia pozycję paska przewijania w oknie transkrypcji."""
+        from recorder.config import get_preview_order, is_auto_scroll_chronological
+        order = get_preview_order()
+        auto_scroll = is_auto_scroll_chronological()
+
+        def do_scroll():
+            sb = self.text_transcript.verticalScrollBar()
+            if order == "chronological":
+                if auto_scroll:
+                    sb.setValue(sb.maximum())
+            else:
+                sb.setValue(0)
+
+        do_scroll()
+        QTimer.singleShot(25, do_scroll)
+
+    def _refresh_current_transcript_view(self):
+        """Odświeża wyświetlanie bieżącej transkrypcji zgodnie z aktualną konfiguracją (kolejność, timestampy)."""
+        if not self.current_turns:
+            return
+
+        session_dt = getattr(self, "session_start_time", None) or getattr(self, "current_session_start_time", None)
+        if not session_dt and self.current_txt_path:
+            session_dt = extract_datetime_from_filename(self.current_txt_path)
+        if not session_dt and self.last_audio_save_path:
+            session_dt = extract_datetime_from_filename(self.last_audio_save_path)
+
+        if self.current_txt_path:
+            json_path = get_session_path_for_txt(self.current_txt_path)
+            if os.path.exists(json_path):
+                sess = TranscriptionSession.load_from_json(json_path)
+                if sess and sess.turns:
+                    html_content = sess.export_to_html(session_start_time=session_dt)
+                    self.text_transcript.setHtml(html_content)
+                    self._scroll_transcript_view()
+                    return
+
+        mapping = {}
+        for spk_id, fields in self.speaker_inputs.items():
+            if isinstance(fields, dict):
+                n = fields["name"].text().strip()
+                r = fields["role"].text().strip()
+                if n and r:
+                    mapping[spk_id] = f"{n} ({r})"
+                elif n:
+                    mapping[spk_id] = n
+                elif r:
+                    mapping[spk_id] = f"{spk_id} ({r})"
+            elif hasattr(fields, "text"):
+                val = fields.text().strip()
+                if val:
+                    mapping[spk_id] = val
+
+        html_content, _ = format_turns(self.current_turns, mapping, session_start_time=session_dt)
+        self.text_transcript.setHtml(html_content)
+        self._scroll_transcript_view()
+
     def _on_copy_transcript_clicked(self):
         """Kopiuje bieżącą transkrypcję do schowka systemowego."""
         text = self.last_plain_text or self.text_transcript.toPlainText()
@@ -1019,6 +1081,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.current_turns = all_turns or []
         self.last_plain_text = full_plain
         self.text_transcript.setHtml(full_html)
+        self._scroll_transcript_view()
         self._populate_speaker_mapping(self.current_turns)
 
         # Transmisja na żywo nowych segmentów do Supabase / CRM
@@ -1154,6 +1217,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.current_turns = all_turns or []
         self.last_plain_text = final_plain
         self.text_transcript.setHtml(final_html)
+        self._scroll_transcript_view()
         self._populate_speaker_mapping(self.current_turns)
 
         enable_diar = self.check_enable_diarization.isChecked()
@@ -1266,11 +1330,13 @@ class SmartDictaphoneWindow(QMainWindow):
 
     def _on_preliminary_transcript(self, html_text: str, plain_text: str, turns: list = None):
         self.text_transcript.setHtml(html_text)
+        self._scroll_transcript_view()
         self.current_turns = turns or []
         self._populate_speaker_mapping(self.current_turns)
 
     def _on_file_preliminary_transcript(self, html_text: str, plain_text: str, prepared_wav_path: str, turns: list = None):
         self.text_transcript.setHtml(html_text)
+        self._scroll_transcript_view()
         base_name = os.path.basename(prepared_wav_path)
         file_stem = os.path.splitext(base_name)[0]
         txt_filename = f"transkrypcja_{file_stem}.txt"
@@ -1290,6 +1356,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.progress_transcription.setValue(100)
         self.progress_transcription.setFormat("Przetwarzanie pliku zakończone!")
         self.text_transcript.setHtml(html_text)
+        self._scroll_transcript_view()
 
         # Odblokowanie kontrolek
         self.btn_start.setEnabled(True)
@@ -1321,6 +1388,7 @@ class SmartDictaphoneWindow(QMainWindow):
         if suggestions and any(k != v for k, v in suggestions.items()):
             auto_html, auto_plain = format_turns(self.current_turns, suggestions)
             self.text_transcript.setHtml(auto_html)
+            self._scroll_transcript_view()
             plain_text = auto_plain
 
         try:
@@ -1392,6 +1460,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.progress_transcription.setValue(100)
         self.progress_transcription.setFormat("Transkrypcja zakończona!")
         self.text_transcript.setHtml(html_text)
+        self._scroll_transcript_view()
         self.btn_start.setEnabled(True)
         self.btn_upload.setEnabled(True)
         self.combo_devices.setEnabled(True)
@@ -1425,6 +1494,7 @@ class SmartDictaphoneWindow(QMainWindow):
             if suggestions and any(k != v for k, v in suggestions.items()):
                 auto_html, auto_plain = format_turns(self.current_turns, suggestions)
                 self.text_transcript.setHtml(auto_html)
+                self._scroll_transcript_view()
                 plain_text = auto_plain
         else:
             # Gdy diaryzacja jest wyłączona: panel mapowania jest ukryty, a w transkrypcji pozostaje neutralny 'Mówca'
@@ -1629,6 +1699,7 @@ class SmartDictaphoneWindow(QMainWindow):
 
         html_text, plain_text = format_turns(self.current_turns, mapping, session_start_time=session_dt)
         self.text_transcript.setHtml(html_text)
+        self._scroll_transcript_view()
         self.last_plain_text = plain_text
 
         if self.current_txt_path:
@@ -1979,6 +2050,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.progress_transcription.setValue(100)
         self.progress_transcription.setFormat("Diaryzacja mówców zakończona pomyślnie!")
         self.text_transcript.setHtml(html_text)
+        self._scroll_transcript_view()
         self.current_turns = turns or []
         self.last_plain_text = plain_text
 
@@ -2053,6 +2125,7 @@ class SmartDictaphoneWindow(QMainWindow):
                     self._populate_speaker_mapping(sess.turns)
                     html_content = sess.export_to_html(session_start_time=session_dt)
                     self.text_transcript.setHtml(html_content)
+                    self._scroll_transcript_view()
                 else:
                     turns = parse_txt_to_turns(content, session_start_time=session_dt)
                     self.current_turns = turns or []
@@ -2060,10 +2133,16 @@ class SmartDictaphoneWindow(QMainWindow):
                         self._populate_speaker_mapping(turns)
                         html_content, _ = format_turns(turns, session_start_time=session_dt)
                         self.text_transcript.setHtml(html_content)
+                        self._scroll_transcript_view()
                     else:
                         self.speaker_box.setVisible(False)
-                        html_content = content.replace("\n", "<br>")
+                        from recorder.config import get_preview_order
+                        lines = [l for l in content.split("\n") if l.strip()]
+                        if get_preview_order() == "newest_first":
+                            lines = list(reversed(lines))
+                        html_content = "<br><br>".join(lines)
                         self.text_transcript.setHtml(html_content)
+                        self._scroll_transcript_view()
 
                 self.btn_manual_sync.setEnabled(True)
                 target_name = self.cloud_sync.config.get("sync_target", "emanager").upper()

@@ -283,10 +283,31 @@ class RollingTranscriptionWorker(QThread):
         combined_turns.sort(key=lambda t: float(t.get("start", 0.0)))
 
         from recorder.core.session import format_turn_timestamp
+        from recorder.config import get_preview_order
 
-        full_html = ""
+        reverse_order = (get_preview_order() == "newest_first")
+
         full_plain = ""
         for t in combined_turns:
+            spk = t.get("speaker", "Mówca")
+            channel = t.get("channel", "mic")
+            st = float(t.get("start", 0.0))
+            en = float(t.get("end", 0.0))
+            txt = t.get("text", "")
+
+            time_label = format_turn_timestamp(st, en, self.session_start_time)
+
+            if channel == "system":
+                badge = "🎧 "
+            else:
+                badge = "🎙️ "
+
+            display_spk = f"{badge}{spk}" if not (spk.startswith("🎙️") or spk.startswith("🎧")) else spk
+            full_plain += f"[{time_label}] {display_spk}: {txt}\n\n"
+
+        full_html = ""
+        display_turns = list(reversed(combined_turns)) if reverse_order else combined_turns
+        for t in display_turns:
             spk = t.get("speaker", "Mówca")
             channel = t.get("channel", "mic")
             st = float(t.get("start", 0.0))
@@ -304,7 +325,6 @@ class RollingTranscriptionWorker(QThread):
 
             display_spk = f"{badge}{spk}" if not (spk.startswith("🎙️") or spk.startswith("🎧")) else spk
             full_html += f"<b>[{time_label}] <span style='color: {color};'>{display_spk}:</span></b> {txt}<br><br>"
-            full_plain += f"[{time_label}] {display_spk}: {txt}\n\n"
 
         return full_html, full_plain, combined_turns
 

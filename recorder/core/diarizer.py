@@ -519,9 +519,9 @@ class DiarizationEngine:
         turns.sort(key=lambda t: float(t.get("start", 0.0)))
 
         from recorder.core.session import format_turn_timestamp, extract_datetime_from_filename
+        from recorder.config import get_preview_order
         base_dt = session_start_time or extract_datetime_from_filename(audio_path)
 
-        final_html = ""
         final_plain = ""
         for t in turns:
             spk = t["speaker"]
@@ -529,8 +529,18 @@ class DiarizationEngine:
             st = float(t["start"])
             en = float(t["end"])
             time_label = format_turn_timestamp(st, en, base_dt)
-            final_html += f"<b>[{time_label}] {spk}:</b> {s_txt}<br><br>"
             final_plain += f"[{time_label}] {spk}: {s_txt}\n\n"
+
+        reverse_order = (get_preview_order() == "newest_first")
+        display_turns = list(reversed(turns)) if reverse_order else turns
+        final_html = ""
+        for t in display_turns:
+            spk = t["speaker"]
+            s_txt = t["text"]
+            st = float(t["start"])
+            en = float(t["end"])
+            time_label = format_turn_timestamp(st, en, base_dt)
+            final_html += f"<b>[{time_label}] {spk}:</b> {s_txt}<br><br>"
 
         print(f"✅ [PYANNOTE] Diaryzacja zakończona! Wykryto mówców: {', '.join(sorted(speakers_detected)) if speakers_detected else 'Brak'}")
 
@@ -586,7 +596,7 @@ def format_transcript_without_diarization(transcript_words: List[Dict[str, Any]]
             chunks.append((chunk_start, last_end, text))
 
     from recorder.core.session import format_turn_timestamp
-    final_html = ""
+    from recorder.config import get_preview_order
     final_plain = ""
     turns = []
 
@@ -598,7 +608,13 @@ def format_transcript_without_diarization(transcript_words: List[Dict[str, Any]]
             "text": text
         })
         time_label = format_turn_timestamp(start_t, end_t, session_start_time)
-        final_html += f"<b>[{time_label}]:</b> {text}<br><br>"
         final_plain += f"[{time_label}]: {text}\n\n"
+
+    reverse_order = (get_preview_order() == "newest_first")
+    display_chunks = list(reversed(chunks)) if reverse_order else chunks
+    final_html = ""
+    for start_t, end_t, text in display_chunks:
+        time_label = format_turn_timestamp(start_t, end_t, session_start_time)
+        final_html += f"<b>[{time_label}]:</b> {text}<br><br>"
 
     return final_html, final_plain, turns
