@@ -11,6 +11,14 @@ import shutil
 import importlib.metadata
 import importlib.util
 
+# Wymuś kodowanie UTF-8 na stdout/stderr w konsoli Windows (np. runner GitHub Actions)
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENTRY_POINT = os.path.join(ROOT_DIR, "run.py")
 DIST_DIR = os.path.join(ROOT_DIR, "dist")
@@ -25,7 +33,14 @@ class TeeLogger:
         self.original_stream = original_stream
 
     def write(self, data):
-        self.original_stream.write(data)
+        try:
+            self.original_stream.write(data)
+        except UnicodeEncodeError:
+            enc = getattr(self.original_stream, "encoding", "ascii") or "ascii"
+            safe_data = data.encode(enc, errors="replace").decode(enc, errors="replace")
+            self.original_stream.write(safe_data)
+        except Exception:
+            pass
         self.original_stream.flush()
         self.file.write(data)
         self.file.flush()
