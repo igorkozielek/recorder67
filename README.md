@@ -19,6 +19,7 @@ Szczegółowy opis założeń architektonicznych, pamięci projektu oraz statusu
 * ☁️ **Agnostyczna Synchronizacja Chmurowa (Cloud Sync):** Transmisja segmentów transkrypcji na żywo do bazy Supabase / REST API / Webhooka CRM z automatyczną kolejką offline na wypadek braku internetu.
 * ⏱️ **Inteligentny Podział Sesji (Smart Session Splitting):** Automatyczne domykanie bieżącego spotkania po konfigurowalnym czasie ciszy (np. 15 minut) i płynne rozpoczynanie nowej sesji bez przerywania nasłuchu.
 * 💾 **Optymalizacja Pamięci i Strumieniowanie WAV:** Strumieniowy zapis dźwięku na dysk (`StreamingWavWriter`) zapobiegający akumulacji danych audio w pamięci RAM podczas wielogodzinnych nagrań.
+* 🚀 **Wbudowany Auto-Updater & GitHub Actions CI/CD:** Automatyczne sprawdzanie wydań z GitHub Releases (wersje stabilne i pre-release), asynchroniczne pobieranie paczek oraz automatyczna podmiana plików w tle (in-place update).
 
 ---
 
@@ -76,6 +77,8 @@ Gotowy plik `.exe` wraz ze wszystkimi zależnościami zostanie utworzony w katal
 
 ```text
 recorder67/
+├── .github/workflows/          # CI/CD GitHub Actions (automatyczny build Windows EXE i publikacja wydań)
+│   └── release.yml
 ├── main.py                     # Główny punkt startowy aplikacji
 ├── .env.example                # Przykładowy szablon konfiguracji środowiska
 ├── PROJECT_GOAL.md             # Pamięć projektu, roadmapa i architektura
@@ -93,7 +96,8 @@ recorder67/
     │   ├── diarizer.py         # Silnik diaryzacji PyAnnote (Speaker Diarization)
     │   ├── speakers.py         # Analiza dialogów i autosugestia imion mówców
     │   ├── session.py          # Zarządzanie strukturą i zapisem sesji JSON/TXT
-    │   └── cloud_sync.py       # Asynchroniczna synchronizacja chmurowa i kolejka offline
+    │   ├── cloud_sync.py       # Asynchroniczna synchronizacja chmurowa i kolejka offline
+    │   └── updater.py          # Auto-updater (GitHub Releases API i podmiana in-place)
     │
     ├── audio/                  # Obsługa wejść audio i operacji na plikach
     │   ├── devices.py          # Wykrywanie i filtrowanie mikrofonów (DirectSound/WASAPI/MME)

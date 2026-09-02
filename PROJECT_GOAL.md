@@ -67,6 +67,7 @@ graph TD
 - [x] **Hybrydowe Źródła Audio (Mikrofon + WASAPI Loopback)**: Niezależne lub równoległe rejestrowanie mikrofonu oraz dźwięku systemu/spotkań (Discord, MS Teams, Zoom), izolacja procesu audio (`TargetAppAudioMonitor`), suwaki VU i niezależne przyciski wyciszenia MUTE w locie.
 - [x] **Inteligentny System Ostrzeżeń o Braku Dźwięku**: Wykrywanie przedłużającego się braku mowy i dźwięku w aktywnej sesji (domyślnie 5 min, regulacja 1–20 min), kompaktowy baner Toast z przyciskami *«Wszystko gra»* / *«Sprawdź dźwięk»*, zintegrowany z Centrum Akcji Windowsa (z priorytetem alarmu przebijającym tryb *Nie przeszkadzać*) i tłumieniem dźwięków powiadomienia w nagraniu.
 - [x] **Natywna Integracja z Windows & Oficjalna Ikona Fluent**: Zarejestrowana tożsamość procesu `InteligentnyDyktafonAI`, dedykowana przezroczysta ikona aplikacji, zasobnik systemowy (Tray) z menu podręcznym i przywracaniem okna lewym klikiem.
+- [x] **Wbudowany Auto-Updater & GitHub Actions CI/CD**: Automatyczne sprawdzanie wydań z GitHub Releases (wersje stabilne i pre-release), asynchroniczne pobieranie paczek ZIP oraz automatyczna podmiana plików w locie (in-place update) z workflowem GitHub Actions.
 - [x] **Budowanie wersji instalacyjnej**: Skrypty PyInstaller (`build_exe.ps1`) do generowania gotowego pliku `.exe` pod Windows.
 
 ---
