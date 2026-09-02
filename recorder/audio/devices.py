@@ -171,3 +171,88 @@ def get_active_audio_apps() -> List[Dict[str, Any]]:
         print(f"Błąd pobierania sesji audio aplikacji: {e}")
 
     return apps
+
+
+class TargetAppAudioMonitor:
+    """
+    Monitor aktywności audio wybranego procesu w systemie Windows (np. Discord.exe, ms-teams.exe).
+    Wykorzystuje interfejs IAudioMeterInformation z Windows Core Audio (pycaw),
+    aby zweryfikować, czy wybrany proces faktycznie generuje dźwięk.
+    Pozwala na odfiltrowanie dźwięków tła z innych aplikacji (np. YouTube z przeglądarki).
+    """
+    def __init__(self, target_filter: str = ""):
+        import time
+        self.time = time
+        self.target_filter = target_filter.lower().strip() if target_filter else ""
+        self.meters = []
+        self.last_refresh_time = 0.0
+        self.refresh_interval = 2.0  # Odświeżanie sesji co 2 sekundy
+        self._is_active = bool(self.target_filter and "wszystkie" not in self.target_filter)
+        if self._is_active:
+            self._refresh_sessions()
+
+    def set_filter(self, target_filter: str):
+        self.target_filter = target_filter.lower().strip() if target_filter else ""
+        self._is_active = bool(self.target_filter and "wszystkie" not in self.target_filter)
+        self.meters = []
+        if self._is_active:
+            self._refresh_sessions()
+
+    def _refresh_sessions(self):
+        if not HAS_PYCAW or not self._is_active:
+            self.meters = []
+            return
+        try:
+            try:
+                import comtypes
+                comtypes.CoInitialize()
+            except Exception:
+                pass
+
+            sessions = AudioUtilities.GetAllSessions()
+            meters = []
+            for s in sessions:
+                if s.Process and s.Process.name():
+                    p_name = s.Process.name().lower()
+                    if self.target_filter in p_name or p_name in self.target_filter:
+                        try:
+                            from pycaw.pycaw import IAudioMeterInformation
+                            meter = s._ctl.QueryInterface(IAudioMeterInformation)
+                            meters.append(meter)
+                        except Exception:
+                            pass
+            self.meters = meters
+            self.last_refresh_time = self.time.time()
+        except Exception:
+            pass
+
+    def is_target_app_playing(self) -> bool:
+        """
+        Zwraca True, jeśli wybrana aplikacja aktywnie generuje dźwięk (Peak > 0.0005)
+        lub gdy nie ustawiono filtra aplikacji (cały mikser).
+        """
+        if not self._is_active:
+            return True
+
+        now = self.time.time()
+        if (now - self.last_refresh_time) > self.refresh_interval or not self.meters:
+            self._refresh_sessions()
+
+        if not self.meters:
+            return False
+
+        max_peak = 0.0
+        need_refresh = False
+        for m in self.meters:
+            try:
+                val = m.GetPeakValue()
+                if val > max_peak:
+                    max_peak = val
+            except Exception:
+                need_refresh = True
+
+        if need_refresh:
+            self._refresh_sessions()
+
+        return max_peak > 0.0005
+

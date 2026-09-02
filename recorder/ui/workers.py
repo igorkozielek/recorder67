@@ -26,11 +26,12 @@ from recorder.config import (
     get_record_source_mode,
     get_loopback_device_index,
     get_system_vad_speech_threshold,
-    get_vad_speech_threshold
+    get_vad_speech_threshold,
+    get_silence_alert_seconds
 )
 from recorder.audio.capture import save_wav_file, StreamingWavWriter
 from recorder.audio.converter import resample_to_16k, prepare_audio_file
-from recorder.audio.devices import HAS_PYAUDIOWPATCH
+from recorder.audio.devices import HAS_PYAUDIOWPATCH, TargetAppAudioMonitor
 from recorder.core.vad import SileroVADDetector, is_silero_available
 from recorder.core.transcriber import TranscriberEngine
 from recorder.core.diarizer import DiarizationEngine, format_transcript_without_diarization
@@ -127,6 +128,7 @@ class SmartAudioWorker(QThread):
     phrase_signal = pyqtSignal(np.ndarray, int, float)        # Frazy audio dla transkrypcji na żywo (16kHz, samplerate, start_sec)
     rolling_block_ready_signal = pyqtSignal(int, float, float, np.ndarray, str)  # (block_idx, start_sec, end_sec, audio_data, channel_source)
     session_split_signal = pyqtSignal(str)                     # Sygnał podziału na nową sesję spotkania (powód)
+    silence_alert_signal = pyqtSignal(float, str)              # Ostrzeżenie strażnika ciszy (silence_sec, source_mode)
     error_signal = pyqtSignal(str)
 
     # Parametry okna bezpiecznego cięcia w tle (Safe VAD Boundary Handoff)
@@ -147,6 +149,8 @@ class SmartAudioWorker(QThread):
         self.source_mode = source_mode or get_record_source_mode()
         self.auto_pause_sec = auto_pause_sec
         self.session_split_silence_sec = SESSION_SPLIT_SILENCE_SEC
+        self.silence_alert_sec = get_silence_alert_seconds()
+        self.silence_alert_emitted = False
 
         # Dwa niezależne detektory VAD dla mikrofonu oraz dla dźwięku systemu/Discorda
         mic_th = get_vad_speech_threshold()
@@ -167,6 +171,14 @@ class SmartAudioWorker(QThread):
         # Bieżące poziomy głośności
         self.mic_level = 0.0
         self.sys_level = 0.0
+        self.mic_muted = False
+        self.sys_muted = False
+        self.suppress_sys_until = 0.0
+
+        # Monitor i izolacja wybranej aplikacji audio (np. Discord vs YouTube)
+        self.target_app_filter = ""
+        self.app_monitor = TargetAppAudioMonitor("")
+        self.target_app_active_until = 0.0
 
         # Bufory bloków dla kanału mikrofonu
         self.current_mic_block_chunks = []
@@ -202,10 +214,30 @@ class SmartAudioWorker(QThread):
         except (ValueError, TypeError):
             self.session_split_silence_sec = SESSION_SPLIT_SILENCE_SEC
 
+    def set_silence_alert_seconds(self, seconds: float):
+        try:
+            self.silence_alert_sec = max(0.0, float(seconds))
+        except (ValueError, TypeError):
+            self.silence_alert_sec = 600.0
+
+    def reset_silence_alert(self):
+        """Resetuje licznik ciągłej ciszy i odblokowuje kolejny alert strażnika ciszy."""
+        with self._lock:
+            self.continuous_silence_samples = 0
+            self.silence_alert_emitted = False
+
+    def suppress_sys_audio_for(self, duration_sec: float = 0.8):
+        """Tymczasowo tłumi rejestrację dźwięku systemowego (np. podczas odtwarzania dzwonka powiadomienia programu)."""
+        import time
+        self.suppress_sys_until = time.time() + duration_sec
+
     def start_recording(self, device_index=None, loopback_device_index=None,
-                        source_mode=None, target_app_filter: str = "", save_wav_path: Optional[str] = None):
+                        source_mode=None, target_app_filter: str = "", save_wav_path: Optional[str] = None,
+                        mic_muted: bool = False, sys_muted: bool = False):
         self.device_index = device_index
         self.target_app_filter = target_app_filter or ""
+        self.app_monitor.set_filter(self.target_app_filter)
+        self.target_app_active_until = 0.0
         if loopback_device_index is not None:
             self.loopback_device_index = loopback_device_index
         elif self.loopback_device_index is None:
@@ -219,7 +251,10 @@ class SmartAudioWorker(QThread):
         self.frames = []
         self.silence_samples_count = 0
         self.continuous_silence_samples = 0
+        self.silence_alert_emitted = False
         self.session_has_speech = False
+        self.mic_muted = bool(mic_muted)
+        self.sys_muted = bool(sys_muted)
         self.mic_level = 0.0
         self.sys_level = 0.0
 
@@ -264,6 +299,7 @@ class SmartAudioWorker(QThread):
         self.current_sys_block_chunks = []
         self.sys_block_start_samples = 0
         self.continuous_silence_samples = 0
+        self.silence_alert_emitted = False
         self.session_has_speech = False
         self.audio_mixer.reset()
 
@@ -321,28 +357,58 @@ class SmartAudioWorker(QThread):
             self.state_changed_signal.emit(self.state)
 
     def stop_recording(self):
-        self.state = SmartRecordState.STOPPED
-        self._is_running = False
-        if self.wav_writer:
-            run_mic = self.source_mode in (RecordSourceMode.HYBRID_DUAL, RecordSourceMode.MIC_ONLY)
-            run_sys = self.source_mode in (RecordSourceMode.HYBRID_DUAL, RecordSourceMode.SYSTEM_ONLY) and HAS_PYAUDIOWPATCH
-            is_hybrid = (self.source_mode == RecordSourceMode.HYBRID_DUAL) and run_mic and run_sys
-            rem_bytes = self.audio_mixer.pop_mixed_frames(is_hybrid, run_mic, run_sys)
-            if rem_bytes:
-                self.frames.append(rem_bytes)
-                self.wav_writer.write_frames(rem_bytes)
-            self.wav_writer.close()
-            self.wav_writer = None
-        if self.phrase_speech_detected and self.current_phrase_chunks:
-            try:
-                phrase_arr = np.concatenate(self.current_phrase_chunks)
-                if len(phrase_arr) >= int(0.3 * self.target_samplerate):
-                    self.phrase_signal.emit(phrase_arr, self.target_samplerate, 0.0)
-            except Exception:
-                pass
-            self.current_phrase_chunks = []
+        with self._lock:
+            self.state = SmartRecordState.STOPPED
+            self._is_running = False
+            if self.wav_writer:
+                run_mic = self.source_mode in (RecordSourceMode.HYBRID_DUAL, RecordSourceMode.MIC_ONLY)
+                run_sys = self.source_mode in (RecordSourceMode.HYBRID_DUAL, RecordSourceMode.SYSTEM_ONLY) and HAS_PYAUDIOWPATCH
+                is_hybrid = (self.source_mode == RecordSourceMode.HYBRID_DUAL) and run_mic and run_sys
+                rem_bytes = self.audio_mixer.pop_mixed_frames(is_hybrid, run_mic, run_sys)
+                if rem_bytes:
+                    self.frames.append(rem_bytes)
+                    try:
+                        self.wav_writer.write_frames(rem_bytes)
+                    except Exception:
+                        pass
+                try:
+                    self.wav_writer.close()
+                except Exception:
+                    pass
+                self.wav_writer = None
+            if self.phrase_speech_detected and self.current_phrase_chunks:
+                try:
+                    phrase_arr = np.concatenate(self.current_phrase_chunks)
+                    if len(phrase_arr) >= int(0.3 * self.target_samplerate):
+                        self.phrase_signal.emit(phrase_arr, self.target_samplerate, 0.0)
+                except Exception:
+                    pass
+                self.current_phrase_chunks = []
             self.phrase_speech_detected = False
         self.state_changed_signal.emit(self.state)
+
+    def update_target_app_filter(self, new_filter: str):
+        """Dynamicznie aktualizuje filtr wybranej aplikacji audio w locie bez przerywania nagrywania."""
+        with self._lock:
+            clean = (new_filter or "").strip()
+            self.target_app_filter = clean
+            if hasattr(self, "app_monitor"):
+                self.app_monitor.set_filter(clean)
+            self.target_app_active_until = 0.0
+
+    def set_mic_muted(self, muted: bool):
+        """Wycisza lub przywraca nasłuch z mikrofonu w locie."""
+        with self._lock:
+            self.mic_muted = bool(muted)
+            if self.mic_muted:
+                self.mic_level = 0.0
+
+    def set_sys_muted(self, muted: bool):
+        """Wycisza lub przywraca nasłuch dźwięku systemu w locie."""
+        with self._lock:
+            self.sys_muted = bool(muted)
+            if self.sys_muted:
+                self.sys_level = 0.0
 
     def run(self):
         """Główna pętla rejestracji: uruchamia wątki mikrofonu oraz strumienia WASAPI Loopback."""
@@ -353,6 +419,13 @@ class SmartAudioWorker(QThread):
         self.sys_speech_active = False
         self.vad_detector_mic.reset()
         self.vad_detector_sys.reset()
+
+        # Inicjalizacja COM dla wątku roboczego (wymagana dla pycaw / monitorowania aplikacji)
+        try:
+            import comtypes
+            comtypes.CoInitialize()
+        except Exception:
+            pass
 
         # Inicjalizacja instancji PyAudio dla obu strumieni
         p_audio = None
@@ -391,10 +464,21 @@ class SmartAudioWorker(QThread):
                     sys_channels = int(loopback_dev.get("maxInputChannels", 2))
 
                     def loopback_callback(in_data, frame_count, time_info, status):
-                        if not self._is_running or self.state == SmartRecordState.MANUAL_PAUSED or self.state == SmartRecordState.STOPPED:
+                        if not self._is_running or self.state == SmartRecordState.STOPPED:
+                            return (None, pyaudio.paAbort)
+                        import time
+                        if self.state == SmartRecordState.MANUAL_PAUSED or not in_data or self.sys_muted or time.time() < self.suppress_sys_until:
+                            if self.sys_muted or time.time() < self.suppress_sys_until:
+                                self.sys_level = 0.0
                             return (None, pyaudio.paContinue)
-                        if not in_data:
-                            return (None, pyaudio.paContinue)
+
+                        # Izolacja wybranej aplikacji audio: jeśli wybrano konkretną aplikację (np. Discord),
+                        # a ta aplikacja w tej chwili nie generuje dźwięku, odrzucamy próbki tła (np. YouTube)
+                        if self.target_app_filter:
+                            import time
+                            if time.time() > self.target_app_active_until:
+                                self.sys_level = 0.0
+                                return (None, pyaudio.paContinue)
 
                         try:
                             raw_np = np.frombuffer(in_data, dtype=np.int16).astype(np.float32) / 32768.0
@@ -440,6 +524,7 @@ class SmartAudioWorker(QThread):
                                         self.silence_samples_count = 0
                                         self.continuous_silence_samples = 0
                                         self.session_has_speech = True
+                                        self.silence_alert_emitted = False
                                     else:
                                         self.sys_silence_samples += len(chunk_16k)
 
@@ -508,8 +593,10 @@ class SmartAudioWorker(QThread):
 
                     def mic_callback(in_data, frame_count, time_info, status):
                         if not self._is_running or self.state == SmartRecordState.STOPPED:
-                            return (None, pyaudio.paContinue)
-                        if not in_data:
+                            return (None, pyaudio.paAbort)
+                        if self.state == SmartRecordState.MANUAL_PAUSED or not in_data or self.mic_muted:
+                            if self.mic_muted:
+                                self.mic_level = 0.0
                             return (None, pyaudio.paContinue)
 
                         try:
@@ -552,6 +639,7 @@ class SmartAudioWorker(QThread):
                                         self.continuous_silence_samples = 0
                                         self.mic_silence_samples = 0
                                         self.session_has_speech = True
+                                        self.silence_alert_emitted = False
                                     else:
                                         self.mic_silence_samples += len(chunk_16k)
 
@@ -623,6 +711,13 @@ class SmartAudioWorker(QThread):
                 self.mic_speech_active = False
                 self.sys_speech_active = False
 
+                # Sprawdzenie ostrzeżenia strażnika ciszy (brak dźwięku przez zdefiniowany czas)
+                if self.silence_alert_sec > 0 and self.state != SmartRecordState.MANUAL_PAUSED:
+                    cont_sil_sec = float(self.continuous_silence_samples / 16000.0)
+                    if cont_sil_sec >= self.silence_alert_sec and not self.silence_alert_emitted:
+                        self.silence_alert_emitted = True
+                        self.silence_alert_signal.emit(cont_sil_sec, self.source_mode)
+
                 # Sprawdzenie podziału sesji po długiej ciszy
                 if self.session_has_speech:
                     cont_sil_sec = float(self.continuous_silence_samples / 16000.0)
@@ -650,20 +745,33 @@ class SmartAudioWorker(QThread):
                         float(cur_sil_sec)
                     )
 
+                # Sprawdzenie aktywności docelowej aplikacji audio (izolacja procesu np. Discord vs YouTube)
+                if self.target_app_filter and run_sys:
+                    import time
+                    if self.app_monitor.is_target_app_playing():
+                        self.target_app_active_until = time.time() + 0.40
+
                 # Wygaszanie poziomów VU
                 self.mic_level *= 0.92
                 self.sys_level *= 0.92
                 self.msleep(40)
         finally:
+            if hasattr(self, "app_monitor"):
+                try:
+                    self.app_monitor.meters = []
+                except Exception:
+                    pass
             if mic_stream:
                 try:
-                    mic_stream.stop_stream()
+                    if mic_stream.is_active():
+                        mic_stream.stop_stream()
                     mic_stream.close()
                 except Exception:
                     pass
             if loop_stream:
                 try:
-                    loop_stream.stop_stream()
+                    if loop_stream.is_active():
+                        loop_stream.stop_stream()
                     loop_stream.close()
                 except Exception:
                     pass
@@ -674,6 +782,11 @@ class SmartAudioWorker(QThread):
                     p_audio.terminate()
                 except Exception:
                     pass
+            try:
+                import comtypes
+                comtypes.CoUninitialize()
+            except Exception:
+                pass
 
     def save_wav(self, file_path: str) -> bool:
         if self.wav_writer:

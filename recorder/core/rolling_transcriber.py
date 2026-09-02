@@ -95,6 +95,12 @@ class RollingTranscriptionWorker(QThread):
     def stop(self):
         """Natychmiast przerywa pętlę roboczą i odblokowuje wątek."""
         self._is_running = False
+        while not self.block_queue.empty():
+            try:
+                self.block_queue.get_nowait()
+                self.block_queue.task_done()
+            except Exception:
+                break
         self.block_queue.put(None)
 
     def get_all_words(self) -> List[Dict[str, Any]]:
