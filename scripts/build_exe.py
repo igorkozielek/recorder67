@@ -205,6 +205,10 @@ def main():
         
         # Bezpieczne dołączenie pliku przykładowego .env.example (zamiast prywatnego .env)
         f"--add-data={os.path.join(ROOT_DIR, '.env.example')};." if os.path.exists(os.path.join(ROOT_DIR, '.env.example')) else "",
+
+        # Dołączenie oficjalnej ikony i zasobów aplikacji
+        f"--icon={os.path.join(ROOT_DIR, 'recorder', 'resources', 'app_icon.ico')}" if os.path.exists(os.path.join(ROOT_DIR, 'recorder', 'resources', 'app_icon.ico')) else "",
+        f"--add-data={os.path.join(ROOT_DIR, 'recorder', 'resources')};recorder/resources" if os.path.exists(os.path.join(ROOT_DIR, 'recorder', 'resources')) else "",
         
         ENTRY_POINT
     ]
