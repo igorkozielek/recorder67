@@ -21,3 +21,7 @@ faster-whisper>=1.0.0
 # UWAGA: huggingface_hub musi być <0.23.0 ze względu na kompatybilność use_auth_token w PyAnnote 3.1
 huggingface_hub>=0.20.0,<0.23.0
 pyannote.audio>=3.1.0,<4.0.0
+
+# Narzędzia testowe
+pytest>=8.0.0
+
