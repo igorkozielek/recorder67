@@ -98,6 +98,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.last_plain_text = ""
         self.current_meeting_id = None
         self.synced_segment_count = 0
+        self.last_processed_block_idx = 0
         self._active_threads = []
         self._finalize_pending = False       # Guard: blokuje Start gdy trwa finalizacja poprzedniej sesji
         self.session_start_time = None       # Realna godzina startu bieżącego nagrania (datetime)
@@ -492,10 +493,12 @@ class SmartDictaphoneWindow(QMainWindow):
         outputs_main_layout.addLayout(token_layout)
 
         self.progress_transcription = QProgressBar()
+        self.progress_transcription.setObjectName("TranscriptionProgress")
         self.progress_transcription.setRange(0, 100)
         self.progress_transcription.setValue(0)
         self.progress_transcription.setTextVisible(True)
-        self.progress_transcription.setFormat("Oczekuje na nagranie lub plik...")
+        self.progress_transcription.setFixedHeight(22)
+        self.progress_transcription.setFormat("Oczekiwanie na nagranie lub plik...")
         outputs_main_layout.addWidget(self.progress_transcription)
 
         # UKŁAD DWUKOLUMNOWY: LEWA = NAGRANIA AUDIO, PRAWA = TRANSKRYPCJE TEKSTOWE
@@ -979,6 +982,7 @@ class SmartDictaphoneWindow(QMainWindow):
             return
 
         self.recorded_seconds = 0
+        self.last_processed_block_idx = 0
         self.lbl_timer.setText("00:00:00")
 
         self.live_plain_text_lines = []
@@ -1099,11 +1103,12 @@ class SmartDictaphoneWindow(QMainWindow):
                 self.synced_segment_count = len(all_turns)
 
         # Aktualizacja paska postępu
+        self.last_processed_block_idx = block_idx
         pct = int(min(98, max(5, (proc_sec / max(1.0, tot_sec)) * 100)))
         p_min, p_sec = int(proc_sec // 60), int(proc_sec % 60)
         t_min, t_sec = int(tot_sec // 60), int(tot_sec % 60)
         self.progress_transcription.setValue(pct)
-        self.progress_transcription.setFormat(f"🟢 Przetworzono w tle: {p_min:02d}:{p_sec:02d} / {t_min:02d}:{t_sec:02d} (Blok #{block_idx} na żywo)")
+        self.progress_transcription.setFormat(f"🟢 Przetworzono w tle: {p_min:02d}:{p_sec:02d} / {t_min:02d}:{t_sec:02d} ({pct}% · blok #{block_idx})")
 
     def _on_rolling_status(self, text):
         if self.worker.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:
@@ -2189,26 +2194,38 @@ class SmartDictaphoneWindow(QMainWindow):
                     p_min, p_sec = int(proc_sec // 60), int(proc_sec % 60)
                     t_min, t_sec = int(self.recorded_seconds // 60), int(self.recorded_seconds % 60)
                     self.progress_transcription.setValue(pct)
-                    self.progress_transcription.setFormat(f"🟢 Przetworzono w tle: {p_min:02d}:{p_sec:02d} / {t_min:02d}:{t_sec:02d} ({pct}%)")
+                    blk_str = f" · blok #{self.last_processed_block_idx}" if self.last_processed_block_idx > 0 else ""
+                    self.progress_transcription.setFormat(f"🟢 Przetworzono w tle: {p_min:02d}:{p_sec:02d} / {t_min:02d}:{t_sec:02d} ({pct}%{blk_str})")
                 else:
-                    # Informacja o aktywnym buforowaniu mowy przed zamknięciem pierwszego bloku (min. 2 min)
+                    # Informacja o aktywnym zbieraniu i buforowaniu mowy przed pierwszym blokiem
                     t_min, t_sec = int(self.recorded_seconds // 60), int(self.recorded_seconds % 60)
-                    if self.recorded_seconds < 120:
-                        pct = int((self.recorded_seconds / 120.0) * 100)
-                        self.progress_transcription.setValue(min(95, max(5, pct)))
-                        self.progress_transcription.setFormat(f"🎙️ Zbieranie mowy do bloku #1: {t_min:02d}:{t_sec:02d} / 02:00...")
+                    if self.recorded_seconds < 12:
+                        pct = int(min(80, max(5, (self.recorded_seconds / 12.0) * 80)))
+                        self.progress_transcription.setValue(pct)
+                        self.progress_transcription.setFormat(f"🎙️ Zbieranie mowy do pierwszego bloku: {t_min:02d}:{t_sec:02d}...")
                     else:
-                        self.progress_transcription.setValue(95)
-                        self.progress_transcription.setFormat(f"🎙️ Nagrywanie: {t_min:02d}:{t_sec:02d} (Oczekiwanie na pauzę w mowie na cięcie bloku)...")
+                        pct = min(92, 80 + int((self.recorded_seconds - 12) * 2))
+                        self.progress_transcription.setValue(pct)
+                        self.progress_transcription.setFormat(f"⚡ Przetwarzanie pierwszego fragmentu w tle: {t_min:02d}:{t_sec:02d}...")
         elif self.worker.state == SmartRecordState.AUTO_PAUSED:
             # W stanie Auto-Pauzy stoper stoi w miejscu i pasek nie ucieka do przodu
             t_min, t_sec = int(self.recorded_seconds // 60), int(self.recorded_seconds % 60)
             proc_sec = getattr(self.rolling_worker, "total_processed_seconds", 0.0) if getattr(self, "rolling_worker", None) else 0.0
             if proc_sec > 0:
                 p_min, p_sec = int(proc_sec // 60), int(proc_sec % 60)
-                self.progress_transcription.setFormat(f"⏸️ Auto-Pauza (Cisza): {p_min:02d}:{p_sec:02d} / {t_min:02d}:{t_sec:02d}")
+                blk_str = f" · blok #{self.last_processed_block_idx}" if self.last_processed_block_idx > 0 else ""
+                self.progress_transcription.setFormat(f"⏸️ Auto-Pauza (Cisza): {p_min:02d}:{p_sec:02d} / {t_min:02d}:{t_sec:02d}{blk_str}")
             else:
-                self.progress_transcription.setFormat(f"⏸️ Auto-Pauza (Cisza): {t_min:02d}:{t_sec:02d} nagrania")
+                self.progress_transcription.setFormat(f"⏸️ Auto-Pauza (Cisza): {t_min:02d}:{t_sec:02d}")
+        elif self.worker.state == SmartRecordState.MANUAL_PAUSED:
+            t_min, t_sec = int(self.recorded_seconds // 60), int(self.recorded_seconds % 60)
+            proc_sec = getattr(self.rolling_worker, "total_processed_seconds", 0.0) if getattr(self, "rolling_worker", None) else 0.0
+            if proc_sec > 0:
+                p_min, p_sec = int(proc_sec // 60), int(proc_sec % 60)
+                blk_str = f" · blok #{self.last_processed_block_idx}" if self.last_processed_block_idx > 0 else ""
+                self.progress_transcription.setFormat(f"⏸️ Wstrzymano ręcznie: {p_min:02d}:{p_sec:02d} / {t_min:02d}:{t_sec:02d}{blk_str}")
+            else:
+                self.progress_transcription.setFormat(f"⏸️ Wstrzymano ręcznie: {t_min:02d}:{t_sec:02d}")
 
     def _update_audio_level(self, level):
         pass
@@ -2266,6 +2283,14 @@ class SmartDictaphoneWindow(QMainWindow):
             self.lbl_status_badge.setObjectName("StatusManualPaused")
             self.btn_pause.setText("▶ Wznów Nagrywanie")
             self.btn_pause.setObjectName("BtnResume")
+            t_min, t_sec = int(self.recorded_seconds // 60), int(self.recorded_seconds % 60)
+            proc_sec = getattr(self.rolling_worker, "total_processed_seconds", 0.0) if getattr(self, "rolling_worker", None) else 0.0
+            if proc_sec > 0:
+                p_min, p_sec = int(proc_sec // 60), int(proc_sec % 60)
+                blk_str = f" · blok #{self.last_processed_block_idx}" if self.last_processed_block_idx > 0 else ""
+                self.progress_transcription.setFormat(f"⏸️ Wstrzymano ręcznie: {p_min:02d}:{p_sec:02d} / {t_min:02d}:{t_sec:02d}{blk_str}")
+            else:
+                self.progress_transcription.setFormat(f"⏸️ Wstrzymano ręcznie: {t_min:02d}:{t_sec:02d}")
 
         self.lbl_status_badge.style().unpolish(self.lbl_status_badge)
         self.lbl_status_badge.style().polish(self.lbl_status_badge)
