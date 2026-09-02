@@ -8,12 +8,15 @@ _silero_available = False
 try:
     import torch
     import io
+    import warnings
     import silero_vad
     jit_path = os.path.join(os.path.dirname(silero_vad.__file__), 'data', 'silero_vad.jit')
     if os.path.exists(jit_path):
         with open(jit_path, 'rb') as f:
             model_bytes = io.BytesIO(f.read())
-            _silero_model = torch.jit.load(model_bytes)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                _silero_model = torch.jit.load(model_bytes)
             _silero_model.eval()
             _silero_available = True
             print("Sukces: Model Silero VAD AI został pomyślnie załadowany do pamięci!")
