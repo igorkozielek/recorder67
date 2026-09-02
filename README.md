@@ -10,9 +10,12 @@ Szczegółowy opis założeń architektonicznych, pamięci projektu oraz statusu
 ## ✨ Główne Funkcjonalności
 
 * 🎙️ **Detekcja Aktywności Głosu (Silero VAD AI):** Wykrywanie mowy w czasie rzeczywistym, bufor pre-padding (brak ucinania pierwszych głosek), konfigurowalny czas auto-pauzy oraz auto-wznawianie.
+* 🎧 **Nagrywanie Hybrydowe (Mikrofon + Dźwięk Systemu / WASAPI Loopback):** Niezależne lub jednoczesne rejestrowanie mowy z mikrofonu oraz dźwięku spotkań online (Discord, Teams, Zoom) z możliwością izolacji wybranego procesu audio oraz szybkimi przyciskami wyciszenia MUTE.
 * ⚡ **Transkrypcja na Żywo w Tle (Rolling Transcriber):** Ciągłe przetwarzanie wypowiedzi w tle za pomocą `faster-whisper` (modele `small`, `medium`, `large-v3-turbo`) z akceleracją GPU (CUDA float16) lub CPU (int8).
 * 🛡️ **Zaawansowane Filtry Anty-Halucynacyjne:** Algorytmiczne usuwanie patologicznych pętli powtórzeń (1-gramów i 2-gramów, np. zacięć śmiechu, oddechów czy wielokrotnych powtórzeń), z zachowaniem pełnej treści wartościowych zdań.
 * 👥 **Separacja i Autosugestia Mówców:** Opcjonalna diaryzacja `pyannote.audio` (`speaker-diarization-3.1`) z panelem autosugestii imion na podstawie kontekstu rozmów.
+* 🔔 **Inteligentne Ostrzeganie o Braku Dźwięku:** Dyskretny baner w stylu Windows 11 Fluent z szybkimi akcjami (*«Wszystko gra»* / *«Sprawdź dźwięk»*) oraz automatycznym przekazywaniem do Centrum Akcji Windows z priorytetem alarmu (przebijającym tryb *Nie przeszkadzać*) po 45s nieobecności.
+* 🪟 **Natywna Integracja z Windows & Tray:** Tożsamość procesu `InteligentnyDyktafonAI`, dedykowana ikona Fluent, dynamiczny zasobnik systemowy (Tray) z menu podręcznym i przywracaniem okna lewym klikiem.
 * ☁️ **Agnostyczna Synchronizacja Chmurowa (Cloud Sync):** Transmisja segmentów transkrypcji na żywo do bazy Supabase / REST API / Webhooka CRM z automatyczną kolejką offline na wypadek braku internetu.
 * ⏱️ **Inteligentny Podział Sesji (Smart Session Splitting):** Automatyczne domykanie bieżącego spotkania po konfigurowalnym czasie ciszy (np. 15 minut) i płynne rozpoczynanie nowej sesji bez przerywania nasłuchu.
 * 💾 **Optymalizacja Pamięci i Strumieniowanie WAV:** Strumieniowy zapis dźwięku na dysk (`StreamingWavWriter`) zapobiegający akumulacji danych audio w pamięci RAM podczas wielogodzinnych nagrań.
@@ -96,10 +99,12 @@ recorder67/
     │   ├── devices.py          # Wykrywanie i filtrowanie mikrofonów (DirectSound/WASAPI/MME)
     │   ├── converter.py        # Resampling do 16 kHz, filtry pasmowe i normalizacja
     │   └── capture.py          # Strumieniowy zapis WAV na dysku (StreamingWavWriter)
+    ├── resources/              # Zasoby aplikacji (oficjalna ikona app_icon.ico / app_icon.png)
     │
     └── ui/                     # Interfejs graficzny użytkownika (PySide6)
         ├── window.py           # Główne okno aplikacji (SmartDictaphoneWindow)
         ├── workers.py          # Wątki robocze audio i transkrypcji (QThread)
         ├── settings_dialog.py  # Okno ustawień słownika, parametrów VAD i podziału sesji
+        ├── windows_integration.py # Tożsamość procesu Windows, AUMID i natywne toasty
         └── theme.py            # Stylizacja Dark Theme (QSS i paleta)
 ```

@@ -64,6 +64,9 @@ graph TD
   - Panel autosugestii imion na podstawie kontekstu wypowiedzi.
 - [x] **Kontrola Prywatności w GUI (Manual Pause / Stop)**: Dedykowane przyciski *„Wstrzymaj Ręcznie”* oraz *„Stop i Zapisz”* pozwalające na natychmiastowe zatrzymanie nasłuchu mikrofonu i transmisji danych w dowolnym momencie.
 - [x] **Wgrywanie Gotowych Plików Audio/Wideo**: Obsługa formatów WAV, MP3, M4A, FLAC, OGG, AAC, MP4, MKV z normalizacją 16kHz mono i natychmiastowym autozapisem TXT/JSON.
+- [x] **Hybrydowe Źródła Audio (Mikrofon + WASAPI Loopback)**: Niezależne lub równoległe rejestrowanie mikrofonu oraz dźwięku systemu/spotkań (Discord, MS Teams, Zoom), izolacja procesu audio (`TargetAppAudioMonitor`), suwaki VU i niezależne przyciski wyciszenia MUTE w locie.
+- [x] **Inteligentny System Ostrzeżeń o Braku Dźwięku**: Wykrywanie przedłużającego się braku mowy i dźwięku w aktywnej sesji (domyślnie 5 min, regulacja 1–20 min), kompaktowy baner Toast z przyciskami *«Wszystko gra»* / *«Sprawdź dźwięk»*, zintegrowany z Centrum Akcji Windowsa (z priorytetem alarmu przebijającym tryb *Nie przeszkadzać*) i tłumieniem dźwięków powiadomienia w nagraniu.
+- [x] **Natywna Integracja z Windows & Oficjalna Ikona Fluent**: Zarejestrowana tożsamość procesu `InteligentnyDyktafonAI`, dedykowana przezroczysta ikona aplikacji, zasobnik systemowy (Tray) z menu podręcznym i przywracaniem okna lewym klikiem.
 - [x] **Budowanie wersji instalacyjnej**: Skrypty PyInstaller (`build_exe.ps1`) do generowania gotowego pliku `.exe` pod Windows.
 
 ---
