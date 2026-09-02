@@ -25,6 +25,7 @@
   <ItemGroup>
     <Folder Include="audio\" />
     <Folder Include="core\" />
+    <Folder Include="resources\" />
     <Folder Include="ui\" />
   </ItemGroup>
   <ItemGroup>
@@ -32,7 +33,6 @@
     <Compile Include="config.py" />
     <Compile Include="main.py" />
     <Compile Include="recorder.py" />
-    <Compile Include="test.py" />
     <Compile Include="audio\__init__.py" />
     <Compile Include="audio\capture.py" />
     <Compile Include="audio\converter.py" />
@@ -40,33 +40,23 @@
     <Compile Include="core\__init__.py" />
     <Compile Include="core\cloud_sync.py" />
     <Compile Include="core\diarizer.py" />
+    <Compile Include="core\rolling_transcriber.py" />
+    <Compile Include="core\session.py" />
     <Compile Include="core\speakers.py" />
     <Compile Include="core\transcriber.py" />
+    <Compile Include="core\updater.py" />
     <Compile Include="core\vad.py" />
     <Compile Include="ui\__init__.py" />
+    <Compile Include="ui\settings_dialog.py" />
     <Compile Include="ui\theme.py" />
     <Compile Include="ui\window.py" />
+    <Compile Include="ui\windows_integration.py" />
     <Compile Include="ui\workers.py" />
-    <Compile Include="..\main.py">
-      <Link>main_root.py</Link>
-    </Compile>
   </ItemGroup>
   <ItemGroup>
-    <Content Include="..\.env" Condition="Exists('..\.env')">
-      <Link>.env</Link>
-    </Content>
-    <Content Include="..\.env.example">
-      <Link>.env.example</Link>
-    </Content>
-    <Content Include="..\PROJECT_GOAL.md">
-      <Link>PROJECT_GOAL.md</Link>
-    </Content>
-    <Content Include="..\README.md">
-      <Link>README.md</Link>
-    </Content>
-    <Content Include="..\requirements.txt">
-      <Link>requirements.txt</Link>
-    </Content>
+    <Content Include="resources\app_icon.ico" />
+    <Content Include="resources\app_icon.png" />
+    <Content Include="user_settings.json" />
   </ItemGroup>
   <ItemGroup>
     <Interpreter Include="..\env\">

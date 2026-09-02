@@ -1,6 +1,32 @@
 <Solution>
   <Folder Name="/Elementy rozwiązania/">
     <File Path=".env" />
+    <File Path=".env.example" />
+    <File Path=".gitignore" />
+    <File Path="build_exe.bat" />
+    <File Path="build_exe.ps1" />
+    <File Path="main.py" />
+    <File Path="PROJECT_GOAL.md" />
+    <File Path="README.md" />
+    <File Path="requirements.txt" />
+    <File Path="run.py" />
+    <File Path="start.bat" />
+  </Folder>
+  <Folder Name="/Elementy rozwiązania/.github/workflows/">
+    <File Path=".github/workflows/release.yml" />
+  </Folder>
+  <Folder Name="/Elementy rozwiązania/scripts/">
+    <File Path="scripts/build_exe.py" />
+    <File Path="scripts/generate_icon.py" />
+  </Folder>
+  <Folder Name="/Elementy rozwiązania/tests/">
+    <File Path="tests/test_live_streaming_sync.py" />
+    <File Path="tests/test_modular_diarization.py" />
+    <File Path="tests/test_preview_order.py" />
+    <File Path="tests/test_rolling.py" />
+    <File Path="tests/test_silence_alert.py" />
+    <File Path="tests/test_speakers_dedup.py" />
+    <File Path="tests/test_updater.py" />
   </Folder>
   <Project Path="recorder/recorder.pyproj" Type="888888a0-9f3d-457c-b088-3a5042f75d52" Id="2fbdf51b-144e-45b3-83a6-930e9b627a4d">
     <Build Project="false" />
