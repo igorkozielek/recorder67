@@ -248,7 +248,7 @@ def apply_in_place_update(zip_path: str) -> bool:
 rem Skrypt automatycznej podmiany plikow aktualizacji Recorder67
 echo [UPDATER] Oczekiwanie na zakonczenie glownego procesu (PID: {current_pid})...
 :wait_process
-timeout /t 1 /nobreak > nul
+ping 127.0.0.1 -n 2 > nul
 tasklist /fi "pid eq {current_pid}" 2>nul | find "{current_pid}" >nul
 if not errorlevel 1 goto wait_process
 
@@ -274,7 +274,7 @@ if exist "{temp_extract}" rmdir /s /q "{temp_extract}" 2>nul
 
 echo [UPDATER] Uruchamianie zaktualizowanej aplikacji...
 start "" "{exe_path}"
-del "%~f0"
+exit /b 0
 """
 
     try:
