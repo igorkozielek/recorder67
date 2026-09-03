@@ -35,6 +35,10 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      - name: Run Pytest Test Suite
+        run: |
+          pytest
+
       - name: Build Executable with PyInstaller
         run: |
           python scripts/build_exe.py
