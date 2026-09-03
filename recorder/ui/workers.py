@@ -698,16 +698,24 @@ class SmartAudioWorker(QThread):
                             pass
                         return (None, pyaudio.paContinue)
 
-                    loop_stream = p_audio.open(
-                        format=pyaudio.paInt16,
-                        channels=sys_channels,
-                        rate=sys_native_sr,
-                        input=True,
-                        input_device_index=loopback_dev["index"],
-                        frames_per_buffer=1024,
-                        stream_callback=loopback_callback
-                    )
-                    loop_stream.start_stream()
+                    for attempt in range(3):
+                        try:
+                            loop_stream = p_audio.open(
+                                format=pyaudio.paInt16,
+                                channels=sys_channels,
+                                rate=sys_native_sr,
+                                input=True,
+                                input_device_index=loopback_dev["index"],
+                                frames_per_buffer=1024,
+                                stream_callback=loopback_callback
+                            )
+                            loop_stream.start_stream()
+                            break
+                        except Exception as open_err:
+                            if attempt < 2:
+                                time.sleep(0.3)
+                            else:
+                                print(f"[SmartAudioWorker] Nie udało się otworzyć WASAPI Loopback po 3 próbach: {open_err}")
             except Exception as e:
                 print(f"[SmartAudioWorker] Nie udało się otworzyć strumienia WASAPI Loopback: {e}")
 
@@ -821,18 +829,37 @@ class SmartAudioWorker(QThread):
                             pass
                         return (None, pyaudio.paContinue)
 
-                    mic_stream = p_audio.open(
-                        format=pyaudio.paInt16,
-                        channels=mic_ch,
-                        rate=mic_sr,
-                        input=True,
-                        input_device_index=mic_dev_info["index"],
-                        frames_per_buffer=1024,
-                        stream_callback=mic_callback
-                    )
-                    mic_stream.start_stream()
+                    last_mic_err = None
+                    for attempt in range(3):
+                        try:
+                            mic_stream = p_audio.open(
+                                format=pyaudio.paInt16,
+                                channels=mic_ch,
+                                rate=mic_sr,
+                                input=True,
+                                input_device_index=mic_dev_info["index"],
+                                frames_per_buffer=1024,
+                                stream_callback=mic_callback
+                            )
+                            mic_stream.start_stream()
+                            last_mic_err = None
+                            break
+                        except Exception as open_err:
+                            last_mic_err = open_err
+                            print(f"[SmartAudioWorker] Próba {attempt + 1}/3 otwarcia mikrofonu nie powiodła się: {open_err}")
+                            if attempt < 2:
+                                time.sleep(0.3)
+
+                    if mic_stream is None:
+                        raise RuntimeError(f"Błąd otwarcia mikrofonu po 3 próbach: {last_mic_err}")
             except Exception as e:
                 print(f"[SmartAudioWorker] Nie udało się otworzyć mikrofonu w PyAudio: {e}")
+                dev_name = mic_dev_info.get("name", "Nieznane urządzenie") if (mic_dev_info and isinstance(mic_dev_info, dict)) else "Brak urządzenia"
+                self.error_signal.emit(f"Nie udało się otworzyć mikrofonu ({dev_name}): {e}")
+
+        if (run_mic and mic_stream is None) and (not run_sys or loop_stream is None):
+            self._is_running = False
+            return
 
         # Pętla monitorowania poziomów, stanu ciszy i strumieniowego zapisu zmiksowanego audio
         last_watchdog_check = time.time()

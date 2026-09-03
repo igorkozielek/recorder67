@@ -220,7 +220,7 @@ def load_user_settings(force_reload: bool = False) -> dict:
         "auto_scroll_chronological": get_env_variable("AUTO_SCROLL_CHRONOLOGICAL", "true").lower() in ("1", "true", "yes"),
         "check_prereleases": True,
         "auto_check_updates_startup": True,
-        "adaptive_beam_size": True,
+        "adaptive_beam_size": False,
     }
 
     settings_paths = [
@@ -287,7 +287,7 @@ def get_beam_size() -> int:
 def is_adaptive_beam_size() -> bool:
     """Zwraca czy adaptacyjny dobór beam_size (bieg turbo przy zatorach w kolejce) jest włączony."""
     st = load_user_settings()
-    return bool(st.get("adaptive_beam_size", True))
+    return bool(st.get("adaptive_beam_size", False))
 
 
 def get_device_name() -> str:

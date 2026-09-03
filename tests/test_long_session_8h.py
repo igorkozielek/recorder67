@@ -284,30 +284,32 @@ def test_adaptive_beam_size_under_load():
     worker.transcriber = MagicMock()
     worker.transcriber._model.transcribe = mock_transcribe
 
-    # 1. Kolejka z 1 blokiem lub pusta -> normalny beam_size (domyślnie > 1 z config)
-    dummy_audio = np.zeros(16000 * 2, dtype=np.float32)
-    block_normal = RollingBlock(1, 0.0, 2.0, dummy_audio)
-    worker._process_single_block(block_normal)
-    assert len(captured_beam_sizes) == 1
-    assert captured_beam_sizes[0] > 1, f"Oczekiwano domyślnego beam_size > 1, otrzymano {captured_beam_sizes[0]}"
+    from unittest.mock import patch
+    with patch("recorder.core.rolling_transcriber.is_adaptive_beam_size", return_value=True):
+        # 1. Kolejka z 1 blokiem lub pusta -> normalny beam_size (domyślnie > 1 z config)
+        dummy_audio = np.zeros(16000 * 2, dtype=np.float32)
+        block_normal = RollingBlock(1, 0.0, 2.0, dummy_audio)
+        worker._process_single_block(block_normal)
+        assert len(captured_beam_sizes) == 1
+        assert captured_beam_sizes[0] > 1, f"Oczekiwano domyślnego beam_size > 1, otrzymano {captured_beam_sizes[0]}"
 
-    # 2. Kolejka z > 1 blokami (spiętrzenie w kolejce pod obciążeniem)
-    captured_beam_sizes.clear()
-    b_pending1 = RollingBlock(2, 2.0, 4.0, dummy_audio)
-    b_pending2 = RollingBlock(3, 4.0, 6.0, dummy_audio)
-    worker.block_queue.put(b_pending1)
-    worker.block_queue.put(b_pending2)
-    assert worker.block_queue.qsize() == 2
+        # 2. Kolejka z > 1 blokami (spiętrzenie w kolejce pod obciążeniem)
+        captured_beam_sizes.clear()
+        b_pending1 = RollingBlock(2, 2.0, 4.0, dummy_audio)
+        b_pending2 = RollingBlock(3, 4.0, 6.0, dummy_audio)
+        worker.block_queue.put(b_pending1)
+        worker.block_queue.put(b_pending2)
+        assert worker.block_queue.qsize() == 2
 
-    block_under_load = RollingBlock(4, 6.0, 8.0, dummy_audio)
-    worker._process_single_block(block_under_load)
+        block_under_load = RollingBlock(4, 6.0, 8.0, dummy_audio)
+        worker._process_single_block(block_under_load)
 
-    assert len(captured_beam_sizes) == 1
-    assert captured_beam_sizes[0] == 1, f"Oczekiwano dynamicznego obniżenia beam_size do 1, otrzymano {captured_beam_sizes[0]}"
+        assert len(captured_beam_sizes) == 1
+        assert captured_beam_sizes[0] == 1, f"Oczekiwano dynamicznego obniżenia beam_size do 1, otrzymano {captured_beam_sizes[0]}"
 
-    # Opróżnienie kolejki
-    while not worker.block_queue.empty():
-        worker.block_queue.get_nowait()
+        # Opróżnienie kolejki
+        while not worker.block_queue.empty():
+            worker.block_queue.get_nowait()
 
 
 def test_short_block_early_return_updates_session_time_and_frees_ram():
@@ -661,6 +663,74 @@ def test_final_block_without_wall_start_does_not_jump_to_top():
     assert "Pierwsza wypowiedź" in lines[0], f"Pierwsza powinna być na górze, a jest: {lines[0]}"
     assert "Środkowa wypowiedź" in lines[1]
     assert "Ostatnia wypowiedź" in lines[2], f"Ostatnia powinna być na dole, a jest: {lines[2]}"
+
+
+def test_smart_audio_worker_device_retry_and_error_handling():
+    """
+    Weryfikuje, że w przypadku błędu urządzenia audio (np. [Errno -9996] Invalid device na Bluetooth WASAPI),
+    SmartAudioWorker ponawia próbę otwarcia strumienia do 3 razy, a w razie trwałego błędu
+    emituje error_signal zamiast bezgłośnego zatoru.
+    """
+    from recorder.ui.workers import SmartAudioWorker, RecordSourceMode
+    from unittest.mock import MagicMock, patch
+
+    _ = QApplication.instance() or QApplication([])
+
+    worker = SmartAudioWorker()
+    worker.source_mode = RecordSourceMode.MIC_ONLY
+    worker._is_running = True
+
+    mock_pyaudio = MagicMock()
+    mock_dev_info = {"index": 2, "name": "Redmi Buds 3 Lite", "defaultSampleRate": 16000, "maxInputChannels": 1}
+    mock_pyaudio.get_device_info_by_index.return_value = mock_dev_info
+
+    # 1. Scenariusz sukcesu po retry (1. próba rzuca błąd -9996, 2. próba zwraca stream)
+    mock_stream = MagicMock()
+    mock_stream.is_active.return_value = True
+    call_count = 0
+
+    def mock_open_retry(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise OSError(-9996, "Invalid device")
+        return mock_stream
+
+    mock_pyaudio.open.side_effect = mock_open_retry
+
+    with patch("recorder.ui.workers.pyaudio.PyAudio", return_value=mock_pyaudio), \
+         patch("time.sleep", return_value=None):
+        # Symulacja uruchomienia wątku SmartAudioWorker.run() z wczesnym przerwaniem
+        with patch.object(worker, "msleep", side_effect=lambda ms: setattr(worker, "_is_running", False)):
+            worker.device_index = 2
+            worker.run()
+
+    assert call_count == 2, f"Oczekiwano 2 prób (1 błąd, 2 sukces), wykonano {call_count}"
+    mock_stream.start_stream.assert_called()
+
+    # 2. Scenariusz trwałego błędu (wszystkie 3 próby zawodzą -> emisja error_signal)
+    worker_fail = SmartAudioWorker()
+    worker_fail.source_mode = RecordSourceMode.MIC_ONLY
+    worker_fail.device_index = 2
+    worker_fail._is_running = True
+
+    mock_pyaudio_fail = MagicMock()
+    mock_pyaudio_fail.get_device_info_by_index.return_value = mock_dev_info
+    mock_pyaudio_fail.open.side_effect = OSError(-9996, "Invalid device")
+
+    received_errors = []
+    worker_fail.error_signal.connect(received_errors.append)
+
+    with patch("recorder.ui.workers.pyaudio.PyAudio", return_value=mock_pyaudio_fail), \
+         patch("time.sleep", return_value=None):
+        worker_fail.run()
+
+    assert mock_pyaudio_fail.open.call_count == 3, "Powinny odbyć się dokładnie 3 próby otwarcia"
+    assert len(received_errors) == 1, "Powinien zostać wyemitowany dokładnie jeden sygnał błędu"
+    assert "Redmi Buds 3 Lite" in received_errors[0]
+    assert "-9996" in received_errors[0]
+    assert worker_fail._is_running is False
+
 
 
 

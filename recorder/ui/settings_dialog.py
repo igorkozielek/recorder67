@@ -270,9 +270,10 @@ class SettingsDialog(QDialog):
         self.chk_adaptive_beam = QCheckBox("🚀 Automatyczny bieg turbo (Adaptacyjny Beam Size przy zatorach w kolejce)")
         self.chk_adaptive_beam.setStyleSheet("color: #a78bfa; font-size: 11px; font-weight: bold; margin-top: 6px;")
         self.chk_adaptive_beam.setToolTip(
-            "Gdy w tle uzbiera się kolejka bloków (np. pod obciążeniem laptopa),\n"
-            "dyktafon tymczasowo przełącza się na szybki tryb (beam=1), aby błyskawicznie nadgonić nagranie,\n"
-            "a po rozładowaniu samoczynnie wraca do wybranej jakości."
+            "Opcja zalecana podczas wielogodzinnych maratonów (4h–8h) na słabszych procesorach.\n"
+            "Gdy w kolejce transkrypcji powstanie opóźnienie (więcej niż 1 blok), tymczasowo redukuje parametr beam_size=1,\n"
+            "aby błyskawicznie nadgonić nagranie i odciążyć CPU kosztem nieco niższej precyzji w trudnych warunkach (cichy głos/szum).\n"
+            "Domyślnie wyłączona w celu zapewnienia stałej, maksymalnej dokładności modelu Whisper."
         )
         whisper_layout.addWidget(self.chk_adaptive_beam)
         layout.addWidget(box_whisper)
@@ -827,7 +828,7 @@ class SettingsDialog(QDialog):
         if idx != -1:
             self.combo_beam.setCurrentIndex(idx)
         self.txt_hf_token.setText(st.get("hf_token", ""))
-        self.chk_adaptive_beam.setChecked(bool(st.get("adaptive_beam_size", True)))
+        self.chk_adaptive_beam.setChecked(bool(st.get("adaptive_beam_size", False)))
 
         # Źródło Audio & VAD
         src_mode = st.get("record_source_mode", RecordSourceMode.HYBRID_DUAL)
@@ -921,7 +922,7 @@ class SettingsDialog(QDialog):
             self.chk_upload_audio.setChecked(False)
             self.chk_check_prereleases.setChecked(True)
             self.chk_auto_check_startup.setChecked(True)
-            self.chk_adaptive_beam.setChecked(True)
+            self.chk_adaptive_beam.setChecked(False)
 
     def _save_and_accept(self):
         """Zapisuje wartości do pliku user_settings.json i zamyka dialog."""
