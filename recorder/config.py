@@ -174,7 +174,10 @@ LIVE_BLOCK_SILENCE_CUT_SEC = float(get_env_variable("LIVE_BLOCK_SILENCE_CUT_SEC"
 import json
 import time
 
-SETTINGS_FILE = os.path.join(os.getcwd(), "user_settings.json")
+if getattr(sys, "frozen", False):
+    SETTINGS_FILE = os.path.join(os.path.dirname(sys.executable), "user_settings.json")
+else:
+    SETTINGS_FILE = os.path.join(str(BASE_DIR), "user_settings.json")
 
 _CACHED_USER_SETTINGS = None
 _CACHED_SETTINGS_TIME = 0.0
@@ -217,6 +220,7 @@ def load_user_settings(force_reload: bool = False) -> dict:
         "auto_scroll_chronological": get_env_variable("AUTO_SCROLL_CHRONOLOGICAL", "true").lower() in ("1", "true", "yes"),
         "check_prereleases": True,
         "auto_check_updates_startup": True,
+        "adaptive_beam_size": True,
     }
 
     settings_paths = [
@@ -278,6 +282,12 @@ def get_beam_size() -> int:
         return max(1, min(10, int(st.get("whisper_beam_size", 5))))
     except Exception:
         return 5
+
+
+def is_adaptive_beam_size() -> bool:
+    """Zwraca czy adaptacyjny dobór beam_size (bieg turbo przy zatorach w kolejce) jest włączony."""
+    st = load_user_settings()
+    return bool(st.get("adaptive_beam_size", True))
 
 
 def get_device_name() -> str:

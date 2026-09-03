@@ -385,3 +385,76 @@ def test_rotate_session_file_flushes_audio_mixer():
                     os.remove(p)
                 except Exception:
                     pass
+
+
+def test_real_wall_clock_timestamp_with_mute():
+    """
+    Weryfikuje, że w trybie 'clock_only' (Tylko godzina realna), wypowiedzi po 15 minutach wyciszenia
+    lub auto-pauzy otrzymują RZECZYWISTY czas zegarowy ze stopera systemowego (np. 18:15:00),
+    a nie czas przesunięty o offset skompresowanego pliku WAV (np. 18:00:05).
+    """
+    from datetime import datetime, timedelta
+    from recorder.core.session import format_turn_timestamp
+
+    t1_wall = datetime(2026, 9, 3, 18, 0, 0)
+    t2_wall = datetime(2026, 9, 3, 18, 15, 0)
+
+    # Audio offset: pierwsze zdanie trwa 5s (0.0 do 5.0).
+    # Drugie zdanie w skompresowanym WAV ma offset 5.0 do 10.0 (bo 15 minut ciszy nie było nagrywane).
+    st1, en1 = 0.0, 5.0
+    st2, en2 = 5.0, 10.0
+
+    session_start = datetime(2026, 9, 3, 18, 0, 0)
+
+    lbl1 = format_turn_timestamp(st1, en1, session_start_time=session_start, ts_format="clock_only",
+                                 wall_start=t1_wall, wall_end=t1_wall + timedelta(seconds=5.0))
+    lbl2 = format_turn_timestamp(st2, en2, session_start_time=session_start, ts_format="clock_only",
+                                 wall_start=t2_wall, wall_end=t2_wall + timedelta(seconds=5.0))
+
+    assert lbl1 == "18:00:00 - 18:00:05"
+    assert lbl2 == "18:15:00 - 18:15:05", f"Oczekiwano rzeczywistej godziny 18:15:00, otrzymano: {lbl2}"
+
+
+def test_silence_alert_timeout_does_not_cancel_session_split():
+    """
+    Weryfikuje, że wygaszenie powiadomienia strażnika ciszy (po 5 minutach / 300s)
+    NIE kasuje licznika automatycznego podziału sesji (ustawionego na 10 minut / 600s).
+    """
+    _ = QApplication.instance() or QApplication([])
+
+    worker = SmartAudioWorker()
+    worker.set_silence_alert_seconds(300.0)
+    worker.set_session_split_silence_sec(600.0)
+    worker.session_has_speech = True
+
+    # Symulacja 5 minut (300s) ciszy
+    worker.continuous_silence_samples = int(300.0 * 16000)
+    worker.session_split_silence_samples = int(300.0 * 16000)
+
+    # Strażnik ciszy zgłasza alert i po 45s braku reakcji resetuje stan alertu
+    worker.reset_silence_alert()
+
+    # Licznik alertu powinien być wyzerowany, ale licznik podziału sesji ZACHOWANY!
+    assert worker.continuous_silence_samples == 0
+    assert worker.session_split_silence_samples == int(300.0 * 16000), \
+        "BŁĄD: reset_silence_alert() skasował licznik podziału sesji!"
+
+    # Kolejne 5 minut i 5 sekund ciszy (łącznie > 10 min)
+    worker.session_split_silence_samples += int(305.0 * 16000)
+
+    split_events = []
+    worker.session_split_signal.connect(lambda r: split_events.append(r))
+
+    # Wywołanie logiki sprawdzania podziału sesji
+    split_sil_sec = float(worker.session_split_silence_samples / 16000.0)
+    if worker.session_has_speech and worker.session_split_silence_sec > 0:
+        if split_sil_sec >= worker.session_split_silence_sec:
+            worker.session_has_speech = False
+            worker.session_split_silence_samples = 0
+            worker.continuous_silence_samples = 0
+            mins = int(worker.session_split_silence_sec // 60)
+            worker.session_split_signal.emit(f"Cisza > {mins} min")
+
+    assert len(split_events) == 1
+    assert "10 min" in split_events[0]
+

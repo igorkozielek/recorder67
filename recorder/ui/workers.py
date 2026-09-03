@@ -208,6 +208,9 @@ class SmartAudioWorker(QThread):
         self.frames = []
         self.silence_samples_count = 0
         self.continuous_silence_samples = 0
+        self.session_split_silence_samples = 0
+        self.pre_speech_chunks_mic = collections.deque(maxlen=15)
+        self.pre_speech_chunks_sys = collections.deque(maxlen=15)
         self.session_has_speech = False
         self.wav_writer: Optional[StreamingWavWriter] = None
         self.save_wav_path: Optional[str] = None
@@ -576,16 +579,23 @@ class SmartAudioWorker(QThread):
                                 if self.state != SmartRecordState.MANUAL_PAUSED:
                                     if is_speech:
                                         self.sys_speech_active = True
-                                        if self.state in [SmartRecordState.AUTO_PAUSED, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:
+                                        was_paused = self.state in [SmartRecordState.AUTO_PAUSED, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]
+                                        if was_paused:
                                             self.state = SmartRecordState.RECORDING_SPEECH
                                             self.state_changed_signal.emit(self.state)
+                                            while self.pre_speech_chunks_sys:
+                                                pre_c = self.pre_speech_chunks_sys.popleft()
+                                                self.audio_mixer.add_sys_chunk(pre_c)
+                                                self.current_sys_block_chunks.append(pre_c)
                                         self.sys_silence_samples = 0
                                         self.silence_samples_count = 0
                                         self.continuous_silence_samples = 0
+                                        self.session_split_silence_samples = 0
                                         self.session_has_speech = True
                                         self.silence_alert_emitted = False
                                     else:
                                         self.sys_silence_samples += len(chunk_16k)
+                                        self.pre_speech_chunks_sys.append(chunk_16k.copy())
 
                                 # Zapis próbek do miksera audio WAV
                                 if self.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:
@@ -691,16 +701,23 @@ class SmartAudioWorker(QThread):
                                 if self.state != SmartRecordState.MANUAL_PAUSED:
                                     if is_speech:
                                         self.mic_speech_active = True
-                                        if self.state in [SmartRecordState.AUTO_PAUSED, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:
+                                        was_paused = self.state in [SmartRecordState.AUTO_PAUSED, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]
+                                        if was_paused:
                                             self.state = SmartRecordState.RECORDING_SPEECH
                                             self.state_changed_signal.emit(self.state)
+                                            while self.pre_speech_chunks_mic:
+                                                pre_c = self.pre_speech_chunks_mic.popleft()
+                                                self.audio_mixer.add_mic_chunk(pre_c)
+                                                self.current_mic_block_chunks.append(pre_c)
                                         self.silence_samples_count = 0
                                         self.continuous_silence_samples = 0
+                                        self.session_split_silence_samples = 0
                                         self.mic_silence_samples = 0
                                         self.session_has_speech = True
                                         self.silence_alert_emitted = False
                                     else:
                                         self.mic_silence_samples += len(chunk_16k)
+                                        self.pre_speech_chunks_mic.append(chunk_16k.copy())
 
                                 # Zapis próbek do miksera audio WAV
                                 if self.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:
@@ -788,6 +805,7 @@ class SmartAudioWorker(QThread):
                 if not self.mic_speech_active and not self.sys_speech_active:
                     self.silence_samples_count += 640  # 40ms przy 16kHz
                     self.continuous_silence_samples += 640
+                    self.session_split_silence_samples += 640
                 self.mic_speech_active = False
                 self.sys_speech_active = False
 
@@ -798,11 +816,12 @@ class SmartAudioWorker(QThread):
                         self.silence_alert_emitted = True
                         self.silence_alert_signal.emit(cont_sil_sec, self.source_mode)
 
-                # Sprawdzenie podziału sesji po długiej ciszy
-                if self.session_has_speech:
-                    cont_sil_sec = float(self.continuous_silence_samples / 16000.0)
-                    if cont_sil_sec >= self.session_split_silence_sec:
+                # Sprawdzenie podziału sesji po długiej ciszy (niezależny licznik od alertów)
+                if self.session_has_speech and self.session_split_silence_sec > 0:
+                    split_sil_sec = float(self.session_split_silence_samples / 16000.0)
+                    if split_sil_sec >= self.session_split_silence_sec:
                         self.session_has_speech = False
+                        self.session_split_silence_samples = 0
                         self.continuous_silence_samples = 0
                         mins = int(self.session_split_silence_sec // 60)
                         self.session_split_signal.emit(f"Cisza > {mins} min")

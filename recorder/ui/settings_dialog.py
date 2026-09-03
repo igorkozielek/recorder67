@@ -266,6 +266,15 @@ class SettingsDialog(QDialog):
         lbl_beam_desc.setWordWrap(True)
         lbl_beam_desc.setStyleSheet("color: #8d99ae; font-size: 11px;")
         whisper_layout.addWidget(lbl_beam_desc)
+
+        self.chk_adaptive_beam = QCheckBox("🚀 Automatyczny bieg turbo (Adaptacyjny Beam Size przy zatorach w kolejce)")
+        self.chk_adaptive_beam.setStyleSheet("color: #a78bfa; font-size: 11px; font-weight: bold; margin-top: 6px;")
+        self.chk_adaptive_beam.setToolTip(
+            "Gdy w tle uzbiera się kolejka bloków (np. pod obciążeniem laptopa),\n"
+            "dyktafon tymczasowo przełącza się na szybki tryb (beam=1), aby błyskawicznie nadgonić nagranie,\n"
+            "a po rozładowaniu samoczynnie wraca do wybranej jakości."
+        )
+        whisper_layout.addWidget(self.chk_adaptive_beam)
         layout.addWidget(box_whisper)
 
         # Sekcja: Token HuggingFace
@@ -818,6 +827,7 @@ class SettingsDialog(QDialog):
         if idx != -1:
             self.combo_beam.setCurrentIndex(idx)
         self.txt_hf_token.setText(st.get("hf_token", ""))
+        self.chk_adaptive_beam.setChecked(bool(st.get("adaptive_beam_size", True)))
 
         # Źródło Audio & VAD
         src_mode = st.get("record_source_mode", RecordSourceMode.HYBRID_DUAL)
@@ -911,12 +921,14 @@ class SettingsDialog(QDialog):
             self.chk_upload_audio.setChecked(False)
             self.chk_check_prereleases.setChecked(True)
             self.chk_auto_check_startup.setChecked(True)
+            self.chk_adaptive_beam.setChecked(True)
 
     def _save_and_accept(self):
         """Zapisuje wartości do pliku user_settings.json i zamyka dialog."""
         new_settings = {
             "custom_keywords": self.txt_keywords.toPlainText().strip(),
             "whisper_beam_size": int(self.combo_beam.currentData() or 5),
+            "adaptive_beam_size": self.chk_adaptive_beam.isChecked(),
             "hf_token": self.txt_hf_token.text().strip(),
             "record_source_mode": self.combo_default_source_mode.currentData() or RecordSourceMode.HYBRID_DUAL,
             "vad_speech_threshold": round(self.slider_vad.value() / 100.0, 2),

@@ -15,7 +15,8 @@ from recorder.config import (
     DEFAULT_BEAM_SIZE,
     DEFAULT_INITIAL_PROMPT,
     get_full_initial_prompt,
-    get_beam_size
+    get_beam_size,
+    is_adaptive_beam_size
 )
 from recorder.audio.converter import highpass_filter_audio, normalize_audio
 
@@ -36,6 +37,8 @@ class RollingBlock:
         self.plain_text: str = ""
         self.html_text: str = ""
         self.is_processed: bool = False
+        self.wall_start_time: Optional[datetime] = None
+        self.wall_end_time: Optional[datetime] = None
 
 
 class RollingTranscriptionWorker(QThread):
@@ -73,6 +76,11 @@ class RollingTranscriptionWorker(QThread):
         """Dodaje nowy zamknięty blok audio do kolejki przetwarzania w tle z oznaczeniem źródła (mic / system)."""
         if self._is_running:
             block = RollingBlock(block_index, start_sec, end_sec, audio_float, channel_source=channel_source)
+            from datetime import timedelta
+            now_dt = datetime.now()
+            block.wall_end_time = now_dt
+            dur = (len(audio_float) / 16000.0) if audio_float is not None and len(audio_float) > 0 else (end_sec - start_sec)
+            block.wall_start_time = now_dt - timedelta(seconds=max(0.0, float(dur)))
             self.latest_session_seconds = max(self.latest_session_seconds, end_sec)
             self.block_queue.put(block)
 
@@ -203,8 +211,9 @@ class RollingTranscriptionWorker(QThread):
 
         initial_prompt = get_full_initial_prompt()
         base_beam = get_beam_size()
+        allow_adaptive = is_adaptive_beam_size()
         q_len = self.block_queue.qsize()
-        if q_len > 1:
+        if allow_adaptive and q_len > 1:
             effective_beam = 1
             print(f"[WHISPER ADAPTACYJNY] Zator w kolejce ({q_len} bloków czeka) -> przełączenie na bieg turbo: beam_size=1")
             self._was_adaptive_beam = True
@@ -290,10 +299,17 @@ class RollingTranscriptionWorker(QThread):
         if transcript_words:
             _, _, block_turns = format_transcript_without_diarization(transcript_words)
             default_spk = "Mikrofon" if block.channel_source == "mic" else "Dźwięk Systemu"
+            from datetime import timedelta
+            b_wall_st = getattr(block, "wall_start_time", None)
             for trn in block_turns:
                 trn["channel"] = block.channel_source
                 if trn.get("speaker") in ("Mówca", None, "", "Ty / Biuro", "Zdalny (Discord/Teams)"):
                     trn["speaker"] = default_spk
+                if b_wall_st is not None:
+                    rel_st = max(0.0, float(trn.get("start", 0.0)) - float(block.start_sec))
+                    rel_en = max(0.0, float(trn.get("end", 0.0)) - float(block.start_sec))
+                    trn["wall_start"] = b_wall_st + timedelta(seconds=rel_st)
+                    trn["wall_end"] = b_wall_st + timedelta(seconds=rel_en)
             block.turns = block_turns
 
         # ZWALNIANIE PAMIĘCI RAM: usuwamy referencję do surowych danych audio, których już nie potrzebujemy
@@ -374,7 +390,7 @@ class RollingTranscriptionWorker(QThread):
             en = float(t.get("end", 0.0))
             txt = t.get("text", "")
 
-            time_label = format_turn_timestamp(st, en, self.session_start_time, ts_format=ts_format)
+            time_label = format_turn_timestamp(st, en, self.session_start_time, ts_format=ts_format, wall_start=t.get("wall_start"), wall_end=t.get("wall_end"))
             badge = "🎧 " if channel == "system" else "🎙️ "
             display_spk = f"{badge}{spk}" if not (spk.startswith("🎙️") or spk.startswith("🎧")) else spk
             plain_parts.append(f"[{time_label}] {display_spk}: {txt}\n\n")
@@ -389,7 +405,7 @@ class RollingTranscriptionWorker(QThread):
             en = float(t.get("end", 0.0))
             txt = t.get("text", "")
 
-            time_label = format_turn_timestamp(st, en, self.session_start_time, ts_format=ts_format)
+            time_label = format_turn_timestamp(st, en, self.session_start_time, ts_format=ts_format, wall_start=t.get("wall_start"), wall_end=t.get("wall_end"))
             if channel == "system":
                 badge = "🎧 "
                 color = "#a370f7"

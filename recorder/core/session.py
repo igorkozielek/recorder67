@@ -22,7 +22,8 @@ def extract_datetime_from_filename(filepath: str) -> Optional[datetime]:
     return None
 
 
-def format_turn_timestamp(st: float, en: float, session_start_time: Optional[datetime] = None, ts_format: Optional[str] = None) -> str:
+def format_turn_timestamp(st: float, en: float, session_start_time: Optional[datetime] = None, ts_format: Optional[str] = None,
+                          wall_start: Optional[Any] = None, wall_end: Optional[Any] = None) -> str:
     """Formatuje znacznik czasu dla wypowiedzi zgodnie z ustawieniami użytkownika (offset, godzina, hybryda)."""
     if ts_format is None:
         try:
@@ -35,7 +36,21 @@ def format_turn_timestamp(st: float, en: float, session_start_time: Optional[dat
     e_min, e_sec = int(en // 60), int(en % 60)
     offset_label = f"{s_min:02d}:{s_sec:02d} - {e_min:02d}:{e_sec:02d}"
 
-    if session_start_time is not None:
+    w_start_dt = None
+    w_end_dt = None
+    if wall_start is not None and wall_end is not None:
+        try:
+            w_start_dt = datetime.fromisoformat(wall_start) if isinstance(wall_start, str) else wall_start
+            w_end_dt = datetime.fromisoformat(wall_end) if isinstance(wall_end, str) else wall_end
+        except Exception:
+            w_start_dt = None
+            w_end_dt = None
+
+    if w_start_dt is not None and w_end_dt is not None:
+        clock_start = w_start_dt.strftime("%H:%M:%S")
+        clock_end = w_end_dt.strftime("%H:%M:%S")
+        clock_label = f"{clock_start} - {clock_end}"
+    elif session_start_time is not None:
         from datetime import timedelta
         real_start = session_start_time + timedelta(seconds=st)
         real_end = session_start_time + timedelta(seconds=en)
@@ -218,7 +233,7 @@ class TranscriptionSession:
             en = float(t.get("end", 0.0))
             txt = t.get("text", "").strip()
 
-            time_label = format_turn_timestamp(st, en, base_dt)
+            time_label = format_turn_timestamp(st, en, base_dt, wall_start=t.get("wall_start"), wall_end=t.get("wall_end"))
             lines.append(f"[{time_label}] {display_spk}: {txt}\n")
 
         return "\n".join(lines).strip()
@@ -260,7 +275,7 @@ class TranscriptionSession:
             en = float(t.get("end", 0.0))
             txt = t.get("text", "").strip()
 
-            time_label = format_turn_timestamp(st, en, base_dt)
+            time_label = format_turn_timestamp(st, en, base_dt, wall_start=t.get("wall_start"), wall_end=t.get("wall_end"))
             html_blocks.append(f"<b>[{time_label}] {display_spk}:</b> {txt}<br><br>")
 
         return "".join(html_blocks).strip()
