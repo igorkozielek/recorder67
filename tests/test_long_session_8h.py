@@ -467,3 +467,42 @@ def test_silence_alert_timeout_does_not_cancel_session_split():
     assert len(split_events) == 1
     assert "10 min" in split_events[0]
 
+
+def test_session_save_to_json_with_datetime_objects():
+    """
+    Weryfikuje, że save_to_json() poprawnie serializuje sesję nawet jeśli
+    w wypowiedziach (turns) znajdują się obiekty datetime (wall_start, wall_end),
+    nie rzucając błędu TypeError: Object of type datetime is not JSON serializable.
+    """
+    from datetime import datetime
+    import tempfile
+    from recorder.core.session import TranscriptionSession
+
+    session = TranscriptionSession()
+    session.turns = [
+        {
+            "start": 0.0,
+            "end": 2.5,
+            "speaker": "Mikrofon",
+            "text": "Dzień dobry.",
+            "wall_start": datetime.now(),
+            "wall_end": datetime.now()
+        }
+    ]
+
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+        tmp_path = f.name
+
+    try:
+        success = session.save_to_json(tmp_path)
+        assert success is True, "save_to_json powinno zwrócić True"
+        loaded = TranscriptionSession.load_from_json(tmp_path)
+        assert loaded is not None
+        assert len(loaded.turns) == 1
+        assert isinstance(loaded.turns[0]["wall_start"], str)
+        assert "T" in loaded.turns[0]["wall_start"]
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+

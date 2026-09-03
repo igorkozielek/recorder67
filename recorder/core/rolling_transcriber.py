@@ -308,8 +308,8 @@ class RollingTranscriptionWorker(QThread):
                 if b_wall_st is not None:
                     rel_st = max(0.0, float(trn.get("start", 0.0)) - float(block.start_sec))
                     rel_en = max(0.0, float(trn.get("end", 0.0)) - float(block.start_sec))
-                    trn["wall_start"] = b_wall_st + timedelta(seconds=rel_st)
-                    trn["wall_end"] = b_wall_st + timedelta(seconds=rel_en)
+                    trn["wall_start"] = (b_wall_st + timedelta(seconds=rel_st)).isoformat()
+                    trn["wall_end"] = (b_wall_st + timedelta(seconds=rel_en)).isoformat()
             block.turns = block_turns
 
         # ZWALNIANIE PAMIĘCI RAM: usuwamy referencję do surowych danych audio, których już nie potrzebujemy

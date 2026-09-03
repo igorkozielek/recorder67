@@ -119,6 +119,16 @@ class TranscriptionSession:
         return len(spks)
 
     def to_dict(self) -> Dict[str, Any]:
+        from datetime import datetime, date
+        clean_turns = []
+        for t in self.turns:
+            ct = dict(t)
+            for k in ("wall_start", "wall_end"):
+                v = ct.get(k)
+                if isinstance(v, (datetime, date)):
+                    ct[k] = v.isoformat()
+            clean_turns.append(ct)
+
         return {
             "version": self.version,
             "meeting_id": self.meeting_id,
@@ -135,7 +145,7 @@ class TranscriptionSession:
             },
             "speaker_mapping": self.speaker_mapping,
             "words": self.words,
-            "turns": self.turns
+            "turns": clean_turns
         }
 
     @classmethod
@@ -166,7 +176,7 @@ class TranscriptionSession:
             os.makedirs(parent_dir, exist_ok=True)
 
             data = self.to_dict()
-            json_text = json.dumps(data, ensure_ascii=False, indent=2)
+            json_text = json.dumps(data, ensure_ascii=False, indent=2, default=str)
 
             temp_fd, temp_path = tempfile.mkstemp(dir=parent_dir, prefix="session_", suffix=".tmp")
             try:
