@@ -34,6 +34,7 @@ from recorder.config import (
     get_record_source_mode,
     get_loopback_device_index,
     get_silence_alert_seconds,
+    get_session_split_silence_sec,
     is_auto_check_updates_startup
 )
 from recorder.audio.devices import (
@@ -346,6 +347,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.worker.session_split_signal.connect(self._on_session_split_triggered)
         self.worker.silence_alert_signal.connect(self._on_silence_alert)
         self.worker.error_signal.connect(self._handle_audio_error)
+        self.worker.set_session_split_silence_sec(get_session_split_silence_sec())
 
         self._init_ui()
         self._apply_theme()
@@ -1009,6 +1011,7 @@ class SmartDictaphoneWindow(QMainWindow):
             if hasattr(self, "worker"):
                 self.worker.set_auto_pause_sec(float(new_pause))
                 self.worker.set_silence_alert_seconds(get_silence_alert_seconds())
+                self.worker.set_session_split_silence_sec(get_session_split_silence_sec())
 
             # 4. Natychmiastowe odświeżenie widoku podglądu transkrypcji (kolejność / format)
             self._refresh_current_transcript_view()
@@ -1537,6 +1540,7 @@ class SmartDictaphoneWindow(QMainWindow):
 
         threshold_sec = self.slider_silence.value()
         self.worker.set_auto_pause_sec(threshold_sec)
+        self.worker.set_session_split_silence_sec(get_session_split_silence_sec())
         self.worker.start_recording(
             device_index=selected_mic,
             loopback_device_index=selected_loopback,
@@ -2377,6 +2381,7 @@ class SmartDictaphoneWindow(QMainWindow):
 
         # 3. Rotacja rejestratora audio (flushez i zamyka stary WAV na dysku!) i transkrypcji w tle
         self.worker.rotate_session_file(self.current_live_wav_path)
+        self._refresh_recordings_list()
         if hasattr(self, "rolling_worker") and self.rolling_worker is not None:
             self.rolling_worker.reset_for_new_session(self.current_live_txt_path, session_start_time=split_now)
 
@@ -2396,6 +2401,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.last_plain_text = ""
         self.recorded_seconds = 0
         self.lbl_timer.setText("00:00:00")
+        self.lbl_live_transcript.setHtml("<div style='color: #94a3b8; font-style: italic; text-align: center; padding: 20px;'>✨ Rozpoczęto nowe spotkanie biurowe (poprzednia sesja została automatycznie zapisana)...</div>")
 
         # 5. Start nowej sesji w Supabase
         if self.cloud_sync.config.get("live_streaming") and self.cloud_sync.config.get("auto_sync"):

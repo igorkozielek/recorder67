@@ -28,7 +28,8 @@ from recorder.config import (
     get_loopback_device_index,
     get_system_vad_speech_threshold,
     get_vad_speech_threshold,
-    get_silence_alert_seconds
+    get_silence_alert_seconds,
+    get_session_split_silence_sec
 )
 from recorder.audio.capture import save_wav_file, StreamingWavWriter
 from recorder.audio.converter import resample_to_16k, prepare_audio_file
@@ -191,7 +192,7 @@ class SmartAudioWorker(QThread):
         self.loopback_device_index = loopback_device_index
         self.source_mode = source_mode or get_record_source_mode()
         self.auto_pause_sec = auto_pause_sec
-        self.session_split_silence_sec = SESSION_SPLIT_SILENCE_SEC
+        self.session_split_silence_sec = get_session_split_silence_sec()
         self.silence_alert_sec = get_silence_alert_seconds()
         self.silence_alert_emitted = False
 

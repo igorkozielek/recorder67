@@ -202,9 +202,17 @@ class RollingTranscriptionWorker(QThread):
         audio_norm = normalize_audio(audio_clean, target_peak=0.92)
 
         initial_prompt = get_full_initial_prompt()
-        effective_beam = get_beam_size()
-        if self.block_queue.qsize() > 1:
+        base_beam = get_beam_size()
+        q_len = self.block_queue.qsize()
+        if q_len > 1:
             effective_beam = 1
+            print(f"[WHISPER ADAPTACYJNY] Zator w kolejce ({q_len} bloków czeka) -> przełączenie na bieg turbo: beam_size=1")
+            self._was_adaptive_beam = True
+        else:
+            effective_beam = base_beam
+            if getattr(self, "_was_adaptive_beam", False):
+                print(f"[WHISPER ADAPTACYJNY] Kolejka rozładowana -> powrót do standardowej jakości: beam_size={effective_beam}")
+                self._was_adaptive_beam = False
 
         transcript_words = []
 
