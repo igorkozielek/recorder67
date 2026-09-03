@@ -414,6 +414,15 @@ def test_real_wall_clock_timestamp_with_mute():
     assert lbl1 == "18:00:00 - 18:00:05"
     assert lbl2 == "18:15:00 - 18:15:05", f"Oczekiwano rzeczywistej godziny 18:15:00, otrzymano: {lbl2}"
 
+    # Weryfikacja dla trybu hybrydowego: offset + realna godzina (np. 00:05 - 00:10 | 18:15:00 - 18:15:05)
+    lbl1_hybrid = format_turn_timestamp(st1, en1, session_start_time=session_start, ts_format="hybrid",
+                                        wall_start=t1_wall, wall_end=t1_wall + timedelta(seconds=5.0))
+    lbl2_hybrid = format_turn_timestamp(st2, en2, session_start_time=session_start, ts_format="hybrid",
+                                        wall_start=t2_wall, wall_end=t2_wall + timedelta(seconds=5.0))
+
+    assert lbl1_hybrid == "00:00 - 00:05 | 18:00:00 - 18:00:05"
+    assert lbl2_hybrid == "00:05 - 00:10 | 18:15:00 - 18:15:05", f"Oczekiwano hybrydy z czasem 18:15:00, otrzymano: {lbl2_hybrid}"
+
 
 def test_silence_alert_timeout_does_not_cancel_session_split():
     """
