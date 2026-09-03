@@ -25,13 +25,13 @@ def test_speakers_deduplication():
 
     # Gwarancja unikalności: brak duplikatów imion!
     assert len(assigned_values) == len(set(assigned_values)), f"Wykryto duplikaty imion: {assigned_values}"
-    print(f"✅ Test Unikalności Mówców: Sukces! Przypisania: {suggestions}")
+    print(f"[OK] Test Unikalności Mówców: Sukces! Przypisania: {suggestions}")
 
     # Test formatowania statystyk
     stats_str = format_speaker_stats(count=42, total_duration_sec=860.0)
     assert "42 wypowiedzi" in stats_str
     assert "14m 20s" in stats_str
-    print(f"✅ Test format_speaker_stats: Sukces! Format: '{stats_str}'")
+    print("[OK] Test format_speaker_stats: Sukces!")
 
 
 if __name__ == "__main__":

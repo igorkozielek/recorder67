@@ -62,11 +62,11 @@ def test_session_lifecycle():
         plain = reloaded.export_to_plain_text()
         assert "Bartek: Cześć" in plain
         assert "Ania: wszystkim" in plain
-        print(f"✅ Test Eksportu Tekstu z Mówcami:\n{plain}")
+        print(f"[OK] Test Eksportu Tekstu z Mówcami:\n{plain}")
 
         # 4. Sprawdzenie helperów ścieżek
         assert get_session_path_for_txt(txt_path) == json_path
-        print("✅ Test ścieżek i cyklu życia sesji: Sukces!")
+        print("[OK] Test ścieżek i cyklu życia sesji: Sukces!")
 
 
 if __name__ == "__main__":

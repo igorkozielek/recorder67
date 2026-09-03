@@ -272,7 +272,6 @@ class SmartAudioWorker(QThread):
 
     def suppress_sys_audio_for(self, duration_sec: float = 0.8):
         """Tymczasowo tłumi rejestrację dźwięku systemowego (np. podczas odtwarzania dzwonka powiadomienia programu)."""
-        import time
         self.suppress_sys_until = time.time() + duration_sec
 
     def start_recording(self, device_index=None, loopback_device_index=None,
@@ -527,7 +526,6 @@ class SmartAudioWorker(QThread):
                     def loopback_callback(in_data, frame_count, time_info, status):
                         if not self._is_running or self.state == SmartRecordState.STOPPED:
                             return (None, pyaudio.paAbort)
-                        import time
                         if self.state == SmartRecordState.MANUAL_PAUSED or not in_data or self.sys_muted or time.time() < self.suppress_sys_until:
                             if self.sys_muted or time.time() < self.suppress_sys_until:
                                 self.sys_level = 0.0
@@ -536,7 +534,6 @@ class SmartAudioWorker(QThread):
                         # Izolacja wybranej aplikacji audio: jeśli wybrano konkretną aplikację (np. Discord),
                         # a ta aplikacja w tej chwili nie generuje dźwięku, odrzucamy próbki tła (np. YouTube)
                         if self.target_app_filter:
-                            import time
                             if time.time() > self.target_app_active_until:
                                 self.sys_level = 0.0
                                 return (None, pyaudio.paContinue)
@@ -829,7 +826,6 @@ class SmartAudioWorker(QThread):
 
                 # Sprawdzenie aktywności docelowej aplikacji audio (izolacja procesu np. Discord vs YouTube)
                 if self.target_app_filter and run_sys:
-                    import time
                     if self.app_monitor.is_target_app_playing():
                         self.target_app_active_until = time.time() + 0.40
 
@@ -859,7 +855,6 @@ class SmartAudioWorker(QThread):
                     pass
             if p_audio:
                 try:
-                    import time
                     time.sleep(0.05)
                     p_audio.terminate()
                 except Exception:
