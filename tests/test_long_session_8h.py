@@ -574,4 +574,43 @@ def test_hybrid_dual_channel_chronological_sorting():
     assert mic_pos < sys_pos, f"BŁĄD: Dźwięk z YouTube znalazł się przed mikrofonem! plain=\n{plain}"
 
 
+def test_progressbar_audio_timeline_matches_recorded_speech_duration():
+    """
+    Weryfikuje, że start_sec i end_sec emitowanych bloków odpowiadają rzeczywistej długości
+    nagranego audio w pliku WAV (nie rozjeżdżają się z powodu czasu spędzonego w Auto-Pauzie),
+    dzięki czemu pasek postępu nigdy nie pokazuje przetworzenia dwukrotności nagrania (np. 5:21 / 2:44).
+    """
+    from recorder.ui.workers import SmartRecordState
+    _ = QApplication.instance() or QApplication([])
+    worker = SmartAudioWorker()
+    worker.state = SmartRecordState.RECORDING_SPEECH
+
+    emitted_blocks = []
+    worker.rolling_block_ready_signal.connect(lambda idx, st, en, arr, ch: emitted_blocks.append((idx, st, en, ch)))
+
+    # 1. Mowa przez 2 sekundy (32000 próbek)
+    chunk = (np.ones(16000, dtype=np.float32) * 0.1)
+    worker.total_mic_samples_added += 32000
+    worker.current_mic_block_chunks = [chunk, chunk]
+    worker._flush_mic_block()
+
+    assert len(emitted_blocks) == 1
+    assert emitted_blocks[0][1] == 0.0
+    assert emitted_blocks[0][2] == 2.0  # end_sec = 2.0s
+
+    # 2. Cisza / Auto-Pauza przez 5 minut w świecie rzeczywistym (próbki do WAV nie lecą)
+    worker.state = SmartRecordState.AUTO_PAUSED
+
+    # 3. Wznowienie mowy na 3 sekundy (48000 próbek)
+    worker.state = SmartRecordState.RECORDING_SPEECH
+    worker.total_mic_samples_added += 48000
+    worker.current_mic_block_chunks = [chunk, chunk, chunk]
+    worker._flush_mic_block()
+
+    assert len(emitted_blocks) == 2
+    assert emitted_blocks[1][1] == 2.0  # start_sec = 2.0s (ciągłość w pliku audio!)
+    assert emitted_blocks[1][2] == 5.0  # end_sec = 5.0s (dokładnie 5s nagranego audio!)
+
+
+
 

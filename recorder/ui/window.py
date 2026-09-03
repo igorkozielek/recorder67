@@ -2702,8 +2702,9 @@ class SmartDictaphoneWindow(QMainWindow):
                 self.rolling_worker.update_session_time(self.recorded_seconds)
                 proc_sec = self.rolling_worker.total_processed_seconds
                 if proc_sec > 0:
-                    pct = int(min(98, max(5, (proc_sec / max(1.0, float(self.recorded_seconds))) * 100)))
-                    p_min, p_sec = int(proc_sec // 60), int(proc_sec % 60)
+                    disp_proc_sec = min(float(self.recorded_seconds), proc_sec)
+                    pct = int(min(98, max(5, (disp_proc_sec / max(1.0, float(self.recorded_seconds))) * 100)))
+                    p_min, p_sec = int(disp_proc_sec // 60), int(disp_proc_sec % 60)
                     t_min, t_sec = int(self.recorded_seconds // 60), int(self.recorded_seconds % 60)
                     self.progress_transcription.setValue(pct)
                     blk_str = f" · blok #{self.last_processed_block_idx}" if self.last_processed_block_idx > 0 else ""
@@ -2724,7 +2725,8 @@ class SmartDictaphoneWindow(QMainWindow):
             t_min, t_sec = int(self.recorded_seconds // 60), int(self.recorded_seconds % 60)
             proc_sec = getattr(self.rolling_worker, "total_processed_seconds", 0.0) if getattr(self, "rolling_worker", None) else 0.0
             if proc_sec > 0:
-                p_min, p_sec = int(proc_sec // 60), int(proc_sec % 60)
+                disp_proc_sec = min(float(self.recorded_seconds), proc_sec)
+                p_min, p_sec = int(disp_proc_sec // 60), int(disp_proc_sec % 60)
                 blk_str = f" · blok #{self.last_processed_block_idx}" if self.last_processed_block_idx > 0 else ""
                 self.progress_transcription.setFormat(f"⏸️ Auto-Pauza (Cisza): {p_min:02d}:{p_sec:02d} / {t_min:02d}:{t_sec:02d}{blk_str}")
             else:
@@ -2733,7 +2735,8 @@ class SmartDictaphoneWindow(QMainWindow):
             t_min, t_sec = int(self.recorded_seconds // 60), int(self.recorded_seconds % 60)
             proc_sec = getattr(self.rolling_worker, "total_processed_seconds", 0.0) if getattr(self, "rolling_worker", None) else 0.0
             if proc_sec > 0:
-                p_min, p_sec = int(proc_sec // 60), int(proc_sec % 60)
+                disp_proc_sec = min(float(self.recorded_seconds), proc_sec)
+                p_min, p_sec = int(disp_proc_sec // 60), int(disp_proc_sec % 60)
                 blk_str = f" · blok #{self.last_processed_block_idx}" if self.last_processed_block_idx > 0 else ""
                 self.progress_transcription.setFormat(f"⏸️ Wstrzymano ręcznie: {p_min:02d}:{p_sec:02d} / {t_min:02d}:{t_sec:02d}{blk_str}")
             else:
