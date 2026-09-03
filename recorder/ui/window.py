@@ -308,8 +308,10 @@ class SmartDictaphoneWindow(QMainWindow):
 
         self.last_audio_save_path = None
         self.recorded_seconds = 0
+        self._active_recorded_time = 0.0
+        self._last_active_tick = None
         self.timer = QTimer(self)
-        self.timer.setInterval(1000)
+        self.timer.setInterval(200)
         self.timer.timeout.connect(self._on_timer_tick)
 
         self.live_transcription_worker = None
@@ -1476,6 +1478,8 @@ class SmartDictaphoneWindow(QMainWindow):
             return
 
         self.recorded_seconds = 0
+        self._active_recorded_time = 0.0
+        self._last_active_tick = None
         self.last_processed_block_idx = 0
         self.lbl_timer.setText("00:00:00")
 
@@ -2400,6 +2404,8 @@ class SmartDictaphoneWindow(QMainWindow):
         self.current_turns = []
         self.last_plain_text = ""
         self.recorded_seconds = 0
+        self._active_recorded_time = 0.0
+        self._last_active_tick = None
         self.lbl_timer.setText("00:00:00")
         self.text_transcript.setHtml("<div style='color: #94a3b8; font-style: italic; text-align: center; padding: 20px;'>✨ Rozpoczęto nowe spotkanie biurowe (poprzednia sesja została automatycznie zapisana)...</div>")
 
@@ -2688,19 +2694,23 @@ class SmartDictaphoneWindow(QMainWindow):
         self.input_token.setEnabled(is_diar)
 
     def _on_timer_tick(self):
-        # Czas nagrania (stoper i pasek) nalicza się ze strumienia audio WAV bez dryfu zegarowego
+        # Precyzyjny czas nagrania (monotoniczny, bez dryfu i bez przeskakiwania sekund)
         is_active_recording = self.worker.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]
+        now = time.monotonic()
         if is_active_recording:
-            if hasattr(self, "worker") and hasattr(self.worker, "audio_mixer"):
-                actual_audio_sec = int(self.worker.audio_mixer.get_current_timeline_samples() / 16000.0)
-                self.recorded_seconds = max(self.recorded_seconds, actual_audio_sec)
-            else:
-                self.recorded_seconds += 1
+            if getattr(self, "_last_active_tick", None) is not None:
+                dt = now - self._last_active_tick
+                if 0.0 < dt < 2.0:
+                    self._active_recorded_time += dt
+            self._last_active_tick = now
+            self.recorded_seconds = int(self._active_recorded_time)
 
             hrs = self.recorded_seconds // 3600
             mins = (self.recorded_seconds % 3600) // 60
             secs = self.recorded_seconds % 60
-            self.lbl_timer.setText(f"{hrs:02d}:{mins:02d}:{secs:02d}")
+            new_text = f"{hrs:02d}:{mins:02d}:{secs:02d}"
+            if self.lbl_timer.text() != new_text:
+                self.lbl_timer.setText(new_text)
 
             if getattr(self, "rolling_worker", None) is not None:
                 self.rolling_worker.update_session_time(self.recorded_seconds)
@@ -2725,7 +2735,7 @@ class SmartDictaphoneWindow(QMainWindow):
                         self.progress_transcription.setValue(pct)
                         self.progress_transcription.setFormat(f"⚡ Przetwarzanie pierwszego fragmentu w tle: {t_min:02d}:{t_sec:02d}...")
         elif self.worker.state == SmartRecordState.AUTO_PAUSED:
-            # W stanie Auto-Pauzy stoper stoi w miejscu i pasek nie ucieka do przodu
+            self._last_active_tick = None
             t_min, t_sec = int(self.recorded_seconds // 60), int(self.recorded_seconds % 60)
             proc_sec = getattr(self.rolling_worker, "total_processed_seconds", 0.0) if getattr(self, "rolling_worker", None) else 0.0
             if proc_sec > 0:
@@ -2736,6 +2746,7 @@ class SmartDictaphoneWindow(QMainWindow):
             else:
                 self.progress_transcription.setFormat(f"⏸️ Auto-Pauza (Cisza): {t_min:02d}:{t_sec:02d}")
         elif self.worker.state == SmartRecordState.MANUAL_PAUSED:
+            self._last_active_tick = None
             t_min, t_sec = int(self.recorded_seconds // 60), int(self.recorded_seconds % 60)
             proc_sec = getattr(self.rolling_worker, "total_processed_seconds", 0.0) if getattr(self, "rolling_worker", None) else 0.0
             if proc_sec > 0:
