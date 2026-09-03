@@ -284,10 +284,21 @@ exit /b 0
         with open(updater_bat, "w", encoding="cp852", errors="replace") as f:
             f.write(bat_content)
             
-        # Uruchom skrypt .bat jako niezależny proces w tle (detached process)
+        # Uruchom skrypt .bat jako niezależny proces w tle z ukrytym oknem (CREATE_NO_WINDOW)
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+        if hasattr(subprocess, "CREATE_NO_WINDOW"):
+            creationflags |= subprocess.CREATE_NO_WINDOW
+        else:
+            creationflags |= 0x08000000
+
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0  # SW_HIDE
+
         subprocess.Popen(
             ["cmd.exe", "/c", updater_bat],
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | getattr(subprocess, "DETACHED_PROCESS", 0x00000008),
+            creationflags=creationflags,
+            startupinfo=startupinfo,
             close_fds=True
         )
         return True

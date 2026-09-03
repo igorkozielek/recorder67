@@ -816,7 +816,9 @@ class SettingsDialog(QDialog):
             if clicked == btn_restart_now:
                 applied = apply_in_place_update(path_or_err, restart_after=True)
                 if applied:
-                    sys.exit(0)
+                    from PySide6.QtCore import QCoreApplication
+                    QCoreApplication.quit()
+                    os._exit(0)
             elif clicked == btn_on_exit:
                 if self.parent() and hasattr(self.parent(), "set_pending_update"):
                     self.parent().set_pending_update(path_or_err, version)
