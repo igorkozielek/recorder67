@@ -55,6 +55,7 @@ class RealtimeAudioMixer:
         self.sys_chunks = []
         self.mic_buffer = np.array([], dtype=np.float32)
         self.sys_buffer = np.array([], dtype=np.float32)
+        self.total_samples_popped = 0
         self.lock = threading.Lock()
 
     def reset(self):
@@ -63,6 +64,14 @@ class RealtimeAudioMixer:
             self.sys_chunks = []
             self.mic_buffer = np.array([], dtype=np.float32)
             self.sys_buffer = np.array([], dtype=np.float32)
+            self.total_samples_popped = 0
+
+    def get_current_timeline_samples(self) -> int:
+        """Zwraca łączną pozycję na osi czasu nagrywanego audio w próbkach (poziom pliku WAV)."""
+        with self.lock:
+            mic_len = len(self.mic_buffer) + sum(len(c) for c in self.mic_chunks)
+            sys_len = len(self.sys_buffer) + sum(len(c) for c in self.sys_chunks)
+            return int(self.total_samples_popped + max(mic_len, sys_len))
 
     def add_mic_chunk(self, chunk: np.ndarray):
         if chunk is None or len(chunk) == 0:
@@ -103,11 +112,13 @@ class RealtimeAudioMixer:
                 if run_mic and len(self.mic_buffer) > 0:
                     data = self.mic_buffer
                     self.mic_buffer = np.array([], dtype=np.float32)
+                    self.total_samples_popped += len(data)
                     int16_arr = (data * 32767.0).clip(-32768, 32767).astype(np.int16)
                     return int16_arr.tobytes()
                 elif run_sys and len(self.sys_buffer) > 0:
                     data = self.sys_buffer
                     self.sys_buffer = np.array([], dtype=np.float32)
+                    self.total_samples_popped += len(data)
                     int16_arr = (data * 32767.0).clip(-32768, 32767).astype(np.int16)
                     return int16_arr.tobytes()
                 return b""
@@ -135,12 +146,14 @@ class RealtimeAudioMixer:
                 if len(self.mic_buffer) > 0 and len(self.sys_buffer) == 0 and (flush or len(self.mic_buffer) > 16000):
                     data = self.mic_buffer
                     self.mic_buffer = np.array([], dtype=np.float32)
+                    self.total_samples_popped += len(data)
                     stereo = np.zeros((len(data), 2), dtype=np.float32)
                     stereo[:, 0] = data
                     return (stereo * 32767.0).clip(-32768, 32767).astype(np.int16).tobytes()
                 elif len(self.sys_buffer) > 0 and len(self.mic_buffer) == 0 and (flush or len(self.sys_buffer) > 16000):
                     data = self.sys_buffer
                     self.sys_buffer = np.array([], dtype=np.float32)
+                    self.total_samples_popped += len(data)
                     stereo = np.zeros((len(data), 2), dtype=np.float32)
                     stereo[:, 1] = data
                     return (stereo * 32767.0).clip(-32768, 32767).astype(np.int16).tobytes()
@@ -150,6 +163,7 @@ class RealtimeAudioMixer:
             s_part = self.sys_buffer[:min_len]
             self.mic_buffer = self.mic_buffer[min_len:]
             self.sys_buffer = self.sys_buffer[min_len:]
+            self.total_samples_popped += min_len
 
             # Zapis stereo: Kolumna 0 (Left) = Mic, Kolumna 1 (Right) = System
             stereo = np.empty((min_len, 2), dtype=np.float32)
@@ -398,7 +412,7 @@ class SmartAudioWorker(QThread):
                 mic_arr = np.concatenate(self.current_mic_block_chunks)
                 if len(mic_arr) >= int(0.3 * 16000):
                     cur_dur = len(mic_arr) / 16000.0
-                    end_sec = round(self.total_mic_samples_added / 16000.0, 2)
+                    end_sec = round(self.audio_mixer.get_current_timeline_samples() / 16000.0, 2)
                     start_sec = max(0.0, round(end_sec - cur_dur, 2))
                     blocks.append((self.block_index, start_sec, end_sec, mic_arr, "mic"))
                     self.block_index += 1
@@ -412,7 +426,7 @@ class SmartAudioWorker(QThread):
                 sys_arr = np.concatenate(self.current_sys_block_chunks)
                 if len(sys_arr) >= int(0.3 * 16000):
                     cur_dur = len(sys_arr) / 16000.0
-                    end_sec = round(self.total_sys_samples_added / 16000.0, 2)
+                    end_sec = round(self.audio_mixer.get_current_timeline_samples() / 16000.0, 2)
                     st_sec = max(0.0, round(end_sec - cur_dur, 2))
                     blocks.append((self.block_index, st_sec, end_sec, sys_arr, "system"))
                     self.block_index += 1
@@ -487,7 +501,7 @@ class SmartAudioWorker(QThread):
                 self.mic_silence_samples = 0
                 cur_dur = len(block_arr) / 16000.0
                 if cur_dur >= 0.5:
-                    en_sec = round(self.total_mic_samples_added / 16000.0, 2)
+                    en_sec = round(self.audio_mixer.get_current_timeline_samples() / 16000.0, 2)
                     st_sec = max(0.0, round(en_sec - cur_dur, 2))
                     idx = self.block_index
                     self.block_index += 1
@@ -504,7 +518,7 @@ class SmartAudioWorker(QThread):
                 self.sys_silence_samples = 0
                 cur_dur = len(arr) / 16000.0
                 if cur_dur >= 0.5:
-                    en_sec = round(self.total_sys_samples_added / 16000.0, 2)
+                    en_sec = round(self.audio_mixer.get_current_timeline_samples() / 16000.0, 2)
                     st_sec = max(0.0, round(en_sec - cur_dur, 2))
                     idx = self.block_index
                     self.block_index += 1
@@ -674,7 +688,7 @@ class SmartAudioWorker(QThread):
                                         arr = np.concatenate(self.current_sys_block_chunks)
                                         self.current_sys_block_chunks = []
                                         self.sys_silence_samples = 0
-                                        en_sec = round(self.total_sys_samples_added / 16000.0, 2)
+                                        en_sec = round(self.audio_mixer.get_current_timeline_samples() / 16000.0, 2)
                                         st_sec = max(0.0, round(en_sec - cur_dur, 2))
                                         idx = self.block_index
                                         self.block_index += 1
@@ -797,7 +811,7 @@ class SmartAudioWorker(QThread):
                                         block_arr = np.concatenate(self.current_mic_block_chunks)
                                         self.current_mic_block_chunks = []
                                         self.mic_silence_samples = 0
-                                        end_sec = round(self.total_mic_samples_added / 16000.0, 2)
+                                        end_sec = round(self.audio_mixer.get_current_timeline_samples() / 16000.0, 2)
                                         start_sec = max(0.0, round(end_sec - cur_dur, 2))
                                         idx = self.block_index
                                         self.block_index += 1

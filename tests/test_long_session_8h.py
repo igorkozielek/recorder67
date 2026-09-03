@@ -590,7 +590,8 @@ def test_progressbar_audio_timeline_matches_recorded_speech_duration():
 
     # 1. Mowa przez 2 sekundy (32000 próbek)
     chunk = (np.ones(16000, dtype=np.float32) * 0.1)
-    worker.total_mic_samples_added += 32000
+    worker.audio_mixer.add_mic_chunk(chunk)
+    worker.audio_mixer.add_mic_chunk(chunk)
     worker.current_mic_block_chunks = [chunk, chunk]
     worker._flush_mic_block()
 
@@ -603,7 +604,9 @@ def test_progressbar_audio_timeline_matches_recorded_speech_duration():
 
     # 3. Wznowienie mowy na 3 sekundy (48000 próbek)
     worker.state = SmartRecordState.RECORDING_SPEECH
-    worker.total_mic_samples_added += 48000
+    worker.audio_mixer.add_mic_chunk(chunk)
+    worker.audio_mixer.add_mic_chunk(chunk)
+    worker.audio_mixer.add_mic_chunk(chunk)
     worker.current_mic_block_chunks = [chunk, chunk, chunk]
     worker._flush_mic_block()
 
