@@ -1528,6 +1528,18 @@ class SmartDictaphoneWindow(QMainWindow):
             "</span></div>"
         )
 
+        # Zabezpieczenie: zatrzymanie i wyczyszczenie poprzedniego wątku rolling_worker
+        if getattr(self, "rolling_worker", None) is not None:
+            try:
+                self.rolling_worker.blockSignals(True)
+                if self.rolling_worker.isRunning():
+                    self.rolling_worker.stop()
+                    self.rolling_worker.wait(1500)
+                if self.rolling_worker in self._active_threads:
+                    self._active_threads.remove(self.rolling_worker)
+            except Exception:
+                pass
+
         # Uruchomienie silnika asynchronicznego przetwarzania bloków w tle (Rolling Background Transcriber)
         self.rolling_worker = RollingTranscriptionWorker(
             model_size=selected_model,
@@ -3065,15 +3077,18 @@ class SmartDictaphoneWindow(QMainWindow):
         try:
             self.timer.stop()
 
-            # 1. Zablokowanie sygnałów i natychmiastowe zatrzymanie transkrypcji w tle
-            if getattr(self, "rolling_worker", None) is not None:
+            # 1. Zatrzymanie wszystkich zarejestrowanych wątków w self._active_threads
+            for th in list(self._active_threads):
                 try:
-                    self.rolling_worker.blockSignals(True)
+                    th.blockSignals(True)
+                    if hasattr(th, "stop"):
+                        th.stop()
+                    if hasattr(th, "quit"):
+                        th.quit()
+                    th.wait(2000)
                 except Exception:
                     pass
-                if self.rolling_worker.isRunning():
-                    self.rolling_worker.stop()
-                    self.rolling_worker.wait(3000)
+            self._active_threads.clear()
 
             # 2. Zablokowanie sygnałów i zatrzymanie wątku audio oraz zapis audio
             if self.worker is not None:
@@ -3147,6 +3162,3 @@ class SmartDictaphoneWindow(QMainWindow):
             print(f"[closeEvent] Błąd zamykania okna: {e}")
         finally:
             event.accept()
-            qapp = QApplication.instance()
-            if qapp:
-                qapp.quit()

@@ -566,6 +566,7 @@ class SmartAudioWorker(QThread):
 
         if HAS_PYAUDIOWPATCH and (run_mic or run_sys):
             try:
+                time.sleep(0.1)  # Krótka pauza na zwolnienie endpointów WASAPI przez system Windows po Stop->Start
                 p_audio = pyaudio.PyAudio()
             except Exception as e:
                 print(f"[SmartAudioWorker] Błąd inicjalizacji PyAudio: {e}")
