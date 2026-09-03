@@ -37,8 +37,11 @@ class RollingBlock:
         self.plain_text: str = ""
         self.html_text: str = ""
         self.is_processed: bool = False
-        self.wall_start_time: Optional[datetime] = None
-        self.wall_end_time: Optional[datetime] = None
+        from datetime import datetime, timedelta
+        now_dt = datetime.now()
+        dur = (len(audio_float) / 16000.0) if audio_float is not None and len(audio_float) > 0 else max(0.0, float(end_sec - start_sec))
+        self.wall_end_time = now_dt
+        self.wall_start_time = now_dt - timedelta(seconds=max(0.0, float(dur)))
 
 
 class RollingTranscriptionWorker(QThread):
@@ -304,15 +307,21 @@ class RollingTranscriptionWorker(QThread):
             default_spk = "Mikrofon" if block.channel_source == "mic" else "Dźwięk Systemu"
             from datetime import timedelta
             b_wall_st = getattr(block, "wall_start_time", None)
+            if b_wall_st is None:
+                if self.session_start_time is not None:
+                    b_wall_st = self.session_start_time + timedelta(seconds=block.start_sec)
+                else:
+                    dur = max(0.0, block.end_sec - block.start_sec)
+                    b_wall_st = datetime.now() - timedelta(seconds=dur)
+
             for trn in block_turns:
                 trn["channel"] = block.channel_source
                 if trn.get("speaker") in ("Mówca", None, "", "Ty / Biuro", "Zdalny (Discord/Teams)"):
                     trn["speaker"] = default_spk
-                if b_wall_st is not None:
-                    rel_st = max(0.0, float(trn.get("start", 0.0)) - float(block.start_sec))
-                    rel_en = max(0.0, float(trn.get("end", 0.0)) - float(block.start_sec))
-                    trn["wall_start"] = (b_wall_st + timedelta(seconds=rel_st)).isoformat()
-                    trn["wall_end"] = (b_wall_st + timedelta(seconds=rel_en)).isoformat()
+                rel_st = max(0.0, float(trn.get("start", 0.0)) - float(block.start_sec))
+                rel_en = max(0.0, float(trn.get("end", 0.0)) - float(block.start_sec))
+                trn["wall_start"] = (b_wall_st + timedelta(seconds=rel_st)).isoformat()
+                trn["wall_end"] = (b_wall_st + timedelta(seconds=rel_en)).isoformat()
             block.turns = block_turns
 
         # ZWALNIANIE PAMIĘCI RAM: usuwamy referencję do surowych danych audio, których już nie potrzebujemy
@@ -326,8 +335,9 @@ class RollingTranscriptionWorker(QThread):
 
         # Inkrementalne dopisanie nowych turnów do self.all_turns (O(1) dla chronologicznych bloków)
         if block.turns:
+            from recorder.core.session import turn_sort_key
             self.all_turns.extend(block.turns)
-            self.all_turns.sort(key=lambda t: (t.get("wall_start") or "", float(t.get("start", 0.0))))
+            self.all_turns.sort(key=lambda t: turn_sort_key(t, self.session_start_time))
 
         qsize = self.block_queue.qsize()
         now_ts = time.time()
@@ -368,11 +378,12 @@ class RollingTranscriptionWorker(QThread):
 
     def _compile_full_transcript(self):
         """Kompiluje dotychczasowe wypowiedzi w spójną transkrypcję posortowaną chronologicznie."""
-        combined_turns = sorted(list(self.all_turns), key=lambda t: (t.get("wall_start") or "", float(t.get("start", 0.0))))
+        from recorder.core.session import turn_sort_key
+        combined_turns = sorted(list(self.all_turns), key=lambda t: turn_sort_key(t, self.session_start_time))
         if not combined_turns:
             for b in sorted(self.processed_blocks, key=lambda x: x.start_sec):
                 combined_turns.extend(b.turns)
-            combined_turns.sort(key=lambda t: (t.get("wall_start") or "", float(t.get("start", 0.0))))
+            combined_turns.sort(key=lambda t: turn_sort_key(t, self.session_start_time))
 
         if not combined_turns:
             return "Brak zarejestrowanej mowy.", "Brak zarejestrowanej mowy.", []

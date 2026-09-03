@@ -616,5 +616,52 @@ def test_progressbar_audio_timeline_matches_recorded_speech_duration():
     assert emitted_blocks[1][2] == 5.0  # end_sec = 5.0s (dokładnie 5s nagranego audio!)
 
 
+def test_final_block_without_wall_start_does_not_jump_to_top():
+    """
+    Weryfikuje, że zaległy blok zfinalizowany po kliknięciu 'Stop i Zapisz'
+    (nawet jeśli wall_start jest None lub pusty) zachowuje chronologiczną pozycję
+    i nie przeskakuje na sam początek transkrypcji (do indeksu 0).
+    """
+    from recorder.core.session import TranscriptionSession
+
+    turn_early = {
+        "start": 1.5,
+        "end": 3.0,
+        "speaker": "Mikrofon",
+        "text": "Pierwsza wypowiedź",
+        "channel": "mic",
+        "wall_start": "2026-09-03T23:14:20.000000",
+        "wall_end": "2026-09-03T23:14:23.000000"
+    }
+    turn_middle = {
+        "start": 20.0,
+        "end": 25.0,
+        "speaker": "Dźwięk Systemu",
+        "text": "Środkowa wypowiedź",
+        "channel": "system",
+        "wall_start": "2026-09-03T23:14:40.000000",
+        "wall_end": "2026-09-03T23:14:45.000000"
+    }
+    # Blok finalny po kliknięciu Stop (start na 75s, wall_start=None)
+    turn_final = {
+        "start": 75.0,
+        "end": 80.0,
+        "speaker": "Dźwięk Systemu",
+        "text": "Ostatnia wypowiedź na sam koniec",
+        "channel": "system",
+        "wall_start": None,
+        "wall_end": None
+    }
+
+    session = TranscriptionSession(turns=[turn_final, turn_early, turn_middle])
+    plain = session.export_to_plain_text()
+
+    lines = [l.strip() for l in plain.split("\n") if l.strip()]
+    assert len(lines) == 3
+    assert "Pierwsza wypowiedź" in lines[0], f"Pierwsza powinna być na górze, a jest: {lines[0]}"
+    assert "Środkowa wypowiedź" in lines[1]
+    assert "Ostatnia wypowiedź" in lines[2], f"Ostatnia powinna być na dole, a jest: {lines[2]}"
+
+
 
 

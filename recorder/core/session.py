@@ -73,6 +73,24 @@ def format_turn_timestamp(st: float, en: float, session_start_time: Optional[dat
         return offset_label
 
 
+def turn_sort_key(turn: Dict[str, Any], session_start_time: Optional[datetime] = None) -> Tuple[str, float]:
+    """
+    Zwraca stabilny klucz sortowania (wall_timestamp_str, start_offset)
+    gwarantujący chronologiczną kolejność wypowiedzi na osi czasu.
+    W przypadku braku 'wall_start' nie zwraca pustego stringa (co wrzucało turn na początek listy),
+    lecz wyznacza czas na podstawie offsetu startu.
+    """
+    ws = turn.get("wall_start")
+    st = float(turn.get("start", 0.0))
+    if not ws:
+        from datetime import timedelta
+        if session_start_time is not None:
+            ws = (session_start_time + timedelta(seconds=st)).isoformat()
+        else:
+            ws = f"OFFSET_{st:012.3f}"
+    return (ws, st)
+
+
 class TranscriptionSession:
     """
     Struktura danych reprezentująca kompletną sesję transkrypcji i diaryzacji.
@@ -237,7 +255,7 @@ class TranscriptionSession:
         if base_dt is None:
             base_dt = extract_datetime_from_filename(self.prepared_wav) or extract_datetime_from_filename(self.source_audio)
 
-        sorted_turns = sorted(self.turns, key=lambda t: (t.get("wall_start") or "", float(t.get("start", 0.0))))
+        sorted_turns = sorted(self.turns, key=lambda t: turn_sort_key(t, base_dt))
         lines = []
         for t in sorted_turns:
             spk = t.get("speaker", "Mówca")
@@ -277,7 +295,7 @@ class TranscriptionSession:
             except Exception:
                 reverse_order = True
 
-        sorted_turns = sorted(self.turns, key=lambda t: (t.get("wall_start") or "", float(t.get("start", 0.0))))
+        sorted_turns = sorted(self.turns, key=lambda t: turn_sort_key(t, base_dt))
         display_turns = list(reversed(sorted_turns)) if reverse_order else sorted_turns
 
         html_blocks = []
