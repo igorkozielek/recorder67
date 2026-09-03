@@ -780,46 +780,19 @@ class SettingsDialog(QDialog):
             self.lbl_update_status.setStyleSheet("color: #ef4444; font-size: 11px;")
 
     def _prompt_and_apply_update(self, path_or_err: str, version: str):
-        """Wyświetla polski dialog wyboru instalacji natychmiastowej lub przy zamknięciu."""
+        """Wyświetla nowoczesny polski dialog wyboru instalacji natychmiastowej lub przy wyjściu."""
         is_frozen = getattr(sys, "frozen", False)
         if is_frozen:
-            msg = QMessageBox(self)
-            msg.setWindowTitle("Aktualizacja Gotowa - Inteligentny Dyktafon AI")
-            msg.setIcon(QMessageBox.Icon.Question)
-            msg.setText(f"Pobrano aktualizację <b>{version}</b>.")
-            msg.setInformativeText("Wybierz, w jaki sposób chcesz zainstalować aktualizację:")
+            dlg = UpdatePromptDialog(self, version)
+            dlg.exec()
             
-            btn_restart_now = msg.addButton("⚡ Zaktualizuj i zrestartuj teraz", QMessageBox.ButtonRole.AcceptRole)
-            btn_on_exit = msg.addButton("💤 Zainstaluj przy zamknięciu programu", QMessageBox.ButtonRole.ActionRole)
-            btn_later = msg.addButton("Później", QMessageBox.ButtonRole.RejectRole)
-            
-            msg.setStyleSheet("""
-                QMessageBox { background-color: #1f1f2e; }
-                QLabel { color: #edf2f4; font-size: 12px; }
-                QPushButton {
-                    background-color: #2b2d42;
-                    color: #edf2f4;
-                    border: 1px solid #3d405b;
-                    border-radius: 6px;
-                    padding: 8px 14px;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: #4361ee;
-                    color: #ffffff;
-                }
-            """)
-            
-            msg.exec()
-            clicked = msg.clickedButton()
-            
-            if clicked == btn_restart_now:
+            if dlg.choice == "restart_now":
                 applied = apply_in_place_update(path_or_err, restart_after=True)
                 if applied:
                     from PySide6.QtCore import QCoreApplication
                     QCoreApplication.quit()
                     os._exit(0)
-            elif clicked == btn_on_exit:
+            elif dlg.choice == "on_exit":
                 if self.parent() and hasattr(self.parent(), "set_pending_update"):
                     self.parent().set_pending_update(path_or_err, version)
                 self.lbl_update_status.setText(f"💤 Wersja {version} zostanie zainstalowana po zamknięciu programu.")
@@ -972,3 +945,117 @@ class SettingsDialog(QDialog):
             self.accept()
         else:
             QMessageBox.critical(self, "Błąd", "Nie udało się zapisać pliku ustawień user_settings.json.")
+
+
+class UpdatePromptDialog(QDialog):
+    """
+    Nowoczesny, przestronny dialog wyboru sposobu instalacji aktualizacji.
+    Eliminuje problem obcinania etykiet przycisków w QMessageBox.
+    """
+    def __init__(self, parent, version: str):
+        super().__init__(parent)
+        self.setWindowTitle("Aktualizacja Gotowa - Inteligentny Dyktafon AI")
+        self.setMinimumWidth(480)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #1a1a26;
+                border: 1px solid #3d405b;
+                border-radius: 10px;
+            }
+            QLabel {
+                color: #edf2f4;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 22, 24, 20)
+        layout.setSpacing(14)
+
+        # Header z ikoną i opisem
+        header = QHBoxLayout()
+        header.setSpacing(16)
+        lbl_icon = QLabel("🚀")
+        lbl_icon.setStyleSheet("font-size: 32px;")
+        header.addWidget(lbl_icon)
+
+        text_layout = QVBoxLayout()
+        text_layout.setSpacing(4)
+        lbl_title = QLabel(f"Pobrano aktualizację <b>{version}</b>")
+        lbl_title.setStyleSheet("font-size: 15px; color: #4cc9f0; font-weight: bold;")
+        lbl_sub = QLabel("Wybierz, w jaki sposób chcesz zastosować nową wersję programu:")
+        lbl_sub.setStyleSheet("font-size: 12px; color: #8d99ae;")
+        text_layout.addWidget(lbl_title)
+        text_layout.addWidget(lbl_sub)
+        header.addLayout(text_layout, stretch=1)
+        layout.addLayout(header)
+
+        # Przyciski ułożone pionowo – zero obcinania tekstu
+        self.btn_restart_now = QPushButton("⚡  Zaktualizuj i zrestartuj teraz")
+        self.btn_restart_now.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_restart_now.setStyleSheet("""
+            QPushButton {
+                background-color: #10b981;
+                color: #ffffff;
+                border: none;
+                border-radius: 7px;
+                padding: 12px 18px;
+                font-size: 13px;
+                font-weight: bold;
+                text-align: left;
+            }
+            QPushButton:hover {
+                background-color: #059669;
+            }
+        """)
+        self.btn_restart_now.clicked.connect(self._choose_restart_now)
+        layout.addWidget(self.btn_restart_now)
+
+        self.btn_on_exit = QPushButton("💤  Zainstaluj przy zamknięciu programu")
+        self.btn_on_exit.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_on_exit.setStyleSheet("""
+            QPushButton {
+                background-color: #2b2d42;
+                color: #edf2f4;
+                border: 1px solid #3d405b;
+                border-radius: 7px;
+                padding: 12px 18px;
+                font-size: 13px;
+                font-weight: bold;
+                text-align: left;
+            }
+            QPushButton:hover {
+                background-color: #3d405b;
+                border-color: #4cc9f0;
+            }
+        """)
+        self.btn_on_exit.clicked.connect(self._choose_on_exit)
+        layout.addWidget(self.btn_on_exit)
+
+        self.btn_later = QPushButton("Później (anuluj na razie)")
+        self.btn_later.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_later.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #8d99ae;
+                border: none;
+                padding: 8px 12px;
+                font-size: 11px;
+                text-align: center;
+            }
+            QPushButton:hover {
+                color: #edf2f4;
+            }
+        """)
+        self.btn_later.clicked.connect(self.reject)
+        layout.addWidget(self.btn_later)
+
+        self.choice = "later"
+
+    def _choose_restart_now(self):
+        self.choice = "restart_now"
+        self.accept()
+
+    def _choose_on_exit(self):
+        self.choice = "on_exit"
+        self.accept()
+
