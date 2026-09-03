@@ -215,8 +215,9 @@ class RollingTranscriptionWorker(QThread):
         q_len = self.block_queue.qsize()
         if allow_adaptive and q_len > 1:
             effective_beam = 1
-            print(f"[WHISPER ADAPTACYJNY] Zator w kolejce ({q_len} bloków czeka) -> przełączenie na bieg turbo: beam_size=1")
-            self._was_adaptive_beam = True
+            if not getattr(self, "_was_adaptive_beam", False):
+                print(f"[WHISPER ADAPTACYJNY] Zator w kolejce ({q_len} bloków czeka) -> przełączenie na bieg turbo: beam_size=1")
+                self._was_adaptive_beam = True
         else:
             effective_beam = base_beam
             if getattr(self, "_was_adaptive_beam", False):
