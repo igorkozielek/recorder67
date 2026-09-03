@@ -14,6 +14,7 @@ from recorder.ui.settings_dialog import SettingsDialog
 
 def test_semver_parsing():
     print("[TEST] Weryfikacja parsera semver...")
+    assert parse_version("0.5.2")[:3] == (0, 5, 2)
     assert parse_version("0.5.1")[:3] == (0, 5, 1)
     assert parse_version("0.5.0")[:3] == (0, 5, 0)
     assert parse_version("v0.5.0")[:3] == (0, 5, 0)
@@ -24,31 +25,32 @@ def test_semver_parsing():
 
 def test_version_comparisons():
     print("[TEST] Weryfikacja logiki porównywania wersji...")
-    # Stabilne 0.5.1 nie powinno uznawać starszego 0.5.0 ani 0.4.1-alpha za nowsze
-    assert not is_newer_version("v0.4.1-alpha", "0.5.1")
-    assert not is_newer_version("v0.5.0", "0.5.1")
+    # Stabilne 0.5.2 nie powinno uznawać starszego 0.5.1 ani 0.5.0 za nowsze
+    assert not is_newer_version("v0.4.1-alpha", "0.5.2")
+    assert not is_newer_version("v0.5.0", "0.5.2")
+    assert not is_newer_version("v0.5.1", "0.5.2")
 
-    # Wersja 0.5.2 powinna być uznana za nowszą niż 0.5.1
-    assert is_newer_version("v0.5.2", "0.5.1")
-    assert is_newer_version("0.6.0-alpha", "0.5.1")
+    # Wersja 0.5.3 powinna być uznana za nowszą niż 0.5.2
+    assert is_newer_version("v0.5.3", "0.5.2")
+    assert is_newer_version("0.6.0-alpha", "0.5.2")
 
-    # Jeśli jesteśmy na 0.4.0, 0.5.0 jest nowsze
-    assert is_newer_version("v0.5.0", "0.4.0")
+    # Jeśli jesteśmy na 0.4.0, 0.5.1 jest nowsze
+    assert is_newer_version("v0.5.1", "0.4.0")
     print("  -> Logika porównywania wersji działa prawidłowo!")
 
 
 def test_github_api_check():
     print("[TEST] Odpytywanie GitHub Releases API...")
-    # Symulacja sprawdzenia z perspektywy wersji 0.4.0 (powinno znaleźć v0.5.0)
+    # Symulacja sprawdzenia z perspektywy wersji 0.4.0 (powinno znaleźć v0.5.1)
     res = check_github_updates(repo=GITHUB_REPO, current_version="0.4.0", include_prereleases=True)
     assert res is not None
     assert res["has_update"] is True
     print(f"  -> Znaleziono aktualizację dla 0.4.0: {res['latest_version']} ({res['asset_name']})")
 
-    # Sprawdzenie z perspektywy bieżącej wersji 0.5.1 (brak nowszej wersji na GitHubie)
-    res_curr = check_github_updates(repo=GITHUB_REPO, current_version="0.5.1", include_prereleases=True)
+    # Sprawdzenie z perspektywy bieżącej wersji 0.5.2 (brak nowszej wersji na GitHubie)
+    res_curr = check_github_updates(repo=GITHUB_REPO, current_version="0.5.2", include_prereleases=True)
     assert res_curr is None
-    print("  -> Dla bieżącej wersji v0.5.1 poprawnie brak nowszych aktualizacji!")
+    print("  -> Dla bieżącej wersji v0.5.2 poprawnie brak nowszych aktualizacji!")
 
 
 def test_settings_dialog_updates_tab():
