@@ -229,6 +229,7 @@ class SmartAudioWorker(QThread):
         self.target_app_active_until = 0.0
 
         # Bufory bloków dla kanału mikrofonu
+        self.session_start_datetime = datetime.now()
         self.current_mic_block_chunks = []
         self.mic_block_start_samples = 0
         self.mic_silence_samples = 0
@@ -305,6 +306,7 @@ class SmartAudioWorker(QThread):
         self.mic_level = 0.0
         self.sys_level = 0.0
 
+        self.session_start_datetime = datetime.now()
         self.current_mic_block_chunks = []
         self.mic_block_start_samples = 0
         self.mic_silence_samples = 0
@@ -354,13 +356,17 @@ class SmartAudioWorker(QThread):
                 pass
             self.wav_writer = None
 
+        self._flush_mic_block()
+        self._flush_sys_block()
+        self.session_start_datetime = datetime.now()
         self.frames = []
         self.block_index = 1
         self.current_mic_block_chunks = []
-        self.mic_block_start_samples = 0
         self.current_sys_block_chunks = []
-        self.sys_block_start_samples = 0
+        self.mic_silence_samples = 0
+        self.sys_silence_samples = 0
         self.continuous_silence_samples = 0
+        self.session_split_silence_samples = 0
         self.silence_alert_emitted = False
         self.session_has_speech = False
         self.audio_mixer.reset()
@@ -376,14 +382,20 @@ class SmartAudioWorker(QThread):
     def get_remaining_blocks(self) -> List[Tuple[int, float, float, np.ndarray, str]]:
         """Zwraca wszystkie nieprzetworzone jeszcze bloki nagrania (dla obu kanałów) po kliknięciu Stop."""
         blocks = []
+        from datetime import datetime, timedelta
+        now_dt = datetime.now()
+        s_dt = getattr(self, "session_start_datetime", now_dt)
+
         # Kanał mikrofonu
         if self.current_mic_block_chunks:
             try:
                 mic_arr = np.concatenate(self.current_mic_block_chunks)
                 if len(mic_arr) >= int(0.3 * 16000):
-                    start_sec = round(self.mic_block_start_samples / 16000.0, 2)
-                    end_sec = round((self.mic_block_start_samples + len(mic_arr)) / 16000.0, 2)
-                    blocks.append((self.block_index, start_sec, end_sec, mic_arr, "mic"))
+                    cur_dur = len(mic_arr) / 16000.0
+                    block_wall_start = now_dt - timedelta(seconds=cur_dur)
+                    start_sec = max(0.0, (block_wall_start - s_dt).total_seconds())
+                    end_sec = start_sec + cur_dur
+                    blocks.append((self.block_index, round(start_sec, 2), round(end_sec, 2), mic_arr, "mic"))
                     self.block_index += 1
             except Exception:
                 pass
@@ -394,9 +406,11 @@ class SmartAudioWorker(QThread):
             try:
                 sys_arr = np.concatenate(self.current_sys_block_chunks)
                 if len(sys_arr) >= int(0.3 * 16000):
-                    start_sec = round(self.sys_block_start_samples / 16000.0, 2)
-                    end_sec = round((self.sys_block_start_samples + len(sys_arr)) / 16000.0, 2)
-                    blocks.append((self.block_index, start_sec, end_sec, sys_arr, "system"))
+                    cur_dur = len(sys_arr) / 16000.0
+                    block_wall_start = now_dt - timedelta(seconds=cur_dur)
+                    st_sec = max(0.0, (block_wall_start - s_dt).total_seconds())
+                    en_sec = st_sec + cur_dur
+                    blocks.append((self.block_index, round(st_sec, 2), round(en_sec, 2), sys_arr, "system"))
                     self.block_index += 1
             except Exception:
                 pass
@@ -460,12 +474,55 @@ class SmartAudioWorker(QThread):
                 self.app_monitor.set_filter(clean)
             self.target_app_active_until = 0.0
 
+    def _flush_mic_block(self):
+        """Wypycha zgromadzone próbki audio z mikrofonu przed wyciszeniem lub zatrzymaniem."""
+        if self.current_mic_block_chunks and self.state != SmartRecordState.STOPPED:
+            try:
+                block_arr = np.concatenate(self.current_mic_block_chunks)
+                self.current_mic_block_chunks = []
+                self.mic_silence_samples = 0
+                cur_dur = len(block_arr) / 16000.0
+                if cur_dur >= 0.5:
+                    from datetime import datetime, timedelta
+                    now_dt = datetime.now()
+                    block_wall_start = now_dt - timedelta(seconds=cur_dur)
+                    s_dt = getattr(self, "session_start_datetime", now_dt)
+                    st_sec = max(0.0, (block_wall_start - s_dt).total_seconds())
+                    en_sec = st_sec + cur_dur
+                    idx = self.block_index
+                    self.block_index += 1
+                    self.rolling_block_ready_signal.emit(idx, round(st_sec, 2), round(en_sec, 2), block_arr, "mic")
+            except Exception as e:
+                print(f"[SmartAudioWorker] Błąd flush mic block: {e}")
+
+    def _flush_sys_block(self):
+        """Wypycha zgromadzone próbki audio z systemu przed wyciszeniem lub zatrzymaniem."""
+        if self.current_sys_block_chunks and self.state != SmartRecordState.STOPPED:
+            try:
+                arr = np.concatenate(self.current_sys_block_chunks)
+                self.current_sys_block_chunks = []
+                self.sys_silence_samples = 0
+                cur_dur = len(arr) / 16000.0
+                if cur_dur >= 0.5:
+                    from datetime import datetime, timedelta
+                    now_dt = datetime.now()
+                    block_wall_start = now_dt - timedelta(seconds=cur_dur)
+                    s_dt = getattr(self, "session_start_datetime", now_dt)
+                    st_sec = max(0.0, (block_wall_start - s_dt).total_seconds())
+                    en_sec = st_sec + cur_dur
+                    idx = self.block_index
+                    self.block_index += 1
+                    self.rolling_block_ready_signal.emit(idx, round(st_sec, 2), round(en_sec, 2), arr, "system")
+            except Exception as e:
+                print(f"[SmartAudioWorker] Błąd flush sys block: {e}")
+
     def set_mic_muted(self, muted: bool):
         """Wycisza lub przywraca nasłuch z mikrofonu w locie."""
         with self._lock:
             self.mic_muted = bool(muted)
             if self.mic_muted:
                 self.mic_level = 0.0
+                self._flush_mic_block()
 
     def set_sys_muted(self, muted: bool):
         """Wycisza lub przywraca nasłuch dźwięku systemu w locie."""
@@ -473,6 +530,7 @@ class SmartAudioWorker(QThread):
             self.sys_muted = bool(muted)
             if self.sys_muted:
                 self.sys_level = 0.0
+                self._flush_sys_block()
 
     def run(self):
         """Główna pętla rejestracji: uruchamia wątki mikrofonu oraz strumienia WASAPI Loopback."""
@@ -616,14 +674,17 @@ class SmartAudioWorker(QThread):
                                     )
                                     if is_ready and cur_dur >= 1.5:
                                         arr = np.concatenate(self.current_sys_block_chunks)
-                                        st_sec = round(self.sys_block_start_samples / 16000.0, 2)
-                                        en_sec = round((self.sys_block_start_samples + len(arr)) / 16000.0, 2)
-                                        idx = self.block_index
-                                        self.rolling_block_ready_signal.emit(idx, st_sec, en_sec, arr, "system")
-                                        self.sys_block_start_samples += len(arr)
-                                        self.block_index += 1
                                         self.current_sys_block_chunks = []
                                         self.sys_silence_samples = 0
+                                        from datetime import datetime, timedelta
+                                        now_dt = datetime.now()
+                                        block_wall_start = now_dt - timedelta(seconds=cur_dur)
+                                        s_dt = getattr(self, "session_start_datetime", now_dt)
+                                        st_sec = max(0.0, (block_wall_start - s_dt).total_seconds())
+                                        en_sec = st_sec + cur_dur
+                                        idx = self.block_index
+                                        self.block_index += 1
+                                        self.rolling_block_ready_signal.emit(idx, round(st_sec, 2), round(en_sec, 2), arr, "system")
                         except Exception:
                             pass
                         return (None, pyaudio.paContinue)
@@ -738,14 +799,17 @@ class SmartAudioWorker(QThread):
                                     )
                                     if is_ready and cur_dur >= 1.5:
                                         block_arr = np.concatenate(self.current_mic_block_chunks)
-                                        start_sec = round(self.mic_block_start_samples / 16000.0, 2)
-                                        end_sec = round((self.mic_block_start_samples + len(block_arr)) / 16000.0, 2)
-                                        idx = self.block_index
-                                        self.rolling_block_ready_signal.emit(idx, start_sec, end_sec, block_arr, "mic")
-                                        self.mic_block_start_samples += len(block_arr)
-                                        self.block_index += 1
                                         self.current_mic_block_chunks = []
                                         self.mic_silence_samples = 0
+                                        from datetime import datetime, timedelta
+                                        now_dt = datetime.now()
+                                        block_wall_start = now_dt - timedelta(seconds=cur_dur)
+                                        s_dt = getattr(self, "session_start_datetime", now_dt)
+                                        start_sec = max(0.0, (block_wall_start - s_dt).total_seconds())
+                                        end_sec = start_sec + cur_dur
+                                        idx = self.block_index
+                                        self.block_index += 1
+                                        self.rolling_block_ready_signal.emit(idx, round(start_sec, 2), round(end_sec, 2), block_arr, "mic")
                         except Exception:
                             pass
                         return (None, pyaudio.paContinue)

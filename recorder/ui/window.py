@@ -2401,7 +2401,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.last_plain_text = ""
         self.recorded_seconds = 0
         self.lbl_timer.setText("00:00:00")
-        self.lbl_live_transcript.setHtml("<div style='color: #94a3b8; font-style: italic; text-align: center; padding: 20px;'>✨ Rozpoczęto nowe spotkanie biurowe (poprzednia sesja została automatycznie zapisana)...</div>")
+        self.text_transcript.setHtml("<div style='color: #94a3b8; font-style: italic; text-align: center; padding: 20px;'>✨ Rozpoczęto nowe spotkanie biurowe (poprzednia sesja została automatycznie zapisana)...</div>")
 
         # 5. Start nowej sesji w Supabase
         if self.cloud_sync.config.get("live_streaming") and self.cloud_sync.config.get("auto_sync"):

@@ -323,11 +323,8 @@ class RollingTranscriptionWorker(QThread):
 
         # Inkrementalne dopisanie nowych turnów do self.all_turns (O(1) dla chronologicznych bloków)
         if block.turns:
-            if not self.all_turns or block.turns[0].get("start", 0.0) >= self.all_turns[-1].get("start", 0.0):
-                self.all_turns.extend(block.turns)
-            else:
-                self.all_turns.extend(block.turns)
-                self.all_turns.sort(key=lambda t: float(t.get("start", 0.0)))
+            self.all_turns.extend(block.turns)
+            self.all_turns.sort(key=lambda t: (t.get("wall_start") or "", float(t.get("start", 0.0))))
 
         qsize = self.block_queue.qsize()
         now_ts = time.time()
@@ -368,10 +365,11 @@ class RollingTranscriptionWorker(QThread):
 
     def _compile_full_transcript(self):
         """Kompiluje dotychczasowe wypowiedzi w spójną transkrypcję posortowaną chronologicznie."""
-        combined_turns = list(self.all_turns)
+        combined_turns = sorted(list(self.all_turns), key=lambda t: (t.get("wall_start") or "", float(t.get("start", 0.0))))
         if not combined_turns:
             for b in sorted(self.processed_blocks, key=lambda x: x.start_sec):
                 combined_turns.extend(b.turns)
+            combined_turns.sort(key=lambda t: (t.get("wall_start") or "", float(t.get("start", 0.0))))
 
         if not combined_turns:
             return "Brak zarejestrowanej mowy.", "Brak zarejestrowanej mowy.", []

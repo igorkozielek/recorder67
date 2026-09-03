@@ -506,3 +506,72 @@ def test_session_save_to_json_with_datetime_objects():
             os.remove(tmp_path)
 
 
+def test_flush_mic_block_on_mute():
+    """
+    Weryfikuje, że kliknięcie Mute natychmiast wypycha (flush) zgromadzone próbki mowy,
+    dzięki czemu zdania powiedziane tuż przed wyciszeniem nie czekają minutami na odciszenie.
+    """
+    from datetime import datetime
+    from recorder.ui.workers import SmartRecordState
+    _ = QApplication.instance() or QApplication([])
+
+    worker = SmartAudioWorker()
+    worker.state = SmartRecordState.RECORDING_SPEECH
+    worker.session_start_datetime = datetime.now()
+
+    emitted_blocks = []
+    worker.rolling_block_ready_signal.connect(lambda idx, st, en, arr, ch: emitted_blocks.append((idx, st, en, ch)))
+
+    # Symulacja 1 sekundy mowy zgromadzonej w buforze tuż przed kliknięciem Mute
+    speech_chunk = (np.ones(16000, dtype=np.float32) * 0.1)
+    worker.current_mic_block_chunks.append(speech_chunk)
+
+    # Użytkownik klika Mute
+    worker.set_mic_muted(True)
+
+    assert len(emitted_blocks) == 1, "Blok mowy powinien zostać natychmiast wyemitowany przy wyciszeniu!"
+    assert emitted_blocks[0][3] == "mic"
+    assert worker.current_mic_block_chunks == []
+
+
+def test_hybrid_dual_channel_chronological_sorting():
+    """
+    Weryfikuje, że w trybie hybrydowym segmenty z Dźwięku Systemu (np. z YouTube)
+    odtworzone po wypowiedzi z mikrofonu są sortowane ściśle po mikrofonie (wg wall_start),
+    a nie lądują na samej górze pliku z offsetem 0.0s.
+    """
+    from recorder.core.session import TranscriptionSession
+
+    # Wypowiedź z mikrofonu o 19:02
+    mic_turn = {
+        "start": 5.0,
+        "end": 10.0,
+        "speaker": "Mikrofon",
+        "text": "Wypowiedź z biura",
+        "channel": "mic",
+        "wall_start": "2026-09-03T19:02:41.000000",
+        "wall_end": "2026-09-03T19:02:46.000000"
+    }
+
+    # Wypowiedź z YouTube o 19:04 (nawet jeśli jej lokalny start wynosił 0.0s!)
+    sys_turn = {
+        "start": 0.0,
+        "end": 8.0,
+        "speaker": "Dźwięk Systemu",
+        "text": "Film z YouTube",
+        "channel": "system",
+        "wall_start": "2026-09-03T19:04:30.000000",
+        "wall_end": "2026-09-03T19:04:38.000000"
+    }
+
+    session = TranscriptionSession(turns=[sys_turn, mic_turn])
+    plain = session.export_to_plain_text()
+
+    mic_pos = plain.find("Wypowiedź z biura")
+    sys_pos = plain.find("Film z YouTube")
+
+    assert mic_pos != -1 and sys_pos != -1
+    assert mic_pos < sys_pos, f"BŁĄD: Dźwięk z YouTube znalazł się przed mikrofonem! plain=\n{plain}"
+
+
+

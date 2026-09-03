@@ -234,7 +234,7 @@ class TranscriptionSession:
         if base_dt is None:
             base_dt = extract_datetime_from_filename(self.prepared_wav) or extract_datetime_from_filename(self.source_audio)
 
-        sorted_turns = sorted(self.turns, key=lambda t: float(t.get("start", 0.0)))
+        sorted_turns = sorted(self.turns, key=lambda t: (t.get("wall_start") or "", float(t.get("start", 0.0))))
         lines = []
         for t in sorted_turns:
             spk = t.get("speaker", "Mówca")
@@ -274,7 +274,7 @@ class TranscriptionSession:
             except Exception:
                 reverse_order = True
 
-        sorted_turns = sorted(self.turns, key=lambda t: float(t.get("start", 0.0)))
+        sorted_turns = sorted(self.turns, key=lambda t: (t.get("wall_start") or "", float(t.get("start", 0.0))))
         display_turns = list(reversed(sorted_turns)) if reverse_order else sorted_turns
 
         html_blocks = []
