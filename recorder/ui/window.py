@@ -3064,7 +3064,6 @@ class SmartDictaphoneWindow(QMainWindow):
     def closeEvent(self, event):
         try:
             self.timer.stop()
-            self.blockSignals(True)
 
             # 1. Zablokowanie sygnałów i natychmiastowe zatrzymanie transkrypcji w tle
             if getattr(self, "rolling_worker", None) is not None:
@@ -3074,7 +3073,7 @@ class SmartDictaphoneWindow(QMainWindow):
                     pass
                 if self.rolling_worker.isRunning():
                     self.rolling_worker.stop()
-                    self.rolling_worker.wait(1500)
+                    self.rolling_worker.wait(3000)
 
             # 2. Zablokowanie sygnałów i zatrzymanie wątku audio oraz zapis audio
             if self.worker is not None:
@@ -3086,11 +3085,13 @@ class SmartDictaphoneWindow(QMainWindow):
                     timestamp = getattr(self, "current_live_timestamp", datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
                     save_path = getattr(self, "current_live_wav_path", None) or os.path.join(self.recordings_dir, f"inteligentne_nagranie_{timestamp}.wav")
                     self.worker.stop_recording()
-                    self.worker.wait(1500)
+                    self.worker.wait(3000)
                     try:
                         self.worker.save_wav(save_path)
                     except Exception:
                         pass
+                elif self.worker.isRunning():
+                    self.worker.wait(3000)
 
             # 3. Pozostałe wątki pomocnicze
             if getattr(self, "live_transcription_worker", None) is not None:
@@ -3100,7 +3101,7 @@ class SmartDictaphoneWindow(QMainWindow):
                     pass
                 if self.live_transcription_worker.isRunning():
                     self.live_transcription_worker.stop()
-                    self.live_transcription_worker.wait(1000)
+                    self.live_transcription_worker.wait(1500)
 
             if getattr(self, "transcription_thread", None) is not None:
                 try:
@@ -3109,7 +3110,7 @@ class SmartDictaphoneWindow(QMainWindow):
                     pass
                 if self.transcription_thread.isRunning():
                     self.transcription_thread.quit()
-                    self.transcription_thread.wait(1000)
+                    self.transcription_thread.wait(1500)
 
             if getattr(self, "file_processing_worker", None) is not None:
                 try:
@@ -3118,7 +3119,7 @@ class SmartDictaphoneWindow(QMainWindow):
                     pass
                 if self.file_processing_worker.isRunning():
                     self.file_processing_worker.quit()
-                    self.file_processing_worker.wait(1000)
+                    self.file_processing_worker.wait(1500)
 
             if getattr(self, "_active_silence_toast", None) is not None:
                 try:
@@ -3129,6 +3130,7 @@ class SmartDictaphoneWindow(QMainWindow):
             if getattr(self, "tray_icon", None) is not None:
                 try:
                     self.tray_icon.hide()
+                    self.tray_icon.deleteLater()
                 except Exception:
                     pass
 
@@ -3143,6 +3145,8 @@ class SmartDictaphoneWindow(QMainWindow):
 
         except Exception as e:
             print(f"[closeEvent] Błąd zamykania okna: {e}")
-
-        if event:
+        finally:
             event.accept()
+            qapp = QApplication.instance()
+            if qapp:
+                qapp.quit()

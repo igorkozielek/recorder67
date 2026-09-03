@@ -29,7 +29,7 @@ def main():
     window.raise_()
     window.activateWindow()
     ret = app.exec()
-    os._exit(ret)
+    sys.exit(ret)
 
 
 if __name__ == "__main__":
