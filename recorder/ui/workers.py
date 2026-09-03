@@ -1,6 +1,7 @@
 import os
 import sys
 import queue
+import time
 import collections
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
@@ -49,12 +50,16 @@ class RealtimeAudioMixer:
     """
     def __init__(self):
         import threading
+        self.mic_chunks = []
+        self.sys_chunks = []
         self.mic_buffer = np.array([], dtype=np.float32)
         self.sys_buffer = np.array([], dtype=np.float32)
         self.lock = threading.Lock()
 
     def reset(self):
         with self.lock:
+            self.mic_chunks = []
+            self.sys_chunks = []
             self.mic_buffer = np.array([], dtype=np.float32)
             self.sys_buffer = np.array([], dtype=np.float32)
 
@@ -62,16 +67,37 @@ class RealtimeAudioMixer:
         if chunk is None or len(chunk) == 0:
             return
         with self.lock:
-            self.mic_buffer = np.append(self.mic_buffer, chunk)
+            self.mic_chunks.append(chunk)
 
     def add_sys_chunk(self, chunk: np.ndarray):
         if chunk is None or len(chunk) == 0:
             return
         with self.lock:
-            self.sys_buffer = np.append(self.sys_buffer, chunk)
+            self.sys_chunks.append(chunk)
+
+    def _flush_chunks_locked(self):
+        """Scalenie oczekujących fragmentów audio z buforem bez ciągłego np.append."""
+        if self.mic_chunks:
+            if len(self.mic_buffer) > 0:
+                self.mic_buffer = np.concatenate([self.mic_buffer] + self.mic_chunks)
+            elif len(self.mic_chunks) == 1:
+                self.mic_buffer = self.mic_chunks[0]
+            else:
+                self.mic_buffer = np.concatenate(self.mic_chunks)
+            self.mic_chunks = []
+
+        if self.sys_chunks:
+            if len(self.sys_buffer) > 0:
+                self.sys_buffer = np.concatenate([self.sys_buffer] + self.sys_chunks)
+            elif len(self.sys_chunks) == 1:
+                self.sys_buffer = self.sys_chunks[0]
+            else:
+                self.sys_buffer = np.concatenate(self.sys_chunks)
+            self.sys_chunks = []
 
     def pop_mixed_frames(self, is_hybrid: bool, run_mic: bool, run_sys: bool) -> bytes:
         with self.lock:
+            self._flush_chunks_locked()
             if not is_hybrid:
                 if run_mic and len(self.mic_buffer) > 0:
                     data = self.mic_buffer
@@ -366,7 +392,6 @@ class SmartAudioWorker(QThread):
                 is_hybrid = (self.source_mode == RecordSourceMode.HYBRID_DUAL) and run_mic and run_sys
                 rem_bytes = self.audio_mixer.pop_mixed_frames(is_hybrid, run_mic, run_sys)
                 if rem_bytes:
-                    self.frames.append(rem_bytes)
                     try:
                         self.wav_writer.write_frames(rem_bytes)
                     except Exception:
@@ -688,15 +713,36 @@ class SmartAudioWorker(QThread):
                 print(f"[SmartAudioWorker] Nie udało się otworzyć mikrofonu w PyAudio: {e}")
 
         # Pętla monitorowania poziomów, stanu ciszy i strumieniowego zapisu zmiksowanego audio
+        last_watchdog_check = time.time()
         try:
             while self._is_running:
                 # Opróżnienie miksera i ciągły zapis zsynchronizowanego audio do pliku WAV
                 is_hybrid = (self.source_mode == RecordSourceMode.HYBRID_DUAL) and run_mic and run_sys
                 mixed_bytes = self.audio_mixer.pop_mixed_frames(is_hybrid, run_mic, run_sys)
                 if mixed_bytes and self.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]:
-                    self.frames.append(mixed_bytes)
                     if self.wav_writer:
                         self.wav_writer.write_frames(mixed_bytes)
+                    else:
+                        self.frames.append(mixed_bytes)
+
+                # Watchdog aktywności strumieni audio (samoczynne wznawianie w razie uśpienia przez sterownik)
+                now_tick = time.time()
+                if now_tick - last_watchdog_check >= 1.5:
+                    last_watchdog_check = now_tick
+                    if run_mic and mic_stream is not None:
+                        try:
+                            if not mic_stream.is_active() and self.state not in (SmartRecordState.STOPPED, SmartRecordState.MANUAL_PAUSED):
+                                print("[SmartAudioWorker WATCHDOG] Strumień mikrofonu był nieaktywny! Wznawianie...")
+                                mic_stream.start_stream()
+                        except Exception as we:
+                            print(f"[SmartAudioWorker WATCHDOG] Błąd wznawiania mikrofonu: {we}")
+                    if run_sys and loop_stream is not None:
+                        try:
+                            if not loop_stream.is_active() and self.state not in (SmartRecordState.STOPPED, SmartRecordState.MANUAL_PAUSED):
+                                print("[SmartAudioWorker WATCHDOG] Strumień loopback był nieaktywny! Wznawianie...")
+                                loop_stream.start_stream()
+                        except Exception as we:
+                            print(f"[SmartAudioWorker WATCHDOG] Błąd wznawiania loopback: {we}")
 
                 # Emisja poziomów VU Meter
                 m_lvl = float(self.mic_level)

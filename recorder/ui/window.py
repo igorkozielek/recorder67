@@ -1581,9 +1581,13 @@ class SmartDictaphoneWindow(QMainWindow):
         """Odebranie przetworzonego w tle bloku mowy z pełnymi word-level timestampami i synchronizacja na żywo."""
         self.current_turns = all_turns or []
         self.last_plain_text = full_plain
-        self.text_transcript.setHtml(full_html)
-        self._scroll_transcript_view()
-        self._populate_speaker_mapping(self.current_turns)
+        if full_html:
+            self.text_transcript.setHtml(full_html)
+            self._scroll_transcript_view()
+
+        # Optymalizacja: analizę mówców wykonujemy tylko wtedy, gdy włączona jest diaryzacja (Pyannote)
+        if self.check_enable_diarization.isChecked():
+            self._populate_speaker_mapping(self.current_turns)
 
         # Transmisja na żywo nowych segmentów do Supabase / CRM
         if self.cloud_sync.config.get("live_streaming") and self.cloud_sync.config.get("auto_sync") and self.current_meeting_id:

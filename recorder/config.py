@@ -172,15 +172,24 @@ LIVE_BLOCK_MAX_SEC = float(get_env_variable("LIVE_BLOCK_MAX_SEC", "45.0"))      
 LIVE_BLOCK_SILENCE_CUT_SEC = float(get_env_variable("LIVE_BLOCK_SILENCE_CUT_SEC", "1.0"))  # Min. 1.0s ciszy VAD na naturalnym końcu zdania
 
 import json
+import time
 
 SETTINGS_FILE = os.path.join(os.getcwd(), "user_settings.json")
 
+_CACHED_USER_SETTINGS = None
+_CACHED_SETTINGS_TIME = 0.0
 
-def load_user_settings() -> dict:
+
+def load_user_settings(force_reload: bool = False) -> dict:
     """
-    Wczytuje ustawienia użytkownika z user_settings.json i scala je z domyślnymi wartościami.
-    Zapewnia pełną kompatybilność wsteczną przy aktualizacjach (brakujące klucze są uzupełniane domyślnymi).
+    Wczytuje ustawienia użytkownika z user_settings.json z buforowaniem w pamięci RAM.
+    Zapewnia natychmiastowy dostęp bez tysięcy zbędnych odczytów z dysku SSD.
     """
+    global _CACHED_USER_SETTINGS, _CACHED_SETTINGS_TIME
+    now = time.time()
+    if not force_reload and _CACHED_USER_SETTINGS is not None and (now - _CACHED_SETTINGS_TIME < 2.0):
+        return dict(_CACHED_USER_SETTINGS)
+
     defaults = {
         "custom_keywords": get_env_variable("CUSTOM_KEYWORDS", "emanager.pro, EMANAGER.PRO, CRM, AI, Supabase, n8n, Make, webhook, API, LLM, GPT-4, Claude, Gemini, Gemini Vision, Helpdesk, Subiekt GT, Subiekt, faktura proforma, synchronizacja, harmonogram, rejestr zmian, zgłoszenia, zamówienia, matryca uprawnień, QR code"),
         "whisper_beam_size": int(get_env_variable("WHISPER_BEAM_SIZE", "5")),
@@ -223,25 +232,37 @@ def load_user_settings() -> dict:
                     if isinstance(data, dict):
                         merged = dict(defaults)
                         merged.update(data)
+                        _CACHED_USER_SETTINGS = dict(merged)
+                        _CACHED_SETTINGS_TIME = now
                         return merged
             except Exception:
                 pass
 
+    _CACHED_USER_SETTINGS = dict(defaults)
+    _CACHED_SETTINGS_TIME = now
     return defaults
 
 
 def save_user_settings(settings: dict) -> bool:
-    """Zapisuje słownik ustawień do user_settings.json."""
+    """Zapisuje słownik ustawień do user_settings.json i odświeża bufor pamięci."""
+    global _CACHED_USER_SETTINGS, _CACHED_SETTINGS_TIME
     try:
-        cur = load_user_settings()
+        cur = load_user_settings(force_reload=True)
         cur.update(settings)
         with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
             json.dump(cur, f, indent=2, ensure_ascii=False)
+        _CACHED_USER_SETTINGS = dict(cur)
+        _CACHED_SETTINGS_TIME = time.time()
         return True
     except Exception as e:
         if sys.stderr:
             print(f"Błąd zapisu user_settings.json: {e}", file=sys.stderr)
         return False
+
+
+def get_timestamp_format() -> str:
+    """Zwraca wybrany format znacznika czasu (offset_only / clock_only / hybrid)."""
+    return str(load_user_settings().get("timestamp_format", "offset_only"))
 
 
 def get_custom_keywords() -> str:

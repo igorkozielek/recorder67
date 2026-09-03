@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import queue
 import numpy as np
 from typing import List, Dict, Any, Optional
@@ -59,8 +60,13 @@ class RollingTranscriptionWorker(QThread):
         
         self.processed_blocks: List[RollingBlock] = []
         self.all_turns: List[Dict[str, Any]] = []
+        self._all_words: List[Dict[str, Any]] = []
         self.total_processed_seconds: float = 0.0
         self.latest_session_seconds: float = 0.0
+        self._last_disk_save_time: float = 0.0
+        self._last_ui_render_time: float = 0.0
+        self._cached_html: str = ""
+        self._cached_plain: str = ""
 
     def add_block(self, block_index: int, start_sec: float, end_sec: float, audio_float: np.ndarray, channel_source: str = "mic"):
         """Dodaje nowy zamknięty blok audio do kolejki przetwarzania w tle z oznaczeniem źródła (mic / system)."""
@@ -77,9 +83,13 @@ class RollingTranscriptionWorker(QThread):
             self.session_start_time = session_start_time
         self.processed_blocks = []
         self.all_turns = []
+        self._all_words = []
         self.total_processed_seconds = 0.0
         self.latest_session_seconds = 0.0
-
+        self._last_disk_save_time = 0.0
+        self._last_ui_render_time = 0.0
+        self._cached_html = ""
+        self._cached_plain = ""
 
     def update_session_time(self, current_sec: float):
         """Aktualizuje bieżący czas sesji ze stopera."""
@@ -105,6 +115,8 @@ class RollingTranscriptionWorker(QThread):
 
     def get_all_words(self) -> List[Dict[str, Any]]:
         """Zwraca wszystkie przetranskrybowane słowa ze znacznikami czasu ze wszystkich bloków sesji."""
+        if hasattr(self, "_all_words") and self._all_words:
+            return list(self._all_words)
         all_words = []
         for b in sorted(self.processed_blocks, key=lambda x: x.start_sec):
             if hasattr(b, "words") and b.words:
@@ -138,6 +150,7 @@ class RollingTranscriptionWorker(QThread):
             # 2. Finalizacja całego spotkania po zakończeniu kolejki
             final_html, final_plain, turns = self._compile_full_transcript()
             self._save_to_txt_file(final_plain)
+            self._save_to_session_file(turns, force=True)
             self.finished_signal.emit(final_html, final_plain, turns)
 
         except Exception as e:
@@ -256,15 +269,41 @@ class RollingTranscriptionWorker(QThread):
 
         block.is_processed = True
         self.processed_blocks.append(block)
+        if transcript_words:
+            self._all_words.extend(transcript_words)
         self.total_processed_seconds = max(self.total_processed_seconds, block.end_sec)
 
-        # Scalanie całościowej transkrypcji
-        full_html, full_plain, all_turns = self._compile_full_transcript()
-        self.all_turns = all_turns
+        # Inkrementalne dopisanie nowych turnów do self.all_turns (O(1) dla chronologicznych bloków)
+        if block.turns:
+            if not self.all_turns or block.turns[0].get("start", 0.0) >= self.all_turns[-1].get("start", 0.0):
+                self.all_turns.extend(block.turns)
+            else:
+                self.all_turns.extend(block.turns)
+                self.all_turns.sort(key=lambda t: float(t.get("start", 0.0)))
 
-        # Zapis do pliku TXT oraz sesji JSON w czasie rzeczywistym
-        self._save_to_txt_file(full_plain)
-        self._save_to_session_file(all_turns)
+        qsize = self.block_queue.qsize()
+        now_ts = time.time()
+        is_queue_empty = (qsize == 0)
+
+        # Tryb Catch-up i buforowanie renderowania UI:
+        # Jeśli w kolejce czeka wiele bloków, nie zamrażamy interfejsu i CPU renderowaniem wielomegabajtowego HTML.
+        should_render_ui = is_queue_empty or (now_ts - self._last_ui_render_time >= 3.0) or not self._cached_html
+        if should_render_ui:
+            self._last_ui_render_time = now_ts
+            full_html, full_plain, all_turns = self._compile_full_transcript()
+            self._cached_html = full_html
+            self._cached_plain = full_plain
+        else:
+            full_html = ""  # Sygnał dla UI: zaktualizuj pasek postępu bez kosztownego re-renderingu QTextEdit
+            full_plain = self._cached_plain
+            all_turns = self.all_turns
+
+        # Zapis dyskowy throttled (co min. 20s lub gdy kolejka jest całkowicie rozładowana)
+        should_save_disk = (is_queue_empty or (now_ts - self._last_disk_save_time >= 20.0)) and bool(self._cached_plain)
+        if should_save_disk:
+            self._last_disk_save_time = now_ts
+            self._save_to_txt_file(self._cached_plain)
+            self._save_to_session_file(self.all_turns)
 
         # Emitowanie sygnału aktualizacji do UI
         self.block_processed_signal.emit(
@@ -277,21 +316,20 @@ class RollingTranscriptionWorker(QThread):
         )
 
     def _compile_full_transcript(self):
-        """Kompiluje wszystkie przetworzone bloki w jedną spójną transkrypcję posortowaną chronologicznie."""
-        combined_turns = []
-        for b in sorted(self.processed_blocks, key=lambda x: x.start_sec):
-            combined_turns.extend(b.turns)
+        """Kompiluje dotychczasowe wypowiedzi w spójną transkrypcję posortowaną chronologicznie."""
+        combined_turns = list(self.all_turns)
+        if not combined_turns:
+            for b in sorted(self.processed_blocks, key=lambda x: x.start_sec):
+                combined_turns.extend(b.turns)
 
         if not combined_turns:
             return "Brak zarejestrowanej mowy.", "Brak zarejestrowanej mowy.", []
 
-        # Ścisłe sortowanie chronologiczne według momentu rozpoczęcia wypowiedzi (start)
-        combined_turns.sort(key=lambda t: float(t.get("start", 0.0)))
-
         from recorder.core.session import format_turn_timestamp
-        from recorder.config import get_preview_order
+        from recorder.config import get_preview_order, get_timestamp_format
 
         reverse_order = (get_preview_order() == "newest_first")
+        ts_format = get_timestamp_format()
 
         full_plain = ""
         for t in combined_turns:
@@ -301,13 +339,8 @@ class RollingTranscriptionWorker(QThread):
             en = float(t.get("end", 0.0))
             txt = t.get("text", "")
 
-            time_label = format_turn_timestamp(st, en, self.session_start_time)
-
-            if channel == "system":
-                badge = "🎧 "
-            else:
-                badge = "🎙️ "
-
+            time_label = format_turn_timestamp(st, en, self.session_start_time, ts_format=ts_format)
+            badge = "🎧 " if channel == "system" else "🎙️ "
             display_spk = f"{badge}{spk}" if not (spk.startswith("🎙️") or spk.startswith("🎧")) else spk
             full_plain += f"[{time_label}] {display_spk}: {txt}\n\n"
 
@@ -320,8 +353,7 @@ class RollingTranscriptionWorker(QThread):
             en = float(t.get("end", 0.0))
             txt = t.get("text", "")
 
-            time_label = format_turn_timestamp(st, en, self.session_start_time)
-
+            time_label = format_turn_timestamp(st, en, self.session_start_time, ts_format=ts_format)
             if channel == "system":
                 badge = "🎧 "
                 color = "#a370f7"
@@ -346,7 +378,7 @@ class RollingTranscriptionWorker(QThread):
         except Exception:
             pass
 
-    def _save_to_session_file(self, turns: list):
+    def _save_to_session_file(self, turns: list, force: bool = False):
         """Automatycznie tworzy i zapisuje plik sesji JSON z kompletem słów z Whispera."""
         if not self.txt_save_path:
             return
@@ -360,8 +392,8 @@ class RollingTranscriptionWorker(QThread):
             session.has_transcription = True
             session.whisper_model = self.model_size
             session.duration_sec = self.total_processed_seconds
-            session.turns = sorted(turns or [], key=lambda t: float(t.get("start", 0.0)))
-            session.words = sorted(all_words or [], key=lambda w: float(w.get("start", 0.0)))
+            session.turns = list(turns or [])
+            session.words = list(all_words or [])
             session.save_to_json(json_path)
         except Exception:
             pass

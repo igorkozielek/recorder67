@@ -22,13 +22,14 @@ def extract_datetime_from_filename(filepath: str) -> Optional[datetime]:
     return None
 
 
-def format_turn_timestamp(st: float, en: float, session_start_time: Optional[datetime] = None) -> str:
+def format_turn_timestamp(st: float, en: float, session_start_time: Optional[datetime] = None, ts_format: Optional[str] = None) -> str:
     """Formatuje znacznik czasu dla wypowiedzi zgodnie z ustawieniami użytkownika (offset, godzina, hybryda)."""
-    try:
-        from recorder.config import load_user_settings
-        ts_format = load_user_settings().get("timestamp_format", "offset_only")
-    except Exception:
-        ts_format = "offset_only"
+    if ts_format is None:
+        try:
+            from recorder.config import get_timestamp_format
+            ts_format = get_timestamp_format()
+        except Exception:
+            ts_format = "offset_only"
 
     s_min, s_sec = int(st // 60), int(st % 60)
     e_min, e_sec = int(en // 60), int(en % 60)
