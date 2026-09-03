@@ -14,7 +14,7 @@ os.makedirs(RECORDINGS_DIR, exist_ok=True)
 os.makedirs(TRANSCRIPTIONS_DIR, exist_ok=True)
 
 # Wersja aplikacji i repozytorium GitHub
-APP_VERSION = "0.5.2"
+APP_VERSION = "0.5.3"
 GITHUB_REPO = "igorkozielek/recorder67"
 
 # Parametry audio i VAD

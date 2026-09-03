@@ -360,6 +360,10 @@ class SmartDictaphoneWindow(QMainWindow):
         # Uruchomienie przetwarzania zaległej kolejki offline
         self.cloud_sync.process_offline_queue_async()
 
+        # Oczekująca aktualizacja do zainstalowania przy wyjściu (Install on exit)
+        self._pending_update_zip_path = None
+        self._pending_update_version = None
+
         # Ciche sprawdzenie dostępności aktualizacji w tle przy starcie
         if is_auto_check_updates_startup():
             QTimer.singleShot(3500, self._start_silent_update_check)
@@ -1034,6 +1038,11 @@ class SmartDictaphoneWindow(QMainWindow):
             latest_v = result.get("latest_version", "")
             self.lbl_update_banner_text.setText(f"🚀 Dostępna jest nowa wersja dyktafonu: <b>{latest_v}</b>")
             self.banner_update.show()
+
+    def set_pending_update(self, zip_path: str, version: str):
+        """Ustawia paczkę aktualizacji do zainstalowania przy zamknięciu programu."""
+        self._pending_update_zip_path = zip_path
+        self._pending_update_version = version
 
     def _scroll_transcript_view(self):
         """Automatycznie ustawia pozycję paska przewijania w oknie transkrypcji."""
@@ -3088,6 +3097,15 @@ class SmartDictaphoneWindow(QMainWindow):
                     self.tray_icon.hide()
                 except Exception:
                     pass
+
+            # 4. Sprawdzenie oczekującej aktualizacji przy wyjściu (Install on exit)
+            pending_zip = getattr(self, "_pending_update_zip_path", None)
+            if pending_zip and os.path.exists(pending_zip):
+                is_frozen = getattr(sys, "frozen", False)
+                if is_frozen:
+                    from recorder.core.updater import apply_in_place_update
+                    print(f"[UPDATER] Uruchamianie instalacji w tle przy wyjściu: {pending_zip}")
+                    apply_in_place_update(pending_zip, restart_after=False)
 
         except Exception as e:
             print(f"[closeEvent] Błąd zamykania okna: {e}")

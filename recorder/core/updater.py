@@ -224,10 +224,11 @@ class DownloadUpdateWorker(QThread):
             self.download_finished_signal.emit(False, f"Błąd pobierania pliku: {e}", self.target_version)
 
 
-def apply_in_place_update(zip_path: str) -> bool:
+def apply_in_place_update(zip_path: str, restart_after: bool = True) -> bool:
     """
     Przygotowuje i uruchamia skrypt podmiany plików w tle, po czym zamyka bieżącą aplikację.
     Działa zarówno dla wersji skompilowanej PyInstaller (.exe), jak i zgłasza informację w trybie dev.
+    Parametr restart_after określa, czy po podmianie plików aplikacja ma się samoczynnie zrestartować.
     """
     if not os.path.exists(zip_path):
         return False
@@ -244,6 +245,8 @@ def apply_in_place_update(zip_path: str) -> bool:
     temp_extract = os.path.join(tempfile.gettempdir(), "InteligentnyDyktafonAI_Update")
     updater_bat = os.path.join(tempfile.gettempdir(), "run_app_update.bat")
     
+    restart_cmd = f'start "" "{exe_path}"' if restart_after else 'rem Brak restartu (aktualizacja przy wyjsciu)'
+
     bat_content = f"""@echo off
 rem Skrypt automatycznej podmiany plikow aktualizacji Recorder67
 echo [UPDATER] Oczekiwanie na zakonczenie glownego procesu (PID: {current_pid})...
@@ -272,8 +275,8 @@ echo [UPDATER] Czyszczenie plikow tymczasowych...
 if exist "{zip_path}" del /f /q "{zip_path}" 2>nul
 if exist "{temp_extract}" rmdir /s /q "{temp_extract}" 2>nul
 
-echo [UPDATER] Uruchamianie zaktualizowanej aplikacji...
-start "" "{exe_path}"
+echo [UPDATER] Finalizacja aktualizacji...
+{restart_cmd}
 exit /b 0
 """
 

@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 from typing import Optional
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -708,6 +709,20 @@ class SettingsDialog(QDialog):
             self.lbl_new_version_title.setText(f"Wydanie: {title}")
             self.txt_changelog.setPlainText(result.get("release_notes", ""))
             self.grp_new_version.setVisible(True)
+
+            # Sprawdzenie czy paczka aktualizacji jest już pobrana w katalogu tymczasowym
+            expected_zip = os.path.join(tempfile.gettempdir(), f"InteligentnyDyktafonAI_{tag}.zip")
+            asset_size = result.get("asset_size", 0)
+            if os.path.exists(expected_zip) and (asset_size == 0 or abs(os.path.getsize(expected_zip) - asset_size) < 4096):
+                self._cached_zip_path = expected_zip
+                self.btn_download_update.setText(f"⚡ Zainstaluj pobraną wersję {tag}")
+                self.progress_download.setVisible(True)
+                self.progress_download.setValue(100)
+                self.lbl_update_status.setText(f"✅ Wersja {tag} jest już pobrana na dysku i gotowa do instalacji!")
+                self.lbl_update_status.setStyleSheet("color: #10b981; font-size: 11px; font-weight: bold;")
+            else:
+                self._cached_zip_path = None
+                self.btn_download_update.setText("🚀 Pobierz i zainstaluj aktualizację")
         else:
             self.grp_new_version.setVisible(False)
             self.lbl_update_status.setText(f"Posiadasz najnowszą wersję programu (v{APP_VERSION}).")
@@ -725,9 +740,14 @@ class SettingsDialog(QDialog):
 
     def _on_download_update_clicked(self):
         data = getattr(self, "latest_update_data", {})
-        download_url = data.get("download_url")
         target_version = data.get("latest_version", "latest")
         
+        # Jeśli plik aktualizacji został już wcześniej pobrany i leży w Temp
+        if getattr(self, "_cached_zip_path", None) and os.path.exists(self._cached_zip_path):
+            self._prompt_and_apply_update(self._cached_zip_path, target_version)
+            return
+
+        download_url = data.get("download_url")
         if not download_url:
             url = data.get("html_url", "")
             if url:
@@ -750,30 +770,67 @@ class SettingsDialog(QDialog):
     def _on_download_finished(self, success: bool, path_or_err: str, version: str):
         self.btn_download_update.setEnabled(True)
         if success:
+            self._cached_zip_path = path_or_err
+            self.btn_download_update.setText(f"⚡ Zainstaluj pobraną wersję {version}")
             self.progress_download.setValue(100)
             self.lbl_update_status.setText("✅ Aktualizacja została pobrana.")
-            
-            is_frozen = getattr(sys, "frozen", False)
-            if is_frozen:
-                reply = QMessageBox.question(
-                    self,
-                    "Aktualizacja Gotowa",
-                    f"Pobrano wersję {version}.\n\nCzy chcesz zamknąć aplikację i zaktualizować teraz?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                )
-                if reply == QMessageBox.StandardButton.Yes:
-                    applied = apply_in_place_update(path_or_err)
-                    if applied:
-                        sys.exit(0)
-            else:
-                QMessageBox.information(
-                    self,
-                    "Pobrano Aktualizację",
-                    f"Pobrano paczkę aktualizacyjną do:\n{path_or_err}\n\n(Działasz w trybie deweloperskim ze skryptów Python)."
-                )
+            self._prompt_and_apply_update(path_or_err, version)
         else:
             self.lbl_update_status.setText(f"❌ {path_or_err}")
             self.lbl_update_status.setStyleSheet("color: #ef4444; font-size: 11px;")
+
+    def _prompt_and_apply_update(self, path_or_err: str, version: str):
+        """Wyświetla polski dialog wyboru instalacji natychmiastowej lub przy zamknięciu."""
+        is_frozen = getattr(sys, "frozen", False)
+        if is_frozen:
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Aktualizacja Gotowa - Inteligentny Dyktafon AI")
+            msg.setIcon(QMessageBox.Icon.Question)
+            msg.setText(f"Pobrano aktualizację <b>{version}</b>.")
+            msg.setInformativeText("Wybierz, w jaki sposób chcesz zainstalować aktualizację:")
+            
+            btn_restart_now = msg.addButton("⚡ Zaktualizuj i zrestartuj teraz", QMessageBox.ButtonRole.AcceptRole)
+            btn_on_exit = msg.addButton("💤 Zainstaluj przy zamknięciu programu", QMessageBox.ButtonRole.ActionRole)
+            btn_later = msg.addButton("Później", QMessageBox.ButtonRole.RejectRole)
+            
+            msg.setStyleSheet("""
+                QMessageBox { background-color: #1f1f2e; }
+                QLabel { color: #edf2f4; font-size: 12px; }
+                QPushButton {
+                    background-color: #2b2d42;
+                    color: #edf2f4;
+                    border: 1px solid #3d405b;
+                    border-radius: 6px;
+                    padding: 8px 14px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #4361ee;
+                    color: #ffffff;
+                }
+            """)
+            
+            msg.exec()
+            clicked = msg.clickedButton()
+            
+            if clicked == btn_restart_now:
+                applied = apply_in_place_update(path_or_err, restart_after=True)
+                if applied:
+                    sys.exit(0)
+            elif clicked == btn_on_exit:
+                if self.parent() and hasattr(self.parent(), "set_pending_update"):
+                    self.parent().set_pending_update(path_or_err, version)
+                self.lbl_update_status.setText(f"💤 Wersja {version} zostanie zainstalowana po zamknięciu programu.")
+                self.lbl_update_status.setStyleSheet("color: #4cc9f0; font-size: 11px;")
+            else:
+                self.lbl_update_status.setText("Paczka pozostaje pobrana. Możesz zainstalować ją w dowolnym momencie.")
+                self.lbl_update_status.setStyleSheet("color: #8d99ae; font-size: 11px;")
+        else:
+            QMessageBox.information(
+                self,
+                "Pobrano Aktualizację",
+                f"Pobrano paczkę aktualizacyjną do:\n{path_or_err}\n\n(Działasz w trybie deweloperskim ze skryptów Python)."
+            )
 
     def _load_values(self):
         """Ładuje aktualne ustawienia do kontrolek UI."""
