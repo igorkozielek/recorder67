@@ -36,6 +36,9 @@ def format_turn_timestamp(st: float, en: float, session_start_time: Optional[dat
     e_min, e_sec = int(en // 60), int(en % 60)
     offset_label = f"{s_min:02d}:{s_sec:02d} - {e_min:02d}:{e_sec:02d}"
 
+    if ts_format == "offset_only":
+        return offset_label
+
     w_start_dt = None
     w_end_dt = None
     if wall_start is not None and wall_end is not None:

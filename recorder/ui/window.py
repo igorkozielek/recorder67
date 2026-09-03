@@ -327,6 +327,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.last_plain_text = ""
         self.current_meeting_id = None
         self.synced_segment_count = 0
+        self._synced_turn_ids = set()
         self.last_processed_block_idx = 0
         self._active_threads = []
         self._finalize_pending = False       # Guard: blokuje Start gdy trwa finalizacja poprzedniej sesji
@@ -1498,6 +1499,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.current_live_txt_path = os.path.join(self.transcriptions_dir, f"transkrypcja_{timestamp}.txt")
         self.current_live_wav_path = os.path.join(self.recordings_dir, f"inteligentne_nagranie_{timestamp}.wav")
         self.synced_segment_count = 0
+        self._synced_turn_ids = set()
         try:
             with open(self.current_live_txt_path, 'w', encoding='utf-8') as f:
                 f.write(f"=== TRANSKRYPCJA NA ŻYWO (Start: {now.strftime('%Y-%m-%d %H:%M:%S')}) ===\n\n")
@@ -1600,8 +1602,11 @@ class SmartDictaphoneWindow(QMainWindow):
 
         # Transmisja na żywo nowych segmentów do Supabase / CRM
         if self.cloud_sync.config.get("live_streaming") and self.cloud_sync.config.get("auto_sync") and self.current_meeting_id:
-            new_segments = (all_turns or [])[self.synced_segment_count:]
+            new_segments = [t for t in (all_turns or []) if id(t) not in self._synced_turn_ids]
             if new_segments:
+                for t in new_segments:
+                    self._synced_turn_ids.add(id(t))
+                self.synced_segment_count = len(self._synced_turn_ids)
                 spk_cnt = len(set(t.get("speaker", "Mówca") for t in (all_turns or []) if t.get("speaker")))
                 self.cloud_sync.append_live_segments_async(
                     meeting_id=self.current_meeting_id,
@@ -1610,7 +1615,6 @@ class SmartDictaphoneWindow(QMainWindow):
                     duration_seconds=tot_sec,
                     speaker_count=max(1, spk_cnt)
                 )
-                self.synced_segment_count = len(all_turns)
 
         # Aktualizacja paska postępu
         self.last_processed_block_idx = block_idx
@@ -2402,6 +2406,7 @@ class SmartDictaphoneWindow(QMainWindow):
             )
 
         self.synced_segment_count = 0
+        self._synced_turn_ids = set()
         self.current_turns = []
         self.last_plain_text = ""
         self.recorded_seconds = 0

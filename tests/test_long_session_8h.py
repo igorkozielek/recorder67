@@ -378,6 +378,7 @@ def test_rotate_session_file_flushes_audio_mixer():
         assert worker.wav_writer is not None
 
         worker.stop_recording()
+        worker.wait(2000)
     finally:
         for p in (path1, path2):
             if os.path.exists(p):
