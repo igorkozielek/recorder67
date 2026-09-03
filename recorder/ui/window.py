@@ -2688,11 +2688,15 @@ class SmartDictaphoneWindow(QMainWindow):
         self.input_token.setEnabled(is_diar)
 
     def _on_timer_tick(self):
-        # Czas nagrania (stoper i pasek) nalicza się TYLKO gdy mowa jest aktywnie nagrywana
+        # Czas nagrania (stoper i pasek) nalicza się ze strumienia audio WAV bez dryfu zegarowego
         is_active_recording = self.worker.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]
-
         if is_active_recording:
-            self.recorded_seconds += 1
+            if hasattr(self, "worker") and hasattr(self.worker, "audio_mixer"):
+                actual_audio_sec = int(self.worker.audio_mixer.get_current_timeline_samples() / 16000.0)
+                self.recorded_seconds = max(self.recorded_seconds, actual_audio_sec)
+            else:
+                self.recorded_seconds += 1
+
             hrs = self.recorded_seconds // 3600
             mins = (self.recorded_seconds % 3600) // 60
             secs = self.recorded_seconds % 60
