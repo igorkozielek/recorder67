@@ -14,7 +14,7 @@ os.makedirs(RECORDINGS_DIR, exist_ok=True)
 os.makedirs(TRANSCRIPTIONS_DIR, exist_ok=True)
 
 # Wersja aplikacji i repozytorium GitHub
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.5.1"
 GITHUB_REPO = "igorkozielek/recorder67"
 
 # Parametry audio i VAD
@@ -207,6 +207,7 @@ def load_user_settings() -> dict:
         "preview_order": get_env_variable("PREVIEW_ORDER", "newest_first"),
         "auto_scroll_chronological": get_env_variable("AUTO_SCROLL_CHRONOLOGICAL", "true").lower() in ("1", "true", "yes"),
         "check_prereleases": True,
+        "auto_check_updates_startup": True,
     }
 
     settings_paths = [
@@ -401,6 +402,12 @@ def get_cloud_sync_config() -> dict:
         "session_split_silence_sec": get_session_split_silence_sec(),
         "max_session_duration_sec": MAX_SESSION_DURATION_SEC,
     }
+
+
+def is_auto_check_updates_startup() -> bool:
+    """Sprawdza, czy włączone jest ciche sprawdzanie aktualizacji przy uruchomieniu programu."""
+    st = load_user_settings()
+    return bool(st.get("auto_check_updates_startup", True))
 
 
 def get_hardware_acceleration_info() -> dict:

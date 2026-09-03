@@ -33,7 +33,8 @@ from recorder.config import (
     get_system_vad_speech_threshold,
     get_record_source_mode,
     get_loopback_device_index,
-    get_silence_alert_seconds
+    get_silence_alert_seconds,
+    is_auto_check_updates_startup
 )
 from recorder.audio.devices import (
     get_working_input_devices,
@@ -359,6 +360,10 @@ class SmartDictaphoneWindow(QMainWindow):
         # Uruchomienie przetwarzania zaległej kolejki offline
         self.cloud_sync.process_offline_queue_async()
 
+        # Ciche sprawdzenie dostępności aktualizacji w tle przy starcie
+        if is_auto_check_updates_startup():
+            QTimer.singleShot(3500, self._start_silent_update_check)
+
 
     def _init_ui(self):
         scroll_area = QScrollArea()
@@ -414,6 +419,62 @@ class SmartDictaphoneWindow(QMainWindow):
         header_container.addWidget(self.btn_settings)
 
         main_layout.addLayout(header_container)
+
+        # BANER AKTUALIZACJI (Domyślnie ukryty, pojawia się po cichym wykryciu aktualizacji w tle)
+        self.banner_update = QFrame()
+        self.banner_update.setStyleSheet("""
+            QFrame {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1a2238, stop:1 #283048);
+                border: 1px solid #4361ee;
+                border-radius: 8px;
+            }
+        """)
+        banner_layout = QHBoxLayout(self.banner_update)
+        banner_layout.setContentsMargins(12, 8, 12, 8)
+        banner_layout.setSpacing(10)
+
+        self.lbl_update_banner_text = QLabel("🚀 Dostępna jest nowa wersja dyktafonu!")
+        self.lbl_update_banner_text.setStyleSheet("color: #4cc9f0; font-size: 12px; font-weight: bold; border: none; background: transparent;")
+        banner_layout.addWidget(self.lbl_update_banner_text, stretch=1)
+
+        self.btn_update_banner_action = QPushButton("Pokaż aktualizację")
+        self.btn_update_banner_action.setStyleSheet("""
+            QPushButton {
+                background-color: #4361ee;
+                color: #ffffff;
+                border: none;
+                border-radius: 6px;
+                padding: 6px 14px;
+                font-weight: bold;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #3a0ca3;
+            }
+        """)
+        self.btn_update_banner_action.clicked.connect(lambda: self._open_settings_dialog(initial_tab="updates"))
+        banner_layout.addWidget(self.btn_update_banner_action)
+
+        btn_close_banner = QPushButton("✕")
+        btn_close_banner.setToolTip("Ukryj powiadomienie")
+        btn_close_banner.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #8d99ae;
+                border: none;
+                font-size: 13px;
+                font-weight: bold;
+                padding: 4px 8px;
+            }
+            QPushButton:hover {
+                color: #edf2f4;
+            }
+        """)
+        btn_close_banner.clicked.connect(self.banner_update.hide)
+        banner_layout.addWidget(btn_close_banner)
+
+        self.banner_update.hide()
+        main_layout.addWidget(self.banner_update)
 
         # ŹRÓDŁA DŹWIĘKU
         sources_box = QGroupBox("Źródła Dźwięku")
@@ -921,9 +982,11 @@ class SmartDictaphoneWindow(QMainWindow):
         main_layout.addWidget(outputs_box)
 
 
-    def _open_settings_dialog(self):
+    def _open_settings_dialog(self, initial_tab=None):
         """Otwiera okno konfiguracji słownika branżowego, parametrów AI i chmury."""
         dlg = SettingsDialog(self)
+        if initial_tab is not None:
+            dlg.select_tab(initial_tab)
         if dlg.exec():
             st = load_user_settings()
             # 1. Aktualizacja tokenu HF w polu UI jeśli został zmieniony
@@ -952,6 +1015,25 @@ class SmartDictaphoneWindow(QMainWindow):
                 "Ustawienia zostały pomyślnie zaktualizowane!\n\n"
                 "Nowy słownik branżowy oraz parametry AI będą automatycznie stosowane przy kolejnych nagraniach i transkrypcjach."
             )
+
+    def _start_silent_update_check(self):
+        """Cicho sprawdza w tle na GitHubie dostępność nowszej wersji programu."""
+        try:
+            from recorder.core.updater import CheckUpdateWorker
+            st = load_user_settings()
+            inc_pre = bool(st.get("check_prereleases", True))
+            self._startup_update_worker = CheckUpdateWorker(include_prereleases=inc_pre)
+            self._startup_update_worker.update_checked_signal.connect(self._on_startup_update_result)
+            self._startup_update_worker.start()
+        except Exception as e:
+            print(f"[UPDATER] Ciche sprawdzenie aktualizacji pominięte: {e}")
+
+    def _on_startup_update_result(self, result):
+        """Obsługuje wynik cichego sprawdzania aktualizacji przy starcie."""
+        if result and result.get("has_update"):
+            latest_v = result.get("latest_version", "")
+            self.lbl_update_banner_text.setText(f"🚀 Dostępna jest nowa wersja dyktafonu: <b>{latest_v}</b>")
+            self.banner_update.show()
 
     def _scroll_transcript_view(self):
         """Automatycznie ustawia pozycję paska przewijania w oknie transkrypcji."""

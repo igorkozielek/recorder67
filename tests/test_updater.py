@@ -14,6 +14,7 @@ from recorder.ui.settings_dialog import SettingsDialog
 
 def test_semver_parsing():
     print("[TEST] Weryfikacja parsera semver...")
+    assert parse_version("0.5.1")[:3] == (0, 5, 1)
     assert parse_version("0.5.0")[:3] == (0, 5, 0)
     assert parse_version("v0.5.0")[:3] == (0, 5, 0)
     assert parse_version("v0.4.1-alpha")[:3] == (0, 4, 1)
@@ -23,31 +24,31 @@ def test_semver_parsing():
 
 def test_version_comparisons():
     print("[TEST] Weryfikacja logiki porównywania wersji...")
-    # Stabilne 0.5.0 nie powinno uznawać starszego 0.4.1-alpha za nowsze
-    assert not is_newer_version("v0.4.1-alpha", "0.5.0")
-    assert not is_newer_version("v0.4.0", "0.5.0")
+    # Stabilne 0.5.1 nie powinno uznawać starszego 0.5.0 ani 0.4.1-alpha za nowsze
+    assert not is_newer_version("v0.4.1-alpha", "0.5.1")
+    assert not is_newer_version("v0.5.0", "0.5.1")
 
-    # Wersja 0.5.1 powinna być uznana za nowszą niż 0.5.0
-    assert is_newer_version("v0.5.1", "0.5.0")
-    assert is_newer_version("0.6.0-alpha", "0.5.0")
+    # Wersja 0.5.2 powinna być uznana za nowszą niż 0.5.1
+    assert is_newer_version("v0.5.2", "0.5.1")
+    assert is_newer_version("0.6.0-alpha", "0.5.1")
 
-    # Jeśli jesteśmy na 0.4.0, 0.4.1-alpha jest nowsze
-    assert is_newer_version("v0.4.1-alpha", "0.4.0")
+    # Jeśli jesteśmy na 0.4.0, 0.5.0 jest nowsze
+    assert is_newer_version("v0.5.0", "0.4.0")
     print("  -> Logika porównywania wersji działa prawidłowo!")
 
 
 def test_github_api_check():
     print("[TEST] Odpytywanie GitHub Releases API...")
-    # Symulacja sprawdzenia z perspektywy wersji 0.4.0 (powinno znaleźć v0.4.1-alpha)
+    # Symulacja sprawdzenia z perspektywy wersji 0.4.0 (powinno znaleźć v0.5.0)
     res = check_github_updates(repo=GITHUB_REPO, current_version="0.4.0", include_prereleases=True)
     assert res is not None
     assert res["has_update"] is True
     print(f"  -> Znaleziono aktualizację dla 0.4.0: {res['latest_version']} ({res['asset_name']})")
 
-    # Sprawdzenie z perspektywy wersji 0.5.0 (powinno zwrócić None / brak nowszej wersji)
-    res_curr = check_github_updates(repo=GITHUB_REPO, current_version="0.5.0", include_prereleases=True)
+    # Sprawdzenie z perspektywy bieżącej wersji 0.5.1 (brak nowszej wersji na GitHubie)
+    res_curr = check_github_updates(repo=GITHUB_REPO, current_version="0.5.1", include_prereleases=True)
     assert res_curr is None
-    print("  -> Dla bieżącej wersji v0.5.0 poprawnie brak nowszych aktualizacji!")
+    print("  -> Dla bieżącej wersji v0.5.1 poprawnie brak nowszych aktualizacji!")
 
 
 def test_settings_dialog_updates_tab():
@@ -56,9 +57,14 @@ def test_settings_dialog_updates_tab():
     dlg = SettingsDialog()
     assert hasattr(dlg, "btn_check_updates")
     assert hasattr(dlg, "chk_check_prereleases")
+    assert hasattr(dlg, "chk_auto_check_startup")
     assert hasattr(dlg, "grp_new_version")
     assert dlg.tabs.count() == 4  # Słownik, Audio/VAD, Chmura, Aktualizacje
     assert dlg.tabs.tabText(3) == "🚀 Aktualizacje"
+
+    # Test przełączania zakładki
+    dlg.select_tab("updates")
+    assert dlg.tabs.currentIndex() == 3
     dlg.close()
     print("  -> Zakładka Aktualizacje w SettingsDialog zainicjalizowana pomyślnie!")
 

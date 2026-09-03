@@ -560,6 +560,11 @@ class SettingsDialog(QDialog):
         lbl_repo.setStyleSheet("color: #8d99ae;")
         cur_layout.addRow("Repozytorium wydań:", lbl_repo)
 
+        self.chk_auto_check_startup = QCheckBox("Sprawdzaj dostępność aktualizacji automatycznie przy starcie aplikacji")
+        self.chk_auto_check_startup.setChecked(True)
+        self.chk_auto_check_startup.setStyleSheet("color: #edf2f4;")
+        cur_layout.addRow("", self.chk_auto_check_startup)
+
         self.chk_check_prereleases = QCheckBox("Uwzględniaj wersje testowe (Pre-release / Alpha / Beta)")
         self.chk_check_prereleases.setChecked(True)
         self.chk_check_prereleases.setStyleSheet("color: #edf2f4;")
@@ -840,6 +845,14 @@ class SettingsDialog(QDialog):
         self.chk_auto_sync.setChecked(bool(st.get("auto_cloud_sync", True)))
         self.chk_upload_audio.setChecked(bool(st.get("sync_upload_audio", False)))
         self.chk_check_prereleases.setChecked(bool(st.get("check_prereleases", True)))
+        self.chk_auto_check_startup.setChecked(bool(st.get("auto_check_updates_startup", True)))
+
+    def select_tab(self, tab_id):
+        """Przełącza aktywną zakładkę w oknie ustawień."""
+        if isinstance(tab_id, int):
+            self.tabs.setCurrentIndex(tab_id)
+        elif tab_id in ("updates", "aktualizacje"):
+            self.tabs.setCurrentIndex(3)
 
     def _restore_defaults(self):
         """Przywraca zalecane wartości domyślne."""
@@ -865,6 +878,7 @@ class SettingsDialog(QDialog):
             self.chk_auto_sync.setChecked(True)
             self.chk_upload_audio.setChecked(False)
             self.chk_check_prereleases.setChecked(True)
+            self.chk_auto_check_startup.setChecked(True)
 
     def _save_and_accept(self):
         """Zapisuje wartości do pliku user_settings.json i zamyka dialog."""
@@ -890,6 +904,7 @@ class SettingsDialog(QDialog):
             "auto_cloud_sync": self.chk_auto_sync.isChecked(),
             "sync_upload_audio": self.chk_upload_audio.isChecked(),
             "check_prereleases": self.chk_check_prereleases.isChecked(),
+            "auto_check_updates_startup": self.chk_auto_check_startup.isChecked(),
         }
 
         success = save_user_settings(new_settings)
