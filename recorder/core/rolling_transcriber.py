@@ -165,6 +165,15 @@ class RollingTranscriptionWorker(QThread):
             block.audio_float = None
             block.is_processed = True
             self.processed_blocks.append(block)
+            self.total_processed_seconds = max(self.total_processed_seconds, block.end_sec)
+            self.block_processed_signal.emit(
+                block.block_index,
+                self.total_processed_seconds,
+                max(self.latest_session_seconds, self.total_processed_seconds),
+                self.all_turns,
+                self._cached_plain,
+                ""
+            )
             return
 
         # Dźwięk w formacie float32 mono 16kHz (zawsze 1D)
@@ -177,6 +186,15 @@ class RollingTranscriptionWorker(QThread):
             block.audio_float = None
             block.is_processed = True
             self.processed_blocks.append(block)
+            self.total_processed_seconds = max(self.total_processed_seconds, block.end_sec)
+            self.block_processed_signal.emit(
+                block.block_index,
+                self.total_processed_seconds,
+                max(self.latest_session_seconds, self.total_processed_seconds),
+                self.all_turns,
+                self._cached_plain,
+                ""
+            )
             return
 
         # Oczyszczenie pasma i normalizacja głośności bloku
@@ -293,7 +311,7 @@ class RollingTranscriptionWorker(QThread):
 
         # Tryb Catch-up i buforowanie renderowania UI:
         # Jeśli w kolejce czeka wiele bloków, nie zamrażamy interfejsu i CPU renderowaniem wielomegabajtowego HTML.
-        should_render_ui = is_queue_empty or (now_ts - self._last_ui_render_time >= 3.0) or not self._cached_html
+        should_render_ui = (is_queue_empty and (now_ts - self._last_ui_render_time >= 1.5)) or (now_ts - self._last_ui_render_time >= 3.0) or not self._cached_html
         if should_render_ui:
             self._last_ui_render_time = now_ts
             full_html, full_plain, all_turns = self._compile_full_transcript()
@@ -305,8 +323,11 @@ class RollingTranscriptionWorker(QThread):
             all_turns = self.all_turns
 
         # Zapis dyskowy throttled (co min. 30s)
-        should_save_disk = (now_ts - self._last_disk_save_time >= 30.0) and bool(self._cached_plain)
+        should_save_disk = (now_ts - self._last_disk_save_time >= 30.0) and bool(self.all_turns)
         if should_save_disk:
+            if not should_render_ui:
+                self._cached_html, self._cached_plain, _ = self._compile_full_transcript()
+                self._last_ui_render_time = now_ts
             self._last_disk_save_time = now_ts
             self._save_to_txt_file(self._cached_plain)
             self._save_to_session_file(self.all_turns, force=True)
@@ -405,7 +426,7 @@ class RollingTranscriptionWorker(QThread):
             session = self._cached_session
             session.has_transcription = True
             session.whisper_model = self.model_size
-            session.duration_sec = self.total_processed_seconds
+            session.duration_sec = max(self.latest_session_seconds, self.total_processed_seconds)
             session.turns = list(turns or [])
             session.words = list(all_words or [])
             session.save_to_json(json_path)

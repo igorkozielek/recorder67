@@ -154,15 +154,23 @@ class TranscriptionSession:
             json_text = json.dumps(data, ensure_ascii=False, indent=2)
 
             temp_fd, temp_path = tempfile.mkstemp(dir=parent_dir, prefix="session_", suffix=".tmp")
-            with open(temp_fd, "w", encoding="utf-8") as f:
-                f.write(json_text)
+            try:
+                with open(temp_fd, "w", encoding="utf-8") as f:
+                    f.write(json_text)
 
-            if os.path.exists(json_path):
-                os.replace(temp_path, json_path)
-            else:
-                os.rename(temp_path, json_path)
+                if os.path.exists(json_path):
+                    os.replace(temp_path, json_path)
+                else:
+                    os.rename(temp_path, json_path)
 
-            return True
+                return True
+            except Exception:
+                if os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except Exception:
+                        pass
+                raise
         except Exception as e:
             print(f"⚠️ [SESJA] Błąd zapisu pliku sesji JSON '{json_path}': {e}")
             return False

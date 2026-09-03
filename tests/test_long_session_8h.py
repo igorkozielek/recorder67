@@ -74,6 +74,34 @@ def test_smart_audio_worker_lifecycle_and_save_wav():
                 except Exception:
                     pass
 
+        # 4. Test zapisu do nowej lokalizacji docelowej (innej niż save_wav_path)
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_streamed:
+            streamed_path = tmp_streamed.name
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_target:
+            target_path = tmp_target.name
+        try:
+            worker3 = SmartAudioWorker()
+            worker3.save_wav_path = streamed_path
+            worker3.wav_writer = StreamingWavWriter(streamed_path, channels=1, samplerate=16000)
+            worker3.wav_writer.write_frames(dummy_pcm)
+            worker3.stop_recording()
+
+            # Usunięcie pliku docelowego, aby zasymulować nową ścieżkę eksportu
+            if os.path.exists(target_path):
+                os.remove(target_path)
+
+            saved3 = worker3.save_wav(target_path)
+            assert saved3 is True
+            assert os.path.exists(target_path)
+            assert os.path.getsize(target_path) > 44
+        finally:
+            for p in (streamed_path, target_path):
+                if os.path.exists(p):
+                    try:
+                        os.remove(p)
+                    except Exception:
+                        pass
+
     finally:
         if os.path.exists(save_path):
             try:
@@ -280,3 +308,80 @@ def test_adaptive_beam_size_under_load():
     # Opróżnienie kolejki
     while not worker.block_queue.empty():
         worker.block_queue.get_nowait()
+
+
+def test_short_block_early_return_updates_session_time_and_frees_ram():
+    """
+    Weryfikuje, że dla bloków krótszych niż 1.0s (np. kaszel, szum, stuknięcie):
+    - audio_float jest natychmiast zwalniany (None), aby nie zużywać RAM
+    - worker.total_processed_seconds jest poprawnie aktualizowany do block.end_sec
+    - block_processed_signal jest emitowany, aby pasek postępu w UI nie zawieszał się
+    - zapis sesji JSON poprawnie odnotowuje pełny czas trwania sesji
+    """
+    _ = QApplication.instance() or QApplication([])
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        txt_path = os.path.join(tmp_dir, "test_short_blocks.txt")
+        worker = RollingTranscriptionWorker(txt_save_path=txt_path)
+        worker.update_session_time(100.0)
+
+        signals_received = []
+        worker.block_processed_signal.connect(lambda *args: signals_received.append(args))
+
+        # Blok o długości 0.5s (8000 próbek)
+        short_pcm = np.ones(8000, dtype=np.float32) * 0.1
+        block_short = RollingBlock(1, start_sec=0.0, end_sec=0.5, audio_float=short_pcm)
+        worker._process_single_block(block_short)
+
+        assert block_short.audio_float is None, "audio_float musi być wyczyszczone dla O(1) RAM"
+        assert block_short.is_processed is True
+        assert worker.total_processed_seconds == 0.5, "total_processed_seconds musi uwzględniać end_sec krótkiego bloku"
+        assert len(signals_received) == 1, "block_processed_signal musi być wyemitowany dla aktualizacji paska UI"
+
+        # Zapis sesji: duration_sec musi być max(latest_session_seconds, total_processed_seconds)
+        worker._save_to_session_file([], force=True)
+        from recorder.core.session import get_session_path_for_txt
+        j_path = get_session_path_for_txt(txt_path)
+        assert os.path.exists(j_path)
+        sess = TranscriptionSession.load_from_json(j_path)
+        assert sess.duration_sec == 100.0, f"Oczekiwano duration_sec=100.0, otrzymano {sess.duration_sec}"
+
+
+def test_rotate_session_file_flushes_audio_mixer():
+    """
+    Weryfikuje, że rotate_session_file() przed zamknięciem starego pliku StreamingWavWriter
+    dokonuje opróżnienia miksera audio (flush remaining bytes), zapobiegając utracie dźwięku
+    na przełomie rotacji wielogodzinnych plików.
+    """
+    _ = QApplication.instance() or QApplication([])
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f1, \
+         tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f2:
+        path1 = f1.name
+        path2 = f2.name
+
+    try:
+        worker = SmartAudioWorker()
+        worker.start_recording(save_wav_path=path1)
+
+        # Dodanie próbek do miksera (odpowiednik buforowanego dźwięku przed rotacją)
+        chunk = (np.ones(1600, dtype=np.float32) * 0.2)
+        worker.audio_mixer.add_mic_chunk(chunk)
+
+        # Rotacja do path2
+        worker.rotate_session_file(path2)
+
+        # path1 powinien być poprawnie zamknięty i zawierać buforowane próbki
+        assert os.path.exists(path1)
+        assert os.path.getsize(path1) > 44, "Plik path1 powinien zawierać zrzucone próbki z miksera"
+        assert worker.save_wav_path == os.path.abspath(path2)
+        assert worker.wav_writer is not None
+
+        worker.stop_recording()
+    finally:
+        for p in (path1, path2):
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
