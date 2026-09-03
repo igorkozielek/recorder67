@@ -112,6 +112,16 @@ class RealtimeAudioMixer:
                 return b""
 
             # W trybie hybrydowym: Lewy kanał = Mikrofon, Prawy kanał = Dźwięk Systemu (Stereo 2-kanałowe)
+            if run_mic and run_sys:
+                len_diff = len(self.mic_buffer) - len(self.sys_buffer)
+                if abs(len_diff) > 4800:
+                    if len_diff > 0:
+                        pad = np.zeros(len_diff, dtype=np.float32)
+                        self.sys_buffer = np.concatenate([self.sys_buffer, pad]) if len(self.sys_buffer) > 0 else pad
+                    else:
+                        pad = np.zeros(-len_diff, dtype=np.float32)
+                        self.mic_buffer = np.concatenate([self.mic_buffer, pad]) if len(self.mic_buffer) > 0 else pad
+
             min_len = min(len(self.mic_buffer), len(self.sys_buffer))
             if min_len == 0:
                 if len(self.mic_buffer) > 16000 and len(self.sys_buffer) == 0:
@@ -836,11 +846,16 @@ class SmartAudioWorker(QThread):
 
     def save_wav(self, file_path: str) -> bool:
         if self.wav_writer:
-            self.wav_writer.close()
+            try:
+                self.wav_writer.close()
+            except Exception:
+                pass
             self.wav_writer = None
+
+        if os.path.exists(file_path) and os.path.getsize(file_path) > 44:
             self.frames = []
-            if os.path.exists(file_path) and os.path.getsize(file_path) > 44:
-                return True
+            return True
+
         is_hybrid = (self.source_mode == RecordSourceMode.HYBRID_DUAL) and HAS_PYAUDIOWPATCH
         wav_ch = 2 if is_hybrid else 1
         saved = save_wav_file(file_path, self.frames, channels=wav_ch, samplerate=16000)

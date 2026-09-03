@@ -67,6 +67,7 @@ class RollingTranscriptionWorker(QThread):
         self._last_ui_render_time: float = 0.0
         self._cached_html: str = ""
         self._cached_plain: str = ""
+        self._cached_session: Optional[Any] = None
 
     def add_block(self, block_index: int, start_sec: float, end_sec: float, audio_float: np.ndarray, channel_source: str = "mic"):
         """Dodaje nowy zamknięty blok audio do kolejki przetwarzania w tle z oznaczeniem źródła (mic / system)."""
@@ -90,6 +91,7 @@ class RollingTranscriptionWorker(QThread):
         self._last_ui_render_time = 0.0
         self._cached_html = ""
         self._cached_plain = ""
+        self._cached_session = None
 
     def update_session_time(self, current_sec: float):
         """Aktualizuje bieżący czas sesji ze stopera."""
@@ -160,6 +162,7 @@ class RollingTranscriptionWorker(QThread):
         """Transkrybuje pojedynczy blok i mapuje jego słowa na globalną oś czasu."""
         audio_data = block.audio_float
         if audio_data is None or len(audio_data) < int(1.0 * 16000):
+            block.audio_float = None
             block.is_processed = True
             self.processed_blocks.append(block)
             return
@@ -171,6 +174,7 @@ class RollingTranscriptionWorker(QThread):
             audio_float = audio_data.astype(np.float32).flatten()
 
         if len(audio_float) < int(1.0 * 16000):
+            block.audio_float = None
             block.is_processed = True
             self.processed_blocks.append(block)
             return
@@ -181,6 +185,8 @@ class RollingTranscriptionWorker(QThread):
 
         initial_prompt = get_full_initial_prompt()
         effective_beam = get_beam_size()
+        if self.block_queue.qsize() > 1:
+            effective_beam = 1
 
         transcript_words = []
 
@@ -298,12 +304,12 @@ class RollingTranscriptionWorker(QThread):
             full_plain = self._cached_plain
             all_turns = self.all_turns
 
-        # Zapis dyskowy throttled (co min. 20s lub gdy kolejka jest całkowicie rozładowana)
-        should_save_disk = (is_queue_empty or (now_ts - self._last_disk_save_time >= 20.0)) and bool(self._cached_plain)
+        # Zapis dyskowy throttled (co min. 30s)
+        should_save_disk = (now_ts - self._last_disk_save_time >= 30.0) and bool(self._cached_plain)
         if should_save_disk:
             self._last_disk_save_time = now_ts
             self._save_to_txt_file(self._cached_plain)
-            self._save_to_session_file(self.all_turns)
+            self._save_to_session_file(self.all_turns, force=True)
 
         # Emitowanie sygnału aktualizacji do UI
         self.block_processed_signal.emit(
@@ -331,7 +337,7 @@ class RollingTranscriptionWorker(QThread):
         reverse_order = (get_preview_order() == "newest_first")
         ts_format = get_timestamp_format()
 
-        full_plain = ""
+        plain_parts = []
         for t in combined_turns:
             spk = t.get("speaker", "Mówca")
             channel = t.get("channel", "mic")
@@ -342,9 +348,10 @@ class RollingTranscriptionWorker(QThread):
             time_label = format_turn_timestamp(st, en, self.session_start_time, ts_format=ts_format)
             badge = "🎧 " if channel == "system" else "🎙️ "
             display_spk = f"{badge}{spk}" if not (spk.startswith("🎙️") or spk.startswith("🎧")) else spk
-            full_plain += f"[{time_label}] {display_spk}: {txt}\n\n"
+            plain_parts.append(f"[{time_label}] {display_spk}: {txt}\n\n")
+        full_plain = "".join(plain_parts)
 
-        full_html = ""
+        html_parts = []
         display_turns = list(reversed(combined_turns)) if reverse_order else combined_turns
         for t in display_turns:
             spk = t.get("speaker", "Mówca")
@@ -362,7 +369,8 @@ class RollingTranscriptionWorker(QThread):
                 color = "#4cc9f0"
 
             display_spk = f"{badge}{spk}" if not (spk.startswith("🎙️") or spk.startswith("🎧")) else spk
-            full_html += f"<b>[{time_label}] <span style='color: {color};'>{display_spk}:</span></b> {txt}<br><br>"
+            html_parts.append(f"<b>[{time_label}] <span style='color: {color};'>{display_spk}:</span></b> {txt}<br><br>")
+        full_html = "".join(html_parts)
 
         return full_html, full_plain, combined_turns
 
@@ -382,18 +390,25 @@ class RollingTranscriptionWorker(QThread):
         """Automatycznie tworzy i zapisuje plik sesji JSON z kompletem słów z Whispera."""
         if not self.txt_save_path:
             return
+        now_ts = time.time()
+        if not force and (now_ts - self._last_disk_save_time < 30.0):
+            return
         try:
             from recorder.core.session import TranscriptionSession, get_session_path_for_txt
             json_path = get_session_path_for_txt(self.txt_save_path)
 
             all_words = self.get_all_words()
 
-            session = TranscriptionSession.load_from_json(json_path) or TranscriptionSession()
+            if not hasattr(self, "_cached_session") or self._cached_session is None:
+                self._cached_session = TranscriptionSession.load_from_json(json_path) or TranscriptionSession()
+
+            session = self._cached_session
             session.has_transcription = True
             session.whisper_model = self.model_size
             session.duration_sec = self.total_processed_seconds
             session.turns = list(turns or [])
             session.words = list(all_words or [])
             session.save_to_json(json_path)
+            self._last_disk_save_time = now_ts
         except Exception:
             pass
