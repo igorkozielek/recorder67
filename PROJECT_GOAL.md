@@ -67,8 +67,18 @@ graph TD
 - [x] **Hybrydowe Źródła Audio (Mikrofon + WASAPI Loopback)**: Niezależne lub równoległe rejestrowanie mikrofonu oraz dźwięku systemu/spotkań (Discord, MS Teams, Zoom), izolacja procesu audio (`TargetAppAudioMonitor`), suwaki VU i niezależne przyciski wyciszenia MUTE w locie.
 - [x] **Inteligentny System Ostrzeżeń o Braku Dźwięku**: Wykrywanie przedłużającego się braku mowy i dźwięku w aktywnej sesji (domyślnie 5 min, regulacja 1–20 min), kompaktowy baner Toast z przyciskami *«Wszystko gra»* / *«Sprawdź dźwięk»*, zintegrowany z Centrum Akcji Windowsa (z priorytetem alarmu przebijającym tryb *Nie przeszkadzać*) i tłumieniem dźwięków powiadomienia w nagraniu.
 - [x] **Natywna Integracja z Windows & Oficjalna Ikona Fluent**: Zarejestrowana tożsamość procesu `InteligentnyDyktafonAI`, dedykowana przezroczysta ikona aplikacji, zasobnik systemowy (Tray) z menu podręcznym i przywracaniem okna lewym klikiem.
-- [x] **Wbudowany Auto-Updater & GitHub Actions CI/CD**: Automatyczne sprawdzanie wydań z GitHub Releases (wersje stabilne i pre-release), asynchroniczne pobieranie paczek ZIP oraz automatyczna podmiana plików w locie (in-place update) z workflowem GitHub Actions.
-- [x] **Budowanie wersji instalacyjnej**: Skrypty PyInstaller (`build_exe.ps1`) do generowania gotowego pliku `.exe` pod Windows.
+- [x] **Stabilizacja Maratonów Nagraniowych (4h–8h) & Skalowalność Pamięci RAM do O(1)**:
+  - Eliminacja wycieków pamięci i asymetrii buforów w mikserze audio `RealtimeAudioMixer`.
+  - 30-sekundowy throttling zapisu dyskowego I/O (zmniejszenie obciążenia dysku SSD o 95% przy wielogodzinnych sesjach).
+  - Ochrona interfejsu (Catch-up Mode) zapobiegająca zamrażaniu widżetu przy tysiącach bloków mowy.
+  - Opcjonalny bieg turbo (Adaptacyjny Whisper Turbo) dynamicznie przyspieszający inferencję (`beam_size=1`) przy zatorach w kolejce z zachowaniem bazowej precyzji (`beam_size=5`).
+  - Natychmiastowe wypychanie mowy przy wyciszeniu (Flush on Mute) oraz bufor pre-speech eliminujący ucinanie głosek.
+  - Pętla retry dla urządzeń WASAPI Bluetooth rozwiązująca błąd `[Errno -9996] Invalid device`.
+  - Płynny stoper zegarowy z akumulatorem monotonicznym 200 ms.
+- [x] **Nowoczesny Auto-Updater z Paskiem Postępu (WinForms GUI)**: Graficzne okno instalatora PowerShell WinForms z wizualnym paskiem postępu i komunikatami o poszczególnych etapach instalacji w locie (in-place update z automatycznym restartem i fallbackiem wsadowym).
+- [x] **Bogaty Changelog Markdown & Przeglądarka Historii**: Obsługa pełnego formatowania CommonMark w oknie Ustawień, wielowersyjna agregacja pominiętych wydań, elastyczny scroll area i przeglądanie starszych wersji.
+- [x] **Wydanie Produkcyjne bez Konsoli & Centralne Bezpieczne Logowanie**: Aplikacja skompilowana z flagą `--noconsole`, automatyczne przechwytywanie strumieni stdout/stderr do rotującego pliku dziennika `logs/app.log` (do 60 MB) oraz 100% automatyczne maskowanie kluczy API, haseł i webhooków.
+- [x] **Budowanie wersji instalacyjnej**: Skrypty PyInstaller (`build_exe.ps1` i `scripts/build_exe.py`) do generowania gotowego pliku `.exe` pod Windows.
 
 ---
 

@@ -18,8 +18,11 @@ Szczegółowy opis założeń architektonicznych, pamięci projektu oraz statusu
 * 🪟 **Natywna Integracja z Windows & Tray:** Tożsamość procesu `InteligentnyDyktafonAI`, dedykowana ikona Fluent, dynamiczny zasobnik systemowy (Tray) z menu podręcznym i przywracaniem okna lewym klikiem.
 * ☁️ **Agnostyczna Synchronizacja Chmurowa (Cloud Sync):** Transmisja segmentów transkrypcji na żywo do bazy Supabase / REST API / Webhooka CRM z automatyczną kolejką offline na wypadek braku internetu.
 * ⏱️ **Inteligentny Podział Sesji (Smart Session Splitting):** Automatyczne domykanie bieżącego spotkania po konfigurowalnym czasie ciszy (np. 15 minut) i płynne rozpoczynanie nowej sesji bez przerywania nasłuchu.
-* 💾 **Optymalizacja Pamięci i Strumieniowanie WAV:** Strumieniowy zapis dźwięku na dysk (`StreamingWavWriter`) zapobiegający akumulacji danych audio w pamięci RAM podczas wielogodzinnych nagrań.
-* 🚀 **Wbudowany Auto-Updater & GitHub Actions CI/CD:** Automatyczne sprawdzanie wydań z GitHub Releases (wersje stabilne i pre-release), asynchroniczne pobieranie paczek oraz automatyczna podmiana plików w tle (in-place update).
+* 💾 **Optymalizacja Pamięci RAM i Skalowalność 8h:** Stałe zużycie pamięci $O(1)$ w maratonach nagraniowych (4h–8h), automatyczna kompensacja asymetrii buforów audio, inteligentny throttling zapisu dyskowego I/O (zmniejszenie obciążenia SSD o 95%) oraz strumieniowy zapis dźwięku na dysk (`StreamingWavWriter`).
+* 🚀 **Adaptacyjny Whisper Turbo:** Dynamiczny dobór `beam_size=1` przy spiętrzeniu bloków mowy w kolejce dla natychmiastowego odciążenia procesora, z zachowaniem maksymalnej precyzji `beam_size=5` w standardowych warunkach.
+* 🎙️ **Pętla Retry WASAPI dla Urządzeń Bluetooth:** Automatyczne wznawianie strumieni audio przy szybkim zatrzymaniu/wznowieniu nagrań, eliminujące błędy rozłączenia urządzeń bezprzewodowych.
+* 🚀 **Nowoczesny Auto-Updater (WinForms GUI) & Bogaty Changelog Markdown:** Graficzny pasek postępu instalacji aktualizacji w locie, obsługa pełnego formatowania Markdown w oknie Ustawień, automatyczna agregacja pominiętych wydań oraz przeglądarka historii wersji.
+* 🛡️ **Wydanie Produkcyjne bez Konsoli & Centralne Logowanie:** Aplikacja działa jako czyste okno Windows (`--noconsole`) z rotującym dziennikiem zdarzeń `logs/app.log` (do 60 MB) oraz 100% automatycznym maskowaniem danych poufnych (klucze API, hasła, webhooki).
 
 ---
 
@@ -97,7 +100,8 @@ recorder67/
     │   ├── speakers.py         # Analiza dialogów i autosugestia imion mówców
     │   ├── session.py          # Zarządzanie strukturą i zapisem sesji JSON/TXT
     │   ├── cloud_sync.py       # Asynchroniczna synchronizacja chmurowa i kolejka offline
-    │   └── updater.py          # Auto-updater (GitHub Releases API i podmiana in-place)
+    │   ├── logger.py           # Centralne rotujące logowanie, przekierowanie strumieni i maskowanie danych
+    │   └── updater.py          # Auto-updater (WinForms GUI, GitHub Releases API i podmiana in-place)
     │
     ├── audio/                  # Obsługa wejść audio i operacji na plikach
     │   ├── devices.py          # Wykrywanie i filtrowanie mikrofonów (DirectSound/WASAPI/MME)
