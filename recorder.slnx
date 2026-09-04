@@ -5,12 +5,15 @@
     <File Path=".gitignore" />
     <File Path="build_exe.bat" />
     <File Path="build_exe.ps1" />
+    <File Path="InteligentnyDyktafonAI.spec" />
     <File Path="main.py" />
     <File Path="PROJECT_GOAL.md" />
+    <File Path="pytest.ini" />
     <File Path="README.md" />
     <File Path="requirements.txt" />
     <File Path="run.py" />
     <File Path="start.bat" />
+    <File Path="user_settings.json" />
   </Folder>
   <Folder Name="/Elementy rozwiązania/.github/workflows/">
     <File Path=".github/workflows/release.yml" />
@@ -21,6 +24,8 @@
   </Folder>
   <Folder Name="/Elementy rozwiązania/tests/">
     <File Path="tests/test_live_streaming_sync.py" />
+    <File Path="tests/test_logging_and_diagnostics.py" />
+    <File Path="tests/test_long_session_8h.py" />
     <File Path="tests/test_modular_diarization.py" />
     <File Path="tests/test_preview_order.py" />
     <File Path="tests/test_rolling.py" />

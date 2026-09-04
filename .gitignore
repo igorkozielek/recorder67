@@ -51,6 +51,7 @@ dist/
 user_settings.json
 *.csv
 .sync_queue/
+handoff*.md
 
 # Application Logs
 logs/
