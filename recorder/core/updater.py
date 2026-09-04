@@ -77,6 +77,98 @@ def is_newer_version(remote_tag: str, local_version: str = APP_VERSION) -> bool:
     return remote_parsed[3] > local_parsed[3]
 
 
+def fetch_all_releases(
+    repo: str = GITHUB_REPO,
+    include_prereleases: bool = True,
+    timeout: int = 8
+) -> list[Dict[str, Any]]:
+    """
+    Pobiera pełną listę wydań z API GitHuba (posortowaną od najnowszych).
+    Zwraca listę słowników opisujących każde wydanie.
+    """
+    url = f"https://api.github.com/repos/{repo}/releases"
+    headers = {
+        "User-Agent": f"Recorder67-App/{APP_VERSION}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+
+    req = urllib.request.Request(url, headers=headers)
+    releases = []
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            if response.status != 200:
+                return []
+            data = json.loads(response.read().decode("utf-8"))
+            if not isinstance(data, list):
+                return []
+
+            for release in data:
+                if release.get("draft", False):
+                    continue
+                is_prerelease = release.get("prerelease", False)
+                if is_prerelease and not include_prereleases:
+                    continue
+
+                tag_name = release.get("tag_name", "")
+                if not tag_name:
+                    continue
+
+                # Szukanie assetu ZIP z aplikacją
+                assets = release.get("assets", [])
+                zip_asset = None
+                for a in assets:
+                    a_name = a.get("name", "").lower()
+                    if a_name.endswith(".zip"):
+                        zip_asset = a
+                        break
+
+                releases.append({
+                    "tag_name": tag_name,
+                    "release_title": release.get("name") or tag_name,
+                    "release_notes": release.get("body") or "Brak opisu zmian.",
+                    "published_at": release.get("published_at", ""),
+                    "is_prerelease": is_prerelease,
+                    "html_url": release.get("html_url", ""),
+                    "download_url": zip_asset.get("browser_download_url") if zip_asset else None,
+                    "asset_name": zip_asset.get("name") if zip_asset else None,
+                    "asset_size": zip_asset.get("size", 0) if zip_asset else 0,
+                })
+    except Exception as err:
+        print(f"[UPDATER] Błąd pobierania listy wydań GitHub: {err}")
+
+    return releases
+
+
+def build_aggregated_changelog(newer_releases: list[Dict[str, Any]]) -> str:
+    """
+    Tworzy przejrzysty, zsumowany opis zmian w formacie Markdown dla wszystkich wydań,
+    o które użytkownik jest do tyłu (od najnowszej do najstarszej brakującej).
+    """
+    if not newer_releases:
+        return ""
+
+    if len(newer_releases) == 1:
+        return str(newer_releases[0].get("release_notes") or "Brak opisu zmian.")
+
+    blocks = []
+    blocks.append(
+        f"> ℹ️ **Uwaga:** Jesteś o **{len(newer_releases)}** wydań do tyłu. "
+        "Poniżej znajduje się pełne zestawienie wszystkich brakujących nowości i poprawek:\n"
+    )
+
+    for idx, rel in enumerate(newer_releases, 1):
+        tag = rel.get("tag_name", "")
+        title = rel.get("release_title", tag)
+        pub_date = rel.get("published_at", "")[:10]
+        notes = str(rel.get("release_notes") or "Brak opisu zmian.").strip()
+        date_str = f" ({pub_date})" if pub_date else ""
+
+        header = f"## 🚀 {title}{date_str}"
+        blocks.append(f"{header}\n\n{notes}")
+
+    return "\n\n---\n\n".join(blocks)
+
+
 def check_github_updates(
     repo: str = GITHUB_REPO,
     current_version: str = APP_VERSION,
@@ -85,63 +177,36 @@ def check_github_updates(
     """
     Odpytuje API GitHuba o najnowsze wydania repozytorium.
     Zwraca słownik z informacjami o aktualizacji lub None jeśli brak nowszej wersji.
+    Wzbogaca wynik o pełną listę brakujących wersji ('newer_releases') oraz zsumowany changelog ('aggregated_notes').
     """
-    url = f"https://api.github.com/repos/{repo}/releases"
-    headers = {
-        "User-Agent": f"Recorder67-App/{current_version}",
-        "Accept": "application/vnd.github.v3+json"
-    }
-    
-    req = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=8) as response:
-            if response.status != 200:
-                return None
-            data = json.loads(response.read().decode("utf-8"))
-            if not isinstance(data, list) or not data:
-                return None
-                
-            for release in data:
-                is_draft = release.get("draft", False)
-                is_prerelease = release.get("prerelease", False)
-                
-                if is_draft:
-                    continue
-                if is_prerelease and not include_prereleases:
-                    continue
-                    
-                tag_name = release.get("tag_name", "")
-                if not tag_name:
-                    continue
-                    
-                if is_newer_version(tag_name, current_version):
-                    # Szukanie assetu ZIP z aplikacją
-                    assets = release.get("assets", [])
-                    zip_asset = None
-                    for a in assets:
-                        a_name = a.get("name", "").lower()
-                        if a_name.endswith(".zip"):
-                            zip_asset = a
-                            break
-                            
-                    return {
-                        "has_update": True,
-                        "current_version": current_version,
-                        "latest_version": tag_name,
-                        "release_title": release.get("name") or tag_name,
-                        "release_notes": release.get("body", "Brak opisu zmian."),
-                        "published_at": release.get("published_at", ""),
-                        "is_prerelease": is_prerelease,
-                        "html_url": release.get("html_url", ""),
-                        "download_url": zip_asset.get("browser_download_url") if zip_asset else None,
-                        "asset_name": zip_asset.get("name") if zip_asset else None,
-                        "asset_size": zip_asset.get("size") if zip_asset else 0,
-                    }
-                    
-            return None
-    except Exception as err:
-        print(f"[UPDATER] Błąd sprawdzania aktualizacji: {err}")
+    all_releases = fetch_all_releases(repo=repo, include_prereleases=include_prereleases)
+    if not all_releases:
         return None
+
+    # Wszystkie wydania nowsze niż bieżąca wersja użytkownika
+    newer_releases = [r for r in all_releases if is_newer_version(r["tag_name"], current_version)]
+    if not newer_releases:
+        return None
+
+    latest = newer_releases[0]
+    aggregated_notes = build_aggregated_changelog(newer_releases)
+
+    return {
+        "has_update": True,
+        "current_version": current_version,
+        "latest_version": latest["tag_name"],
+        "release_title": latest["release_title"],
+        "release_notes": latest["release_notes"],
+        "published_at": latest["published_at"],
+        "is_prerelease": latest["is_prerelease"],
+        "html_url": latest["html_url"],
+        "download_url": latest["download_url"],
+        "asset_name": latest["asset_name"],
+        "asset_size": latest["asset_size"],
+        "newer_releases": newer_releases,
+        "aggregated_notes": aggregated_notes,
+        "all_releases": all_releases,
+    }
 
 
 class CheckUpdateWorker(QThread):
@@ -156,6 +221,17 @@ class CheckUpdateWorker(QThread):
     def run(self):
         try:
             res = check_github_updates(include_prereleases=self.include_prereleases)
+            if res is None:
+                # Brak nowszej wersji, ale pobieramy historię wydań dla okna ustawień
+                all_releases = fetch_all_releases(include_prereleases=self.include_prereleases)
+                res = {
+                    "has_update": False,
+                    "current_version": APP_VERSION,
+                    "latest_version": all_releases[0]["tag_name"] if all_releases else APP_VERSION,
+                    "newer_releases": [],
+                    "aggregated_notes": "",
+                    "all_releases": all_releases,
+                }
             self.update_checked_signal.emit(res)
         except Exception as e:
             self.error_signal.emit(str(e))
@@ -224,15 +300,219 @@ class DownloadUpdateWorker(QThread):
             self.download_finished_signal.emit(False, f"Błąd pobierania pliku: {e}", self.target_version)
 
 
+def generate_updater_scripts(
+    zip_path: str,
+    app_dir: str,
+    exe_path: str,
+    current_pid: int,
+    restart_after: bool = True
+) -> Tuple[str, str]:
+    """
+    Generuje skrypt PowerShell z natywnym graficznym paskiem postępu Windows Forms
+    oraz komplementarny skrypt wsadowy .bat jako fallback.
+    Zwraca (ścieżka_ps1, ścieżka_bat).
+    """
+    temp_dir = tempfile.gettempdir()
+    temp_extract = os.path.join(temp_dir, "InteligentnyDyktafonAI_Update")
+    updater_ps1 = os.path.join(temp_dir, "run_app_update.ps1")
+    updater_bat = os.path.join(temp_dir, "run_app_update.bat")
+
+    restart_val = "1" if restart_after else "0"
+    safe_zip = zip_path.replace('"', '`"')
+    safe_app_dir = app_dir.replace('"', '`"')
+    safe_exe = exe_path.replace('"', '`"')
+    safe_extract = temp_extract.replace('"', '`"')
+
+    ps1_content = f'''# Skrypt automatycznej instalacji aktualizacji z oknem postępu WinForms
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+[System.Windows.Forms.Application]::EnableVisualStyles()
+
+$form = New-Object System.Windows.Forms.Form
+$form.Text = "Inteligentny Dyktafon AI - Instalacja Aktualizacji"
+$form.Size = New-Object System.Drawing.Size(500, 220)
+$form.StartPosition = "CenterScreen"
+$form.BackColor = [System.Drawing.ColorTranslator]::FromHtml("#1a1a26")
+$form.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#edf2f4")
+$form.FormBorderStyle = "FixedDialog"
+$form.MaximizeBox = $false
+$form.MinimizeBox = $false
+$form.TopMost = $true
+
+$lblTitle = New-Object System.Windows.Forms.Label
+$lblTitle.Text = "Trwa instalowanie nowej wersji dyktafonu..."
+$lblTitle.Location = New-Object System.Drawing.Point(24, 18)
+$lblTitle.Size = New-Object System.Drawing.Size(450, 26)
+$lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+$lblTitle.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#4cc9f0")
+$form.Controls.Add($lblTitle)
+
+$lblStatus = New-Object System.Windows.Forms.Label
+$lblStatus.Text = "Inicjalizacja procedury aktualizacji..."
+$lblStatus.Location = New-Object System.Drawing.Point(24, 50)
+$lblStatus.Size = New-Object System.Drawing.Size(450, 20)
+$lblStatus.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$lblStatus.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#edf2f4")
+$form.Controls.Add($lblStatus)
+
+$lblDetail = New-Object System.Windows.Forms.Label
+$lblDetail.Text = "Proszę czekać, pliki programu są bezpiecznie podmieniane..."
+$lblDetail.Location = New-Object System.Drawing.Point(24, 72)
+$lblDetail.Size = New-Object System.Drawing.Size(450, 18)
+$lblDetail.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+$lblDetail.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#8d99ae")
+$form.Controls.Add($lblDetail)
+
+$pb = New-Object System.Windows.Forms.ProgressBar
+$pb.Location = New-Object System.Drawing.Point(24, 98)
+$pb.Size = New-Object System.Drawing.Size(445, 24)
+$pb.Minimum = 0
+$pb.Maximum = 100
+$pb.Value = 5
+$form.Controls.Add($pb)
+
+$form.Show()
+$form.Refresh()
+[System.Windows.Forms.Application]::DoEvents()
+
+function Set-UpdateProgress($pct, $status, $detail) {{
+    $pb.Value = [Math]::Min(100, [Math]::Max(0, $pct))
+    $lblStatus.Text = $status
+    if ($detail) {{ $lblDetail.Text = $detail }}
+    $form.Refresh()
+    [System.Windows.Forms.Application]::DoEvents()
+}}
+
+try {{
+    # Krok 1: Oczekiwanie na zamknięcie procesu aplikacji
+    Set-UpdateProgress 12 "Oczekiwanie na zamknięcie poprzedniej wersji programu..." "Zwalnianie plików procesu PID: {current_pid}"
+    $timeout = 25
+    $elapsed = 0
+    while ((Get-Process -Id {current_pid} -ErrorAction SilentlyContinue) -and ($elapsed -lt $timeout)) {{
+        Start-Sleep -Milliseconds 400
+        $elapsed += 1
+        [System.Windows.Forms.Application]::DoEvents()
+    }}
+    if (Get-Process -Id {current_pid} -ErrorAction SilentlyContinue) {{
+        Stop-Process -Id {current_pid} -Force -ErrorAction SilentlyContinue
+    }}
+    Start-Sleep -Milliseconds 600
+
+    # Krok 2: Przygotowanie katalogu roboczego
+    Set-UpdateProgress 25 "Przygotowywanie plików tymczasowych..." "Czyszczenie poprzednich danych aktualizacji..."
+    if (Test-Path "{safe_extract}") {{
+        Remove-Item -Path "{safe_extract}" -Recurse -Force -ErrorAction SilentlyContinue
+    }}
+    New-Item -ItemType Directory -Path "{safe_extract}" -Force | Out-Null
+
+    # Krok 3: Rozpakowanie archiwum ZIP
+    Set-UpdateProgress 45 "Rozpakowywanie nowej wersji dyktafonu..." "Wyodrębnianie plików aktualizacji..."
+    tar -xf "{safe_zip}" -C "{safe_extract}" 2>$null
+    if (-not (Test-Path "{safe_extract}\\*")) {{
+        Expand-Archive -Path "{safe_zip}" -DestinationPath "{safe_extract}" -Force
+    }}
+
+    # Krok 4: Podmiana plików w folderze aplikacji
+    Set-UpdateProgress 75 "Instalowanie nowych plików programu..." "Kopiowanie do katalogu: {safe_app_dir}"
+    $sourceDir = "{safe_extract}"
+    $exeFound = Get-ChildItem -Path "{safe_extract}" -Filter "InteligentnyDyktafonAI.exe" -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($exeFound) {{
+        $sourceDir = $exeFound.DirectoryName
+    }} elseif (Test-Path "{safe_extract}\\InteligentnyDyktafonAI") {{
+        $sourceDir = "{safe_extract}\\InteligentnyDyktafonAI"
+    }}
+    & robocopy "$sourceDir" "{safe_app_dir}" /e /np /r:5 /w:1 | Out-Null
+    if ($LASTEXITCODE -ge 8) {{
+        throw "Błąd kopiowania plików aplikacji (robocopy exit code: $LASTEXITCODE). Upewnij się, że masz uprawnienia do zapisu w katalogu: {safe_app_dir}"
+    }}
+
+    # Krok 5: Porządkowanie
+    Set-UpdateProgress 95 "Finalizowanie instalacji..." "Usuwanie pobranego archiwum i plików roboczych..."
+    if (Test-Path "{safe_zip}") {{
+        Remove-Item -Path "{safe_zip}" -Force -ErrorAction SilentlyContinue
+    }}
+    if (Test-Path "{safe_extract}") {{
+        Remove-Item -Path "{safe_extract}" -Recurse -Force -ErrorAction SilentlyContinue
+    }}
+
+    # Krok 6: Gotowe
+    Set-UpdateProgress 100 "Aktualizacja zainstalowana pomyślnie!" "Wszystkie pliki zostały zaktualizowane."
+    Start-Sleep -Milliseconds 600
+
+    if ("{restart_val}" -eq "1") {{
+        $lblStatus.Text = "Uruchamianie nowej wersji dyktafonu..."
+        $form.Refresh()
+        [System.Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 500
+        Start-Process -FilePath "{safe_exe}"
+    }}
+    $form.Close()
+    exit 0
+}}
+catch {{
+    $lblTitle.Text = "Błąd podczas instalacji aktualizacji"
+    $lblTitle.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#ef4444")
+    $lblStatus.Text = $_.Exception.Message
+    $lblDetail.Text = "Sprawdź uprawnienia do folderu programu."
+    $form.Refresh()
+    [System.Windows.Forms.Application]::DoEvents()
+    Start-Sleep -Seconds 6
+    $form.Close()
+    exit 1
+}}
+'''
+
+    restart_cmd_bat = f'start "" "{exe_path}"' if restart_after else 'rem Brak restartu (aktualizacja przy wyjsciu)'
+    bat_content = f'''@echo off
+rem Skrypt nadrzędny podmiany plików Recorder67 z automatycznym fallbackiem
+echo [UPDATER] Uruchamianie graficznego instalatora PowerShell...
+powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{updater_ps1}"
+if not errorlevel 1 goto cleanup_exit
+
+rem Jesli PowerShell byl zablokowany lub zakonczyl sie bledem, fallback do klasycznego cmd:
+echo [UPDATER] Uruchamianie procedury awaryjnej (batch fallback)...
+:wait_process
+ping 127.0.0.1 -n 2 > nul
+tasklist /fi "pid eq {current_pid}" 2>nul | find "{current_pid}" >nul
+if not errorlevel 1 goto wait_process
+
+if exist "{temp_extract}" rmdir /s /q "{temp_extract}" 2>nul
+mkdir "{temp_extract}"
+tar -xf "{zip_path}" -C "{temp_extract}" 2>nul
+if not exist "{temp_extract}\\*" powershell -NoProfile -Command "Expand-Archive -Path '{zip_path}' -DestinationPath '{temp_extract}' -Force"
+
+set "SRC={temp_extract}"
+if exist "{temp_extract}\\InteligentnyDyktafonAI\\InteligentnyDyktafonAI.exe" set "SRC={temp_extract}\\InteligentnyDyktafonAI"
+for /d %%D in ("{temp_extract}\\*") do if exist "%%D\\InteligentnyDyktafonAI.exe" set "SRC=%%D"
+
+robocopy "%SRC%" "{app_dir}" /e /np /r:5 /w:1 > nul
+
+if exist "{zip_path}" del /f /q "{zip_path}" 2>nul
+if exist "{temp_extract}" rmdir /s /q "{temp_extract}" 2>nul
+{restart_cmd_bat}
+
+:cleanup_exit
+exit /b 0
+'''
+
+    with open(updater_ps1, "w", encoding="utf-8") as f:
+        f.write(ps1_content)
+
+    with open(updater_bat, "w", encoding="cp852", errors="replace") as f:
+        f.write(bat_content)
+
+    return (updater_ps1, updater_bat)
+
+
 def apply_in_place_update(zip_path: str, restart_after: bool = True) -> bool:
     """
     Przygotowuje i uruchamia skrypt podmiany plików w tle, po czym zamyka bieżącą aplikację.
-    Działa zarówno dla wersji skompilowanej PyInstaller (.exe), jak i zgłasza informację w trybie dev.
+    Wyświetla natywny graficzny pasek postępu Windows Forms z informacją o poszczególnych etapach instalacji.
     Parametr restart_after określa, czy po podmianie plików aplikacja ma się samoczynnie zrestartować.
     """
     if not os.path.exists(zip_path):
         return False
-        
+
     is_frozen = getattr(sys, "frozen", False)
     if not is_frozen:
         # Tryb deweloperski (uruchomiony ze skryptu .py)
@@ -242,49 +522,16 @@ def apply_in_place_update(zip_path: str, restart_after: bool = True) -> bool:
     app_dir = os.path.dirname(os.path.abspath(sys.executable))
     exe_path = sys.executable
     current_pid = os.getpid()
-    temp_extract = os.path.join(tempfile.gettempdir(), "InteligentnyDyktafonAI_Update")
-    updater_bat = os.path.join(tempfile.gettempdir(), "run_app_update.bat")
-    
-    restart_cmd = f'start "" "{exe_path}"' if restart_after else 'rem Brak restartu (aktualizacja przy wyjsciu)'
-
-    bat_content = f"""@echo off
-rem Skrypt automatycznej podmiany plikow aktualizacji Recorder67
-echo [UPDATER] Oczekiwanie na zakonczenie glownego procesu (PID: {current_pid})...
-:wait_process
-ping 127.0.0.1 -n 2 > nul
-tasklist /fi "pid eq {current_pid}" 2>nul | find "{current_pid}" >nul
-if not errorlevel 1 goto wait_process
-
-echo [UPDATER] Proces aplikacji zamkniety. Rozpakowywanie nowej wersji...
-if exist "{temp_extract}" rmdir /s /q "{temp_extract}" 2>nul
-mkdir "{temp_extract}"
-
-tar -xf "{zip_path}" -C "{temp_extract}" 2>nul
-if not exist "{temp_extract}\\*" (
-    powershell -NoProfile -Command "Expand-Archive -Path '{zip_path}' -DestinationPath '{temp_extract}' -Force"
-)
-
-echo [UPDATER] Kopiowanie plikow do: {app_dir}
-if exist "{temp_extract}\\InteligentnyDyktafonAI" (
-    robocopy "{temp_extract}\\InteligentnyDyktafonAI" "{app_dir}" /e /np /r:5 /w:1 > nul
-) else (
-    robocopy "{temp_extract}" "{app_dir}" /e /np /r:5 /w:1 > nul
-)
-
-echo [UPDATER] Czyszczenie plikow tymczasowych...
-if exist "{zip_path}" del /f /q "{zip_path}" 2>nul
-if exist "{temp_extract}" rmdir /s /q "{temp_extract}" 2>nul
-
-echo [UPDATER] Finalizacja aktualizacji...
-{restart_cmd}
-exit /b 0
-"""
 
     try:
-        with open(updater_bat, "w", encoding="cp852", errors="replace") as f:
-            f.write(bat_content)
-            
-        # Uruchom skrypt .bat jako niezależny proces w tle z ukrytym oknem (CREATE_NO_WINDOW)
+        ps1_path, bat_path = generate_updater_scripts(
+            zip_path=zip_path,
+            app_dir=app_dir,
+            exe_path=exe_path,
+            current_pid=current_pid,
+            restart_after=restart_after
+        )
+
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
         if hasattr(subprocess, "CREATE_NO_WINDOW"):
             creationflags |= subprocess.CREATE_NO_WINDOW
@@ -295,8 +542,15 @@ exit /b 0
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         startupinfo.wShowWindow = 0  # SW_HIDE
 
+        # Uruchomienie skryptu wsadowego z ukrytą konsolą (okno WinForms wyświetli się na pulpicie)
+        # Dzięki temu skrypt PowerShell wyświetla nowoczesny pasek postępu, a w razie blokady PowerShell
+        # natychmiast zadziała awaryjny fallback bez przerywania aktualizacji.
         subprocess.Popen(
-            ["cmd.exe", "/c", updater_bat],
+            [
+                "cmd.exe",
+                "/c",
+                bat_path
+            ],
             creationflags=creationflags,
             startupinfo=startupinfo,
             close_fds=True
