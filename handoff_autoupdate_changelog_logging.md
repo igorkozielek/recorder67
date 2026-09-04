@@ -54,7 +54,12 @@ Użytkownik zgłosił zestaw 3 kluczowych usprawnień UX, interfejsu oraz stabil
 - **Pełna historia wydań (`grp_history`) i przycisk rozwinięcia (`btn_toggle_history`):**
   - Jeśli użytkownik posiada najnowszą wersję programu, sekcja historii jest widoczna domyślnie.
   - Jeśli dostępna jest nowa wersja, historia jest domyślnie zwinięta, a użytkownik może ją jednym kliknięciem rozwinąć przyciskiem `📜 Pokaż także historię starszych wydań...` bez zalewania ekranu niepotrzebnym chaosem.
-- **Obsługa mniejszych ekranów (`QScrollArea`):** Całą zakładkę aktualizacji osadzono w elastycznym `QScrollArea`, zapobiegając ucinaniu przycisków akceptacji okna na małych monitorach lub przy skalowaniu DPI > 100%.
+- **Obsługa mniejszych ekranów (`QScrollArea`) i spójność układu:** Całą zakładkę aktualizacji osadzono w elastycznym `QScrollArea`, zapobiegając ucinaniu przycisków akceptacji okna na małych monitorach lub przy skalowaniu DPI > 100%.
+- **Dopasowanie szerokości, marginesów i wyłączenie paska poziomego:**
+  - Wyłączono poziomy pasek przewijania (`scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)`).
+  - Wyrównano marginesy zakładki z pozostałymi 3 kartami dialogu (usunięto nadmiarowe podwójne marginesy `14, 14, 14, 14`, ujednolicając styl ramek `QGroupBox`).
+  - W sekcji diagnostyki (`grp_diagnostics`) dodano `lbl_diag_desc.setWordWrap(True)` oraz zastosowano układ pionowy (`QVBoxLayout`), dzięki czemu długi opis bezpiecznie zawija się na dowolnej szerokości ekranu, a przycisk `📁 Otwórz folder z logami` pozostaje w pełni widoczny i dostępny.
+  - Dodano `lbl_new_version_title.setWordWrap(True)` oraz `lbl_update_status.setWordWrap(True)`, zapobiegając rozpychaniu szerokości `QScrollArea` poza granice okna przy długich tytułach wydań lub obszernych komunikatach sieciowych.
 
 ### C. Wersja Produkcyjna bez Konsoli i Centralne Logowanie z Maskowaniem Danych
 - **Pliki:** [`recorder/core/logger.py`](file:///c:/Users/adw18/source/repos/igorkozielek/recorder67/recorder/core/logger.py), [`scripts/build_exe.py`](file:///c:/Users/adw18/source/repos/igorkozielek/recorder67/scripts/build_exe.py), [`InteligentnyDyktafonAI.spec`](file:///c:/Users/adw18/source/repos/igorkozielek/recorder67/InteligentnyDyktafonAI.spec), [`recorder/config.py`](file:///c:/Users/adw18/source/repos/igorkozielek/recorder67/recorder/config.py), [`run.py`](file:///c:/Users/adw18/source/repos/igorkozielek/recorder67/run.py), [`recorder/main.py`](file:///c:/Users/adw18/source/repos/igorkozielek/recorder67/recorder/main.py), [`main.py`](file:///c:/Users/adw18/source/repos/igorkozielek/recorder67/main.py)
@@ -94,7 +99,7 @@ Na gałęzi zaimplementowano pełen zestaw 28 testów jednostkowych:
 10. `tests/test_updater.py::test_github_api_check`: Zapytania do API GitHub Releases dla wersji bieżącej i starszej z odpornością na brak sieci.
 11. `tests/test_updater.py::test_multi_version_changelog_aggregation`: Weryfikacja łączenia changelogów przy przeskoku o kilka wersji oraz odporności na notatki o wartości `None`.
 12. `tests/test_updater.py::test_generate_updater_scripts`: Sprawdzenie generowania skryptów PowerShell GUI z paskiem postępu, dynamicznym wyszukiwaniem plików exe, weryfikacją kodów robocopy i fallbackiem batch.
-13. `tests/test_updater.py::test_settings_dialog_updates_tab`: Test obecności kontrolek UI (`QTextBrowser`, scroll area, comboboxy wyboru wersji i historii, przycisk pokazywania historii, przycisk logów).
+13. `tests/test_updater.py::test_settings_dialog_updates_tab`: Test obecności kontrolek UI (`QTextBrowser`, scroll area, comboboxy wyboru wersji i historii, przycisk pokazywania historii, przycisk logów), wyłączenia poziomego paska przewijania (`ScrollBarAlwaysOff`), spójności marginesów oraz zawijania tekstu w sekcji diagnostyki.
 14. `tests/test_live_streaming_sync.py` (4 testy): Zgodność strumieniowania WAV, payloadów i konfiguracji live.
 15. `tests/test_modular_diarization.py` (1 test): Cykl życia sesji i diaryzacji.
 16. `tests/test_preview_order.py` (3 testy): Kolejność podglądu wypowiedzi i konfiguracja.
@@ -118,6 +123,7 @@ Na gałęzi zaimplementowano pełen zestaw 28 testów jednostkowych:
 - **Większe okno opisu:** Zwiększono wysokość okna changelogu do min. 240px, a całą zakładkę wyposażono w płynne przewijanie na mniejszych monitorach.
 - **Agregacja pominiętych aktualizacji:** Jeśli użytkownik zaktualizuje program po pominięciu kilku wydań, aplikacja automatycznie łączy changelogi wszystkich brakujących wersji w jeden czytelny raport lub pozwala przeglądać je selektywnie za pomocą listy rozwijanej.
 - **Przeglądanie historii wydań:** Użytkownik może w każdej chwili przejrzeć pełną historię wydań i zmian programu w zakładce Aktualizacje — zarówno będąc na najnowszej wersji, jak i rozwijając historię przyciskiem przy dostępnej aktualizacji.
+- **Perfekcyjne dopasowanie układu i marginesów:** Całkowicie wyeliminowano poziomy pasek przewijania (`ScrollBarAlwaysOff`), wyrównano marginesy z pozostałymi zakładkami, a w sekcji diagnostyki dodano automatyczne zawijanie tekstu (`wordWrap=True`) z pionowym układem, zapobiegając ucinaniu przycisku folderu z logami.
 
 ### 🛡️ Wydanie Produkcyjne bez Konsoli i Bezpieczne Logowanie Zdarzeń
 - **Czysty interfejs (Brak okna konsoli cmd):** Skompilowana aplikacja `.exe` uruchamia się jako czysta aplikacja okienkowa Windows (`console=False` / `--noconsole`).

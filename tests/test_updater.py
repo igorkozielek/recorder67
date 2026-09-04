@@ -15,7 +15,8 @@ from recorder.core.updater import (
     build_aggregated_changelog,
     generate_updater_scripts
 )
-from PySide6.QtWidgets import QApplication, QTextBrowser
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QTextBrowser, QLabel
 from recorder.ui.settings_dialog import SettingsDialog
 
 
@@ -158,17 +159,28 @@ def test_settings_dialog_updates_tab():
     assert dlg.tabs.count() == 4  # Słownik, Audio/VAD, Chmura, Aktualizacje
     assert dlg.tabs.tabText(3) == "🚀 Aktualizacje"
 
+    scroll = dlg.tabs.widget(3)
+    assert scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    assert scroll.widget().layout().contentsMargins() == dlg.tabs.widget(0).layout().contentsMargins()
+    diag_labels = dlg.grp_diagnostics.findChildren(QLabel)
+    assert len(diag_labels) > 0
+    assert all(lbl.wordWrap() for lbl in diag_labels)
+    assert dlg.lbl_update_status.wordWrap() is True
+    assert dlg.lbl_new_version_title.wordWrap() is True
+    assert dlg.btn_open_logs.parentWidget() == dlg.grp_diagnostics
+
     # Test przełączania zakładki
     dlg.select_tab("updates")
     assert dlg.tabs.currentIndex() == 3
     dlg.show()
+    app.processEvents()
 
-    # Test reakcji UI na znalezienie aktualizacji z wieloma wersjami
+    # Test reakcji UI na znalezienie aktualizacji z wieloma wersjami i bardzo długim tytułem
     mock_update_data = {
         "has_update": True,
         "current_version": "0.5.2",
         "latest_version": "v0.5.5",
-        "release_title": "Wydanie v0.5.5",
+        "release_title": "Wydanie v0.5.5 - Bardzo długa nazwa wydania z obszernym opisem modułów AI, diaryzacji oraz maskowania danych w logach",
         "release_notes": "Najnowsze notatki",
         "aggregated_notes": "### Notatki ze wszystkich wersji",
         "newer_releases": [
@@ -182,10 +194,14 @@ def test_settings_dialog_updates_tab():
         ]
     }
     dlg._on_update_check_result(mock_update_data)
+    app.processEvents()
     assert not dlg.grp_new_version.isHidden()
     assert dlg.grp_history.isHidden()  # Nie zalewa użytkownika historią
     assert not dlg.btn_toggle_history.isHidden()
     assert dlg.combo_changelog_version.count() == 3  # Zsumowane + v0.5.5 + v0.5.4
+    # Sprawdzenie, czy długi tytuł nie rozpycha zawartości poza viewport
+    assert scroll.widget().width() <= scroll.viewport().width()
+    assert scroll.horizontalScrollBar().isVisible() is False
 
     # Test przełączania widoczności historii przyciskiem
     dlg._on_toggle_history_clicked()

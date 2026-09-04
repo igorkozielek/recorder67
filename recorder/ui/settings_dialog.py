@@ -544,17 +544,17 @@ class SettingsDialog(QDialog):
         """Karta 4: Aktualizacje programu z GitHub Releases."""
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
 
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(12)
 
         # Informacja o bieżącej wersji
         grp_cur = QGroupBox("📌 Informacje o Aplikacji")
-        grp_cur.setStyleSheet("QGroupBox { font-weight: bold; color: #4cc9f0; }")
+        grp_cur.setStyleSheet("QGroupBox { font-weight: bold; color: #4cc9f0; border: 1px solid #2b2d42; border-radius: 6px; margin-top: 6px; padding-top: 12px; }")
         cur_layout = QFormLayout(grp_cur)
         cur_layout.setContentsMargins(12, 12, 12, 12)
         cur_layout.setSpacing(10)
@@ -604,6 +604,7 @@ class SettingsDialog(QDialog):
         check_box.addWidget(self.btn_check_updates)
 
         self.lbl_update_status = QLabel("Kliknij przycisk, aby sprawdzić najnowsze wydanie na GitHubie.")
+        self.lbl_update_status.setWordWrap(True)
         self.lbl_update_status.setStyleSheet("color: #8d99ae; font-size: 11px;")
         check_box.addWidget(self.lbl_update_status, stretch=1)
         layout.addLayout(check_box)
@@ -632,7 +633,7 @@ class SettingsDialog(QDialog):
 
         # Ramka z informacjami o nowej wersji (domyślnie ukryta)
         self.grp_new_version = QGroupBox("🎉 Dostępna nowa wersja!")
-        self.grp_new_version.setStyleSheet("QGroupBox { font-weight: bold; color: #10b981; }")
+        self.grp_new_version.setStyleSheet("QGroupBox { font-weight: bold; color: #10b981; border: 1px solid #2b2d42; border-radius: 6px; margin-top: 6px; padding-top: 12px; }")
         new_v_layout = QVBoxLayout(self.grp_new_version)
         new_v_layout.setContentsMargins(12, 12, 12, 12)
         new_v_layout.setSpacing(8)
@@ -640,6 +641,7 @@ class SettingsDialog(QDialog):
         self.lbl_new_version_title = QLabel("")
         self.lbl_new_version_title.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         self.lbl_new_version_title.setStyleSheet("color: #edf2f4;")
+        self.lbl_new_version_title.setWordWrap(True)
         new_v_layout.addWidget(self.lbl_new_version_title)
 
         # Wybór wersji changelogu (szczególnie przydatne, gdy użytkownik jest o kilka wersji do tyłu)
@@ -750,7 +752,7 @@ class SettingsDialog(QDialog):
 
         # Sekcja historii wydań (dostępna także, gdy użytkownik jest na najnowszej wersji)
         self.grp_history = QGroupBox("📜 Historia Wydań i Zmian (Changelog)")
-        self.grp_history.setStyleSheet("QGroupBox { font-weight: bold; color: #4cc9f0; }")
+        self.grp_history.setStyleSheet("QGroupBox { font-weight: bold; color: #4cc9f0; border: 1px solid #2b2d42; border-radius: 6px; margin-top: 6px; padding-top: 12px; }")
         history_layout = QVBoxLayout(self.grp_history)
         history_layout.setContentsMargins(12, 12, 12, 12)
         history_layout.setSpacing(8)
@@ -820,15 +822,17 @@ class SettingsDialog(QDialog):
 
         # Sekcja diagnostyki i logów
         self.grp_diagnostics = QGroupBox("🛠️ Diagnostyka i Dzienniki Zdarzeń (Logi)")
-        self.grp_diagnostics.setStyleSheet("QGroupBox { font-weight: bold; color: #8d99ae; }")
-        diag_layout = QHBoxLayout(self.grp_diagnostics)
-        diag_layout.setContentsMargins(12, 10, 12, 10)
+        self.grp_diagnostics.setStyleSheet("QGroupBox { font-weight: bold; color: #8d99ae; border: 1px solid #2b2d42; border-radius: 6px; margin-top: 6px; padding-top: 12px; }")
+        diag_layout = QVBoxLayout(self.grp_diagnostics)
+        diag_layout.setContentsMargins(12, 12, 12, 12)
         diag_layout.setSpacing(10)
 
         lbl_diag_desc = QLabel("Zdarzenia i ewentualne błędy są automatycznie zapisywane do pliku logs/app.log (z bezpiecznym maskowaniem kluczy API).")
+        lbl_diag_desc.setWordWrap(True)
         lbl_diag_desc.setStyleSheet("color: #8d99ae; font-size: 11px;")
-        diag_layout.addWidget(lbl_diag_desc, stretch=1)
+        diag_layout.addWidget(lbl_diag_desc)
 
+        btn_diag_row = QHBoxLayout()
         self.btn_open_logs = QPushButton("📁 Otwórz folder z logami")
         self.btn_open_logs.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_open_logs.setStyleSheet("""
@@ -847,7 +851,9 @@ class SettingsDialog(QDialog):
             }
         """)
         self.btn_open_logs.clicked.connect(self._on_open_logs_clicked)
-        diag_layout.addWidget(self.btn_open_logs)
+        btn_diag_row.addWidget(self.btn_open_logs)
+        btn_diag_row.addStretch()
+        diag_layout.addLayout(btn_diag_row)
         layout.addWidget(self.grp_diagnostics)
 
         layout.addStretch()
