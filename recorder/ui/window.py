@@ -1034,7 +1034,11 @@ class SmartDictaphoneWindow(QMainWindow):
             st = load_user_settings()
             inc_pre = bool(st.get("check_prereleases", True))
             self._startup_update_worker = CheckUpdateWorker(include_prereleases=inc_pre)
+            self._active_threads.append(self._startup_update_worker)
             self._startup_update_worker.update_checked_signal.connect(self._on_startup_update_result)
+            self._startup_update_worker.finished.connect(
+                lambda: self._active_threads.remove(self._startup_update_worker) if hasattr(self, "_active_threads") and hasattr(self, "_startup_update_worker") and self._startup_update_worker in self._active_threads else None
+            )
             self._startup_update_worker.start()
         except Exception as e:
             print(f"[UPDATER] Ciche sprawdzenie aktualizacji pominięte: {e}")
@@ -3135,6 +3139,15 @@ class SmartDictaphoneWindow(QMainWindow):
                 if self.file_processing_worker.isRunning():
                     self.file_processing_worker.quit()
                     self.file_processing_worker.wait(1500)
+
+            if getattr(self, "_startup_update_worker", None) is not None:
+                try:
+                    self._startup_update_worker.blockSignals(True)
+                    if self._startup_update_worker.isRunning():
+                        self._startup_update_worker.quit()
+                        self._startup_update_worker.wait(1000)
+                except Exception:
+                    pass
 
             if getattr(self, "_active_silence_toast", None) is not None:
                 try:

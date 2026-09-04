@@ -172,14 +172,16 @@ def build_aggregated_changelog(newer_releases: list[Dict[str, Any]]) -> str:
 def check_github_updates(
     repo: str = GITHUB_REPO,
     current_version: str = APP_VERSION,
-    include_prereleases: bool = True
+    include_prereleases: bool = True,
+    all_releases: Optional[list[Dict[str, Any]]] = None
 ) -> Optional[Dict[str, Any]]:
     """
     Odpytuje API GitHuba o najnowsze wydania repozytorium.
     Zwraca słownik z informacjami o aktualizacji lub None jeśli brak nowszej wersji.
     Wzbogaca wynik o pełną listę brakujących wersji ('newer_releases') oraz zsumowany changelog ('aggregated_notes').
     """
-    all_releases = fetch_all_releases(repo=repo, include_prereleases=include_prereleases)
+    if all_releases is None:
+        all_releases = fetch_all_releases(repo=repo, include_prereleases=include_prereleases)
     if not all_releases:
         return None
 
@@ -220,10 +222,13 @@ class CheckUpdateWorker(QThread):
 
     def run(self):
         try:
-            res = check_github_updates(include_prereleases=self.include_prereleases)
+            all_releases = fetch_all_releases(include_prereleases=self.include_prereleases)
+            res = check_github_updates(
+                include_prereleases=self.include_prereleases,
+                all_releases=all_releases
+            )
             if res is None:
-                # Brak nowszej wersji, ale pobieramy historię wydań dla okna ustawień
-                all_releases = fetch_all_releases(include_prereleases=self.include_prereleases)
+                # Brak nowszej wersji, ale przekazujemy pobraną historię wydań dla okna ustawień
                 res = {
                     "has_update": False,
                     "current_version": APP_VERSION,

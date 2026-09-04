@@ -145,6 +145,7 @@ def test_settings_dialog_updates_tab():
     assert hasattr(dlg, "btn_check_updates")
     assert hasattr(dlg, "chk_check_prereleases")
     assert hasattr(dlg, "chk_auto_check_startup")
+    assert hasattr(dlg, "chk_adaptive_beam")
     assert hasattr(dlg, "grp_new_version")
     assert hasattr(dlg, "combo_changelog_version")
     assert hasattr(dlg, "txt_changelog")
