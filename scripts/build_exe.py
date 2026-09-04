@@ -177,6 +177,7 @@ def main():
         "--onedir",                       # Folder z plikami DLL (najstabilniejszy dla modeli PyTorch/Whisper)
         "--clean",
         "--noconfirm",
+        "--noconsole",                    # Wersja produkcyjna uruchamia się bez okna konsoli
         
         # Wykluczamy PyQt6, ponieważ aplikacja używa PySide6 (zapobiega konfliktom dwóch bibliotek Qt)
         "--exclude-module=PyQt6",

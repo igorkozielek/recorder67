@@ -7,11 +7,14 @@ os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
 # Ścieżki główne
 BASE_DIR = Path(__file__).resolve().parent.parent
-RECORDINGS_DIR = os.path.join(os.getcwd(), "recordings")
-TRANSCRIPTIONS_DIR = os.path.join(os.getcwd(), "transcriptions")
+APP_DIR = os.path.dirname(os.path.abspath(sys.executable)) if getattr(sys, "frozen", False) else str(BASE_DIR)
+RECORDINGS_DIR = os.path.join(APP_DIR, "recordings")
+TRANSCRIPTIONS_DIR = os.path.join(APP_DIR, "transcriptions")
+LOGS_DIR = os.path.join(APP_DIR, "logs")
 
 os.makedirs(RECORDINGS_DIR, exist_ok=True)
 os.makedirs(TRANSCRIPTIONS_DIR, exist_ok=True)
+os.makedirs(LOGS_DIR, exist_ok=True)
 
 # Wersja aplikacji i repozytorium GitHub
 APP_VERSION = "0.5.5"

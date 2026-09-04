@@ -12,6 +12,13 @@ from recorder.ui.window import SmartDictaphoneWindow
 
 
 def main():
+    try:
+        from recorder.core.logger import setup_app_logging, log_system_diagnostics
+        setup_app_logging()
+        log_system_diagnostics()
+    except Exception:
+        pass
+
     setup_windows_app_identity()
 
     app = QApplication(sys.argv)
