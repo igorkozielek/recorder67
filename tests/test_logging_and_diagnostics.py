@@ -124,7 +124,9 @@ def test_setup_app_logging_and_file_creation():
 
         assert "Komunikat testowy INFO" in content
         assert "Komunikat ostrzegawczy WARNING" in content
-        print("  -> Zapis do pliku logu działa prawidłowo!")
+        assert content.count("Komunikat testowy INFO") == 1, "Wpisy logu nie powinny się dublować!"
+        assert content.count("Komunikat ostrzegawczy WARNING") == 1, "Wpisy logu nie powinny się dublować!"
+        print("  -> Zapis do pliku logu działa prawidłowo (brak duplikatów)!")
     finally:
         shutdown_app_logging()
         try:
@@ -152,7 +154,8 @@ def test_stdout_redirection_to_log():
             content = f.read()
 
         assert unique_marker in content
-        print("  -> Przekierowanie print() do pliku logu działa prawidłowo!")
+        assert content.count(unique_marker) == 1, "Przechwycony print nie powinien się dublować!"
+        print("  -> Przekierowanie print() do pliku logu działa prawidłowo (dokładnie 1 wpis)!")
     finally:
         shutdown_app_logging()
         try:
@@ -254,6 +257,47 @@ def test_std_stream_logger_features_and_restoration():
     print("  -> Właściwości strumieni i bezpieczne przywracanie działają prawidłowo!")
 
 
+def test_no_duplicate_log_entries_across_child_loggers():
+    print("[TEST] Weryfikacja braku duplikacji wpisów z pod-loggerów (recorder.*)...")
+    tmpdir = tempfile.mkdtemp()
+    try:
+        setup_app_logging(log_dir=tmpdir, log_filename="test_dedup.log", force=True)
+        log_file = os.path.join(tmpdir, "test_dedup.log")
+
+        # 1. Główny logger "recorder"
+        rec_logger = logging.getLogger("recorder")
+        rec_logger.info("Unikalny_komunikat_glowny_123")
+
+        # 2. Pod-logger potomny "recorder.core.cloud_sync"
+        child_logger = logging.getLogger("recorder.core.cloud_sync")
+        child_logger.info("Unikalny_komunikat_potomny_456")
+
+        # 3. Zewnętrzny logger biblioteczny (propaguje do root)
+        ext_logger = logging.getLogger("urllib3.connectionpool")
+        ext_logger.warning("Unikalny_komunikat_zewnetrzny_789")
+
+        for h in list(rec_logger.handlers) + list(logging.getLogger().handlers):
+            try:
+                h.flush()
+            except Exception:
+                pass
+
+        with open(log_file, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        assert content.count("Unikalny_komunikat_glowny_123") == 1, "Główny logger zduplikował wpis!"
+        assert content.count("Unikalny_komunikat_potomny_456") == 1, "Pod-logger zduplikował wpis!"
+        assert content.count("Unikalny_komunikat_zewnetrzny_789") == 1, "Zewnętrzny logger zduplikował wpis!"
+        print("  -> Brak jakichkolwiek duplikatów dla loggerów głównych, potomnych i zewnętrznych!")
+    finally:
+        shutdown_app_logging()
+        try:
+            import shutil
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        except Exception:
+            pass
+
+
 if __name__ == "__main__":
     test_settings_sanitization_masks_all_secrets()
     test_sanitize_value_corner_cases()
@@ -262,4 +306,5 @@ if __name__ == "__main__":
     test_system_diagnostics_logging()
     test_build_spec_and_script_configured_for_noconsole()
     test_std_stream_logger_features_and_restoration()
+    test_no_duplicate_log_entries_across_child_loggers()
     print("\n[OK] Wszystkie testy modulu logowania i diagnostyki zakonczone sukcesem!")

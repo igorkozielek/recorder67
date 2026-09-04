@@ -3107,8 +3107,9 @@ class SmartDictaphoneWindow(QMainWindow):
                     self.worker.wait(3000)
                     try:
                         self.worker.save_wav(save_path)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        import logging
+                        logging.getLogger("recorder").error(f"Błąd zapisu pliku audio WAV podczas zamykania aplikacji ('{save_path}'): {e}")
                 elif self.worker.isRunning():
                     self.worker.wait(3000)
 

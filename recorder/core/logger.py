@@ -202,6 +202,7 @@ def shutdown_app_logging():
             pass
 
     logger = logging.getLogger("recorder")
+    logger.propagate = True
     for h in list(logger.handlers):
         if isinstance(h, RotatingFileHandler):
             logger.removeHandler(h)
@@ -250,6 +251,7 @@ def setup_app_logging(
 
     logger = logging.getLogger("recorder")
     logger.setLevel(logging.DEBUG)
+    logger.propagate = False
 
     if not _LOGGING_INITIALIZED or force:
         formatter = logging.Formatter(
@@ -267,13 +269,15 @@ def setup_app_logging(
         )
         file_handler.setLevel(level)
         file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
+        if not any(isinstance(h, RotatingFileHandler) for h in logger.handlers):
+            logger.addHandler(file_handler)
         _FILE_HANDLERS.append(file_handler)
 
         # Skonfiguruj także logger główny (root), by zbierać logi z zewnętrznych bibliotek
         root_logger = logging.getLogger()
         root_logger.setLevel(logging.WARNING)
-        root_logger.addHandler(file_handler)
+        if not any(isinstance(h, RotatingFileHandler) for h in root_logger.handlers):
+            root_logger.addHandler(file_handler)
 
         # 2. Przekierowanie sys.stdout i sys.stderr do pliku dziennika
         if not isinstance(sys.stdout, StdStreamLogger):

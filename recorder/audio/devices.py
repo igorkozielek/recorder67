@@ -97,8 +97,9 @@ def get_working_loopback_devices() -> List[Dict[str, Any]]:
             def_loop = p.get_default_wasapi_loopback()
             if def_loop:
                 default_loopback_idx = def_loop.get('index')
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger("recorder").debug(f"Brak domyślnego urządzenia loopback WASAPI: {e}")
 
         for loopback in p.get_loopback_device_info_generator():
             idx = loopback.get('index')

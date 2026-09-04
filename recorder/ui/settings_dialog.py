@@ -28,6 +28,40 @@ from recorder.core.updater import (
 from recorder.core.logger import open_logs_folder
 
 
+class MarkdownChangelogBrowser(QTextBrowser):
+    """
+    Rozszerzona kontrolka QTextBrowser dla opisów zmian (Changelog):
+    1. Automatycznie normalizuje i czyści Markdown (m.in. naprawa urwanych linków compare GitHub).
+    2. Zapobiega wyciekowi wewnętrznego bloku styli CSS Qt ('p, li { white-space: pre-wrap; } ...')
+       do schowka systemowego podczas kopiowania tekstu (zarówno przez skrót Ctrl+C, menu kontekstowe, jak i metodę copy()).
+    """
+    def createMimeDataFromSelection(self):
+        mime = super().createMimeDataFromSelection()
+        if mime is not None and mime.hasHtml():
+            import re
+            from PySide6.QtCore import QMimeData
+            raw_html = mime.html()
+            clean_html = re.sub(r'<style[^>]*>.*?</style>', '', raw_html, flags=re.DOTALL)
+            new_mime = QMimeData()
+            if mime.hasText():
+                new_mime.setText(mime.text())
+            new_mime.setHtml(clean_html)
+            return new_mime
+        return mime
+
+    def copy(self):
+        mime = self.createMimeDataFromSelection()
+        if mime is not None:
+            from PySide6.QtGui import QGuiApplication
+            QGuiApplication.clipboard().setMimeData(mime)
+        else:
+            super().copy()
+
+    def setMarkdown(self, markdown: str):
+        from recorder.core.updater import sanitize_changelog_markdown
+        super().setMarkdown(sanitize_changelog_markdown(markdown))
+
+
 class SettingsDialog(QDialog):
     """
     Nowoczesne okno ustawień aplikacji:
@@ -680,7 +714,7 @@ class SettingsDialog(QDialog):
         self.version_select_row.addWidget(self.combo_changelog_version, stretch=1)
         new_v_layout.addLayout(self.version_select_row)
 
-        self.txt_changelog = QTextBrowser()
+        self.txt_changelog = MarkdownChangelogBrowser()
         self.txt_changelog.setReadOnly(True)
         self.txt_changelog.setOpenExternalLinks(True)
         self.txt_changelog.setMinimumHeight(240)
@@ -809,7 +843,7 @@ class SettingsDialog(QDialog):
         hist_select_row.addWidget(self.btn_open_history_url)
         history_layout.addLayout(hist_select_row)
 
-        self.txt_history_changelog = QTextBrowser()
+        self.txt_history_changelog = MarkdownChangelogBrowser()
         self.txt_history_changelog.setReadOnly(True)
         self.txt_history_changelog.setOpenExternalLinks(True)
         self.txt_history_changelog.setMinimumHeight(200)

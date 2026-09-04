@@ -242,8 +242,9 @@ def load_user_settings(force_reload: bool = False) -> dict:
                         _CACHED_USER_SETTINGS = dict(merged)
                         _CACHED_SETTINGS_TIME = now
                         return merged
-            except Exception:
-                pass
+            except Exception as e:
+                import logging
+                logging.getLogger("recorder").warning(f"Błąd odczytu pliku ustawień '{p}': {e}")
 
     _CACHED_USER_SETTINGS = dict(defaults)
     _CACHED_SETTINGS_TIME = now

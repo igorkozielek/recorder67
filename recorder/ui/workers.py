@@ -1008,8 +1008,9 @@ class SmartAudioWorker(QThread):
             try:
                 import shutil
                 shutil.copy2(norm_source, norm_target)
-            except Exception:
-                pass
+            except Exception as e:
+                import logging
+                logging.getLogger("recorder").warning(f"Błąd kopiowania nagranego pliku audio z '{norm_source}' do '{norm_target}': {e}")
 
         if os.path.exists(file_path) and os.path.getsize(file_path) > 44:
             self.frames = []

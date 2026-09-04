@@ -122,10 +122,13 @@ def fetch_all_releases(
                         zip_asset = a
                         break
 
+                raw_notes = release.get("body") or "Brak opisu zmian."
+                clean_notes = sanitize_changelog_markdown(raw_notes)
+
                 releases.append({
                     "tag_name": tag_name,
                     "release_title": release.get("name") or tag_name,
-                    "release_notes": release.get("body") or "Brak opisu zmian.",
+                    "release_notes": clean_notes,
                     "published_at": release.get("published_at", ""),
                     "is_prerelease": is_prerelease,
                     "html_url": release.get("html_url", ""),
@@ -139,6 +142,48 @@ def fetch_all_releases(
     return releases
 
 
+def sanitize_changelog_markdown(text: Optional[str]) -> str:
+    """
+    Czyści i normalizuje tekst Markdown dla changelogu wydań:
+    1. Usuwa ewentualne wycieki wewnętrznych styli CSS Qt (np. bloki <style> lub reguły 'p, li { white-space: pre-wrap; } ...').
+    2. Naprawia uszkodzone/urwane linki porównawcze GitHub compare (np. [url](url)...v0.5.5).
+    3. Opakowuje surowe linki GitHub compare w nawiasy ostrokątne <url>,
+       dzięki czemu parser CommonMark / QTextBrowser w Qt nie urywa adresu na kropkach '...'
+       traktowanych jako interpunkcja kończąca słowo, zapobiegając jednocześnie wchłanianiu
+       interpunkcji kończącej zdanie (kropka, przecinek itp.) do wnętrza linku.
+    """
+    if not text:
+        return ""
+
+    s = str(text)
+
+    # 1. Usuń ewentualne bloki tagów <style> oraz wstrzyknięte fragmenty styli CSS Qt
+    s = re.sub(r'<style[^>]*>.*?</style>', '', s, flags=re.DOTALL)
+    s = re.sub(
+        r'p,\s*li\s*\{\s*white-space:[^\}]+\}\s*hr\s*\{\s*[^}]+\}\s*li\.unchecked::marker[^\}]+\}\s*li\.checked::marker[^\}]+\}',
+        '',
+        s,
+        flags=re.DOTALL
+    )
+
+    # 2. Napraw uszkodzone linki markdown postaci [url/compare/tag1](url/compare/tag1)...tag2
+    s = re.sub(
+        r'\[([^\]]+)\]\((https?://github\.com/[^/\s]+/[^/\s]+/compare/[^\)\s]+)\)\.\.\.([a-zA-Z0-9\._-]*[a-zA-Z0-9_-])',
+        r'<\2...\3>',
+        s
+    )
+
+    # 3. Opakuj surowe linki GitHub compare w <...>, jeśli nie są już w <...> lub (...)
+    # Upewnij się, że znak kończący tag to znak alfanumeryczny/łącznik, a nie kropka/przecinek kończący zdanie
+    s = re.sub(
+        r'(?<![<\(\[\"\'\=])(https?://github\.com/[^/\s]+/[^/\s]+/compare/[a-zA-Z0-9\._-]+\.\.\.[a-zA-Z0-9\._-]*[a-zA-Z0-9_-])(?![>\)\]\"\'\=])',
+        r'<\1>',
+        s
+    )
+
+    return s.strip()
+
+
 def build_aggregated_changelog(newer_releases: list[Dict[str, Any]]) -> str:
     """
     Tworzy przejrzysty, zsumowany opis zmian w formacie Markdown dla wszystkich wydań,
@@ -148,7 +193,7 @@ def build_aggregated_changelog(newer_releases: list[Dict[str, Any]]) -> str:
         return ""
 
     if len(newer_releases) == 1:
-        return str(newer_releases[0].get("release_notes") or "Brak opisu zmian.")
+        return sanitize_changelog_markdown(str(newer_releases[0].get("release_notes") or "Brak opisu zmian."))
 
     blocks = []
     blocks.append(
@@ -160,7 +205,7 @@ def build_aggregated_changelog(newer_releases: list[Dict[str, Any]]) -> str:
         tag = rel.get("tag_name", "")
         title = rel.get("release_title", tag)
         pub_date = rel.get("published_at", "")[:10]
-        notes = str(rel.get("release_notes") or "Brak opisu zmian.").strip()
+        notes = sanitize_changelog_markdown(str(rel.get("release_notes") or "Brak opisu zmian.")).strip()
         date_str = f" ({pub_date})" if pub_date else ""
 
         header = f"## 🚀 {title}{date_str}"

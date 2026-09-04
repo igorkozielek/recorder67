@@ -440,8 +440,9 @@ class RollingTranscriptionWorker(QThread):
             with open(self.txt_save_path, "w", encoding="utf-8") as f:
                 f.write(content)
                 f.flush()
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger("recorder").warning(f"Błąd zapisu transkrypcji do pliku TXT '{self.txt_save_path}': {e}")
 
     def _save_to_session_file(self, turns: list, force: bool = False):
         """Automatycznie tworzy i zapisuje plik sesji JSON z kompletem słów z Whispera."""
@@ -450,6 +451,7 @@ class RollingTranscriptionWorker(QThread):
         now_ts = time.time()
         if not force and (now_ts - self._last_disk_save_time < 30.0):
             return
+        json_path = "nieznana_ścieżka"
         try:
             from recorder.core.session import TranscriptionSession, get_session_path_for_txt
             json_path = get_session_path_for_txt(self.txt_save_path)
@@ -467,5 +469,6 @@ class RollingTranscriptionWorker(QThread):
             session.words = list(all_words or [])
             session.save_to_json(json_path)
             self._last_disk_save_time = now_ts
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger("recorder").warning(f"Błąd zapisu pliku sesji JSON '{json_path}': {e}")
