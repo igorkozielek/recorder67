@@ -74,7 +74,8 @@ class SileroVADDetector:
                 try:
                     import torch
                     tensor_data = torch.from_numpy(chunk_512).float()
-                    with _silero_lock:
+                    ctx = torch.inference_mode() if hasattr(torch, "inference_mode") else torch.no_grad()
+                    with ctx, _silero_lock:
                         self._last_speech_prob = float(_silero_model(tensor_data, 16000).item())
                 except Exception:
                     pass

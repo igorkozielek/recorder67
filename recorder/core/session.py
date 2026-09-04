@@ -22,19 +22,38 @@ def extract_datetime_from_filename(filepath: str) -> Optional[datetime]:
     return None
 
 
-def format_turn_timestamp(st: float, en: float, session_start_time: Optional[datetime] = None) -> str:
+def format_turn_timestamp(st: float, en: float, session_start_time: Optional[datetime] = None, ts_format: Optional[str] = None,
+                          wall_start: Optional[Any] = None, wall_end: Optional[Any] = None) -> str:
     """Formatuje znacznik czasu dla wypowiedzi zgodnie z ustawieniami użytkownika (offset, godzina, hybryda)."""
-    try:
-        from recorder.config import load_user_settings
-        ts_format = load_user_settings().get("timestamp_format", "offset_only")
-    except Exception:
-        ts_format = "offset_only"
+    if ts_format is None:
+        try:
+            from recorder.config import get_timestamp_format
+            ts_format = get_timestamp_format()
+        except Exception:
+            ts_format = "offset_only"
 
     s_min, s_sec = int(st // 60), int(st % 60)
     e_min, e_sec = int(en // 60), int(en % 60)
     offset_label = f"{s_min:02d}:{s_sec:02d} - {e_min:02d}:{e_sec:02d}"
 
-    if session_start_time is not None:
+    if ts_format == "offset_only":
+        return offset_label
+
+    w_start_dt = None
+    w_end_dt = None
+    if wall_start is not None and wall_end is not None:
+        try:
+            w_start_dt = datetime.fromisoformat(wall_start) if isinstance(wall_start, str) else wall_start
+            w_end_dt = datetime.fromisoformat(wall_end) if isinstance(wall_end, str) else wall_end
+        except Exception:
+            w_start_dt = None
+            w_end_dt = None
+
+    if w_start_dt is not None and w_end_dt is not None:
+        clock_start = w_start_dt.strftime("%H:%M:%S")
+        clock_end = w_end_dt.strftime("%H:%M:%S")
+        clock_label = f"{clock_start} - {clock_end}"
+    elif session_start_time is not None:
         from datetime import timedelta
         real_start = session_start_time + timedelta(seconds=st)
         real_end = session_start_time + timedelta(seconds=en)
@@ -52,6 +71,24 @@ def format_turn_timestamp(st: float, en: float, session_start_time: Optional[dat
         return f"{offset_label} | {clock_label}"
     else:
         return offset_label
+
+
+def turn_sort_key(turn: Dict[str, Any], session_start_time: Optional[datetime] = None) -> Tuple[str, float]:
+    """
+    Zwraca stabilny klucz sortowania (wall_timestamp_str, start_offset)
+    gwarantujący chronologiczną kolejność wypowiedzi na osi czasu.
+    W przypadku braku 'wall_start' nie zwraca pustego stringa (co wrzucało turn na początek listy),
+    lecz wyznacza czas na podstawie offsetu startu.
+    """
+    ws = turn.get("wall_start")
+    st = float(turn.get("start", 0.0))
+    if not ws:
+        from datetime import timedelta
+        if session_start_time is not None:
+            ws = (session_start_time + timedelta(seconds=st)).isoformat()
+        else:
+            ws = f"OFFSET_{st:012.3f}"
+    return (ws, st)
 
 
 class TranscriptionSession:
@@ -103,6 +140,16 @@ class TranscriptionSession:
         return len(spks)
 
     def to_dict(self) -> Dict[str, Any]:
+        from datetime import datetime, date
+        clean_turns = []
+        for t in self.turns:
+            ct = dict(t)
+            for k in ("wall_start", "wall_end"):
+                v = ct.get(k)
+                if isinstance(v, (datetime, date)):
+                    ct[k] = v.isoformat()
+            clean_turns.append(ct)
+
         return {
             "version": self.version,
             "meeting_id": self.meeting_id,
@@ -119,7 +166,7 @@ class TranscriptionSession:
             },
             "speaker_mapping": self.speaker_mapping,
             "words": self.words,
-            "turns": self.turns
+            "turns": clean_turns
         }
 
     @classmethod
@@ -150,18 +197,26 @@ class TranscriptionSession:
             os.makedirs(parent_dir, exist_ok=True)
 
             data = self.to_dict()
-            json_text = json.dumps(data, ensure_ascii=False, indent=2)
+            json_text = json.dumps(data, ensure_ascii=False, indent=2, default=str)
 
             temp_fd, temp_path = tempfile.mkstemp(dir=parent_dir, prefix="session_", suffix=".tmp")
-            with open(temp_fd, "w", encoding="utf-8") as f:
-                f.write(json_text)
+            try:
+                with open(temp_fd, "w", encoding="utf-8") as f:
+                    f.write(json_text)
 
-            if os.path.exists(json_path):
-                os.replace(temp_path, json_path)
-            else:
-                os.rename(temp_path, json_path)
+                if os.path.exists(json_path):
+                    os.replace(temp_path, json_path)
+                else:
+                    os.rename(temp_path, json_path)
 
-            return True
+                return True
+            except Exception:
+                if os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except Exception:
+                        pass
+                raise
         except Exception as e:
             print(f"⚠️ [SESJA] Błąd zapisu pliku sesji JSON '{json_path}': {e}")
             return False
@@ -200,7 +255,7 @@ class TranscriptionSession:
         if base_dt is None:
             base_dt = extract_datetime_from_filename(self.prepared_wav) or extract_datetime_from_filename(self.source_audio)
 
-        sorted_turns = sorted(self.turns, key=lambda t: float(t.get("start", 0.0)))
+        sorted_turns = sorted(self.turns, key=lambda t: turn_sort_key(t, base_dt))
         lines = []
         for t in sorted_turns:
             spk = t.get("speaker", "Mówca")
@@ -209,7 +264,7 @@ class TranscriptionSession:
             en = float(t.get("end", 0.0))
             txt = t.get("text", "").strip()
 
-            time_label = format_turn_timestamp(st, en, base_dt)
+            time_label = format_turn_timestamp(st, en, base_dt, wall_start=t.get("wall_start"), wall_end=t.get("wall_end"))
             lines.append(f"[{time_label}] {display_spk}: {txt}\n")
 
         return "\n".join(lines).strip()
@@ -240,7 +295,7 @@ class TranscriptionSession:
             except Exception:
                 reverse_order = True
 
-        sorted_turns = sorted(self.turns, key=lambda t: float(t.get("start", 0.0)))
+        sorted_turns = sorted(self.turns, key=lambda t: turn_sort_key(t, base_dt))
         display_turns = list(reversed(sorted_turns)) if reverse_order else sorted_turns
 
         html_blocks = []
@@ -251,7 +306,7 @@ class TranscriptionSession:
             en = float(t.get("end", 0.0))
             txt = t.get("text", "").strip()
 
-            time_label = format_turn_timestamp(st, en, base_dt)
+            time_label = format_turn_timestamp(st, en, base_dt, wall_start=t.get("wall_start"), wall_end=t.get("wall_end"))
             html_blocks.append(f"<b>[{time_label}] {display_spk}:</b> {txt}<br><br>")
 
         return "".join(html_blocks).strip()

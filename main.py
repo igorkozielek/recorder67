@@ -12,6 +12,20 @@ from recorder.ui.window import SmartDictaphoneWindow
 
 
 def main():
+    try:
+        from recorder.core.logger import setup_app_logging, log_system_diagnostics
+        setup_app_logging()
+        log_system_diagnostics()
+    except Exception:
+        pass
+
+    try:
+        from recorder.core.diarizer import apply_torchaudio_patches
+        apply_torchaudio_patches()
+    except Exception as e:
+        import logging
+        logging.getLogger("recorder").warning(f"Nie udało się zaaplikować łatek torchaudio: {e}")
+
     setup_windows_app_identity()
 
     app = QApplication(sys.argv)

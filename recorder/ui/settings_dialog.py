@@ -4,9 +4,9 @@ import tempfile
 from typing import Optional
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QTabWidget, QWidget, QTextEdit, QComboBox,
+    QPushButton, QTabWidget, QWidget, QTextEdit, QTextBrowser, QComboBox,
     QSlider, QSpinBox, QCheckBox, QGroupBox, QFormLayout,
-    QMessageBox, QFrame, QSizePolicy, QProgressBar
+    QMessageBox, QFrame, QSizePolicy, QProgressBar, QScrollArea
 )
 from PySide6.QtCore import Qt, Signal as pyqtSignal, QUrl
 from PySide6.QtGui import QFont, QIcon, QDesktopServices
@@ -25,6 +25,41 @@ from recorder.core.updater import (
     DownloadUpdateWorker,
     apply_in_place_update
 )
+from recorder.core.logger import open_logs_folder
+
+
+class MarkdownChangelogBrowser(QTextBrowser):
+    """
+    Rozszerzona kontrolka QTextBrowser dla opisów zmian (Changelog):
+    1. Automatycznie normalizuje i czyści Markdown (m.in. naprawa urwanych linków compare GitHub).
+    2. Zapobiega wyciekowi wewnętrznego bloku styli CSS Qt ('p, li { white-space: pre-wrap; } ...')
+       do schowka systemowego podczas kopiowania tekstu (zarówno przez skrót Ctrl+C, menu kontekstowe, jak i metodę copy()).
+    """
+    def createMimeDataFromSelection(self):
+        mime = super().createMimeDataFromSelection()
+        if mime is not None and mime.hasHtml():
+            import re
+            from PySide6.QtCore import QMimeData
+            raw_html = mime.html()
+            clean_html = re.sub(r'<style[^>]*>.*?</style>', '', raw_html, flags=re.DOTALL)
+            new_mime = QMimeData()
+            if mime.hasText():
+                new_mime.setText(mime.text())
+            new_mime.setHtml(clean_html)
+            return new_mime
+        return mime
+
+    def copy(self):
+        mime = self.createMimeDataFromSelection()
+        if mime is not None:
+            from PySide6.QtGui import QGuiApplication
+            QGuiApplication.clipboard().setMimeData(mime)
+        else:
+            super().copy()
+
+    def setMarkdown(self, markdown: str):
+        from recorder.core.updater import sanitize_changelog_markdown
+        super().setMarkdown(sanitize_changelog_markdown(markdown))
 
 
 class SettingsDialog(QDialog):
@@ -266,6 +301,16 @@ class SettingsDialog(QDialog):
         lbl_beam_desc.setWordWrap(True)
         lbl_beam_desc.setStyleSheet("color: #8d99ae; font-size: 11px;")
         whisper_layout.addWidget(lbl_beam_desc)
+
+        self.chk_adaptive_beam = QCheckBox("🚀 Automatyczny bieg turbo (Adaptacyjny Beam Size przy zatorach w kolejce)")
+        self.chk_adaptive_beam.setStyleSheet("color: #a78bfa; font-size: 11px; font-weight: bold; margin-top: 6px;")
+        self.chk_adaptive_beam.setToolTip(
+            "Opcja zalecana podczas wielogodzinnych maratonów (4h–8h) na słabszych procesorach.\n"
+            "Gdy w kolejce transkrypcji powstanie opóźnienie (więcej niż 1 blok), tymczasowo redukuje parametr beam_size=1,\n"
+            "aby błyskawicznie nadgonić nagranie i odciążyć CPU kosztem nieco niższej precyzji w trudnych warunkach (cichy głos/szum).\n"
+            "Domyślnie wyłączona w celu zapewnienia stałej, maksymalnej dokładności modelu Whisper."
+        )
+        whisper_layout.addWidget(self.chk_adaptive_beam)
         layout.addWidget(box_whisper)
 
         # Sekcja: Token HuggingFace
@@ -541,14 +586,19 @@ class SettingsDialog(QDialog):
 
     def _create_tab_updates(self):
         """Karta 4: Aktualizacje programu z GitHub Releases."""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(12)
 
         # Informacja o bieżącej wersji
         grp_cur = QGroupBox("📌 Informacje o Aplikacji")
-        grp_cur.setStyleSheet("QGroupBox { font-weight: bold; color: #4cc9f0; }")
+        grp_cur.setStyleSheet("QGroupBox { font-weight: bold; color: #4cc9f0; border: 1px solid #2b2d42; border-radius: 6px; margin-top: 6px; padding-top: 12px; }")
         cur_layout = QFormLayout(grp_cur)
         cur_layout.setContentsMargins(12, 12, 12, 12)
         cur_layout.setSpacing(10)
@@ -598,6 +648,7 @@ class SettingsDialog(QDialog):
         check_box.addWidget(self.btn_check_updates)
 
         self.lbl_update_status = QLabel("Kliknij przycisk, aby sprawdzić najnowsze wydanie na GitHubie.")
+        self.lbl_update_status.setWordWrap(True)
         self.lbl_update_status.setStyleSheet("color: #8d99ae; font-size: 11px;")
         check_box.addWidget(self.lbl_update_status, stretch=1)
         layout.addLayout(check_box)
@@ -626,7 +677,7 @@ class SettingsDialog(QDialog):
 
         # Ramka z informacjami o nowej wersji (domyślnie ukryta)
         self.grp_new_version = QGroupBox("🎉 Dostępna nowa wersja!")
-        self.grp_new_version.setStyleSheet("QGroupBox { font-weight: bold; color: #10b981; }")
+        self.grp_new_version.setStyleSheet("QGroupBox { font-weight: bold; color: #10b981; border: 1px solid #2b2d42; border-radius: 6px; margin-top: 6px; padding-top: 12px; }")
         new_v_layout = QVBoxLayout(self.grp_new_version)
         new_v_layout.setContentsMargins(12, 12, 12, 12)
         new_v_layout.setSpacing(8)
@@ -634,12 +685,52 @@ class SettingsDialog(QDialog):
         self.lbl_new_version_title = QLabel("")
         self.lbl_new_version_title.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         self.lbl_new_version_title.setStyleSheet("color: #edf2f4;")
+        self.lbl_new_version_title.setWordWrap(True)
         new_v_layout.addWidget(self.lbl_new_version_title)
 
-        self.txt_changelog = QTextEdit()
+        # Wybór wersji changelogu (szczególnie przydatne, gdy użytkownik jest o kilka wersji do tyłu)
+        self.version_select_row = QHBoxLayout()
+        self.lbl_select_version = QLabel("Wyświetlane zmiany:")
+        self.lbl_select_version.setStyleSheet("color: #8d99ae; font-size: 11px;")
+        self.combo_changelog_version = QComboBox()
+        self.combo_changelog_version.setStyleSheet("""
+            QComboBox {
+                background-color: #181824;
+                color: #edf2f4;
+                border: 1px solid #3d405b;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 11px;
+            }
+            QComboBox::drop-down { border: none; }
+            QComboBox QAbstractItemView {
+                background-color: #181824;
+                color: #edf2f4;
+                selection-background-color: #4361ee;
+            }
+        """)
+        self.combo_changelog_version.currentIndexChanged.connect(self._on_changelog_version_changed)
+        self.version_select_row.addWidget(self.lbl_select_version)
+        self.version_select_row.addWidget(self.combo_changelog_version, stretch=1)
+        new_v_layout.addLayout(self.version_select_row)
+
+        self.txt_changelog = MarkdownChangelogBrowser()
         self.txt_changelog.setReadOnly(True)
-        self.txt_changelog.setMaximumHeight(130)
-        self.txt_changelog.setStyleSheet("background-color: #181824; color: #edf2f4; border: 1px solid #3d405b; border-radius: 4px; font-size: 11px;")
+        self.txt_changelog.setOpenExternalLinks(True)
+        self.txt_changelog.setMinimumHeight(240)
+        self.txt_changelog.setStyleSheet("""
+            QTextBrowser {
+                background-color: #14141e;
+                color: #edf2f4;
+                border: 1px solid #3d405b;
+                border-radius: 6px;
+                padding: 10px;
+                font-family: 'Segoe UI', 'Segoe UI Emoji', sans-serif;
+                font-size: 12px;
+                line-height: 1.5;
+                selection-background-color: #4361ee;
+            }
+        """)
         new_v_layout.addWidget(self.txt_changelog)
 
         btn_row = QHBoxLayout()
@@ -681,18 +772,208 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.grp_new_version)
         self.grp_new_version.setVisible(False)
 
+        # Przycisk opcjonalnego rozwinięcia pełnej historii zmian
+        self.btn_toggle_history = QPushButton("📜 Pokaż także historię starszych wydań...")
+        self.btn_toggle_history.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_toggle_history.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #4cc9f0;
+                border: 1px dashed #3d405b;
+                border-radius: 6px;
+                padding: 6px 12px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #2b2d42;
+                border-color: #4cc9f0;
+            }
+        """)
+        self.btn_toggle_history.clicked.connect(self._on_toggle_history_clicked)
+        self.btn_toggle_history.setVisible(False)
+        layout.addWidget(self.btn_toggle_history)
+
+        # Sekcja historii wydań (dostępna także, gdy użytkownik jest na najnowszej wersji)
+        self.grp_history = QGroupBox("📜 Historia Wydań i Zmian (Changelog)")
+        self.grp_history.setStyleSheet("QGroupBox { font-weight: bold; color: #4cc9f0; border: 1px solid #2b2d42; border-radius: 6px; margin-top: 6px; padding-top: 12px; }")
+        history_layout = QVBoxLayout(self.grp_history)
+        history_layout.setContentsMargins(12, 12, 12, 12)
+        history_layout.setSpacing(8)
+
+        hist_select_row = QHBoxLayout()
+        lbl_hist_version = QLabel("Wybierz wersję:")
+        lbl_hist_version.setStyleSheet("color: #8d99ae; font-size: 11px;")
+        self.combo_history_version = QComboBox()
+        self.combo_history_version.setStyleSheet("""
+            QComboBox {
+                background-color: #181824;
+                color: #edf2f4;
+                border: 1px solid #3d405b;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 11px;
+            }
+            QComboBox::drop-down { border: none; }
+            QComboBox QAbstractItemView {
+                background-color: #181824;
+                color: #edf2f4;
+                selection-background-color: #4361ee;
+            }
+        """)
+        self.combo_history_version.currentIndexChanged.connect(self._on_history_version_changed)
+        hist_select_row.addWidget(lbl_hist_version)
+        hist_select_row.addWidget(self.combo_history_version, stretch=1)
+
+        self.btn_open_history_url = QPushButton("🌐 Strona tego wydania")
+        self.btn_open_history_url.setStyleSheet("""
+            QPushButton {
+                background-color: #2b2d42;
+                color: #edf2f4;
+                border: 1px solid #3d405b;
+                border-radius: 6px;
+                padding: 5px 12px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #3d405b;
+            }
+        """)
+        self.btn_open_history_url.clicked.connect(self._on_open_history_url_clicked)
+        hist_select_row.addWidget(self.btn_open_history_url)
+        history_layout.addLayout(hist_select_row)
+
+        self.txt_history_changelog = MarkdownChangelogBrowser()
+        self.txt_history_changelog.setReadOnly(True)
+        self.txt_history_changelog.setOpenExternalLinks(True)
+        self.txt_history_changelog.setMinimumHeight(200)
+        self.txt_history_changelog.setStyleSheet("""
+            QTextBrowser {
+                background-color: #14141e;
+                color: #edf2f4;
+                border: 1px solid #3d405b;
+                border-radius: 6px;
+                padding: 10px;
+                font-family: 'Segoe UI', 'Segoe UI Emoji', sans-serif;
+                font-size: 12px;
+                line-height: 1.5;
+                selection-background-color: #4361ee;
+            }
+        """)
+        history_layout.addWidget(self.txt_history_changelog)
+        layout.addWidget(self.grp_history)
+        self.grp_history.setVisible(False)
+
+        # Sekcja diagnostyki i logów
+        self.grp_diagnostics = QGroupBox("🛠️ Diagnostyka i Dzienniki Zdarzeń (Logi)")
+        self.grp_diagnostics.setStyleSheet("QGroupBox { font-weight: bold; color: #8d99ae; border: 1px solid #2b2d42; border-radius: 6px; margin-top: 6px; padding-top: 12px; }")
+        diag_layout = QVBoxLayout(self.grp_diagnostics)
+        diag_layout.setContentsMargins(12, 12, 12, 12)
+        diag_layout.setSpacing(10)
+
+        lbl_diag_desc = QLabel("Zdarzenia i ewentualne błędy są automatycznie zapisywane do pliku logs/app.log (z bezpiecznym maskowaniem kluczy API).")
+        lbl_diag_desc.setWordWrap(True)
+        lbl_diag_desc.setStyleSheet("color: #8d99ae; font-size: 11px;")
+        diag_layout.addWidget(lbl_diag_desc)
+
+        btn_diag_row = QHBoxLayout()
+        self.btn_open_logs = QPushButton("📁 Otwórz folder z logami")
+        self.btn_open_logs.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_open_logs.setStyleSheet("""
+            QPushButton {
+                background-color: #2b2d42;
+                color: #edf2f4;
+                border: 1px solid #3d405b;
+                border-radius: 6px;
+                padding: 7px 14px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #3d405b;
+                border-color: #4cc9f0;
+            }
+        """)
+        self.btn_open_logs.clicked.connect(self._on_open_logs_clicked)
+        btn_diag_row.addWidget(self.btn_open_logs)
+        btn_diag_row.addStretch()
+        diag_layout.addLayout(btn_diag_row)
+        layout.addWidget(self.grp_diagnostics)
+
         layout.addStretch()
-        self.tabs.addTab(tab, "🚀 Aktualizacje")
+        scroll.setWidget(tab)
+        self.tabs.addTab(scroll, "🚀 Aktualizacje")
 
     def _on_check_updates_clicked(self):
         self.btn_check_updates.setEnabled(False)
-        self.lbl_update_status.setText("⏳ Sprawdzanie najnowszego wydania na GitHubie...")
+        self.lbl_update_status.setText("⏳ Sprawdzanie wydań na GitHubie...")
         self.lbl_update_status.setStyleSheet("color: #4cc9f0; font-size: 11px;")
         
         self.check_worker = CheckUpdateWorker(include_prereleases=self.chk_check_prereleases.isChecked())
         self.check_worker.update_checked_signal.connect(self._on_update_check_result)
         self.check_worker.error_signal.connect(self._on_update_check_error)
         self.check_worker.start()
+
+    def _on_toggle_history_clicked(self):
+        """Przełącza widoczność sekcji historii wydań, gdy dostępna jest nowa wersja."""
+        now_visible = not self.grp_history.isVisible()
+        self.grp_history.setVisible(now_visible)
+        if now_visible:
+            self.btn_toggle_history.setText("🙈 Ukryj historię starszych wydań")
+        else:
+            self.btn_toggle_history.setText("📜 Pokaż także historię starszych wydań...")
+
+    def _populate_history_combo(self, all_rels: list):
+        """Wypełnia listę rozwijaną historii wydań i ustawia treść Markdown."""
+        self.combo_history_version.blockSignals(True)
+        self.combo_history_version.clear()
+        for rel in all_rels:
+            r_tag = rel.get("tag_name", "")
+            r_date = rel.get("published_at", "")[:10]
+            d_str = f" ({r_date})" if r_date else ""
+            cur_mark = " (Zainstalowana wersja)" if r_tag.lstrip("vV") == APP_VERSION.lstrip("vV") else ""
+            self.combo_history_version.addItem(
+                f"{r_tag}{cur_mark}{d_str}",
+                {"notes": rel.get("release_notes", ""), "url": rel.get("html_url", "")}
+            )
+        self.combo_history_version.blockSignals(False)
+
+        if self.combo_history_version.count() > 0:
+            self.combo_history_version.setCurrentIndex(0)
+            init_h = self.combo_history_version.itemData(0)
+            if isinstance(init_h, dict):
+                self.txt_history_changelog.setMarkdown(init_h.get("notes", ""))
+                self._selected_history_url = init_h.get("url", "")
+
+    def _on_changelog_version_changed(self, idx: int):
+        """Przełącza treść Markdown w oknie nowej wersji w zależności od wyboru w comboboxie."""
+        if idx < 0:
+            return
+        data = self.combo_changelog_version.itemData(idx)
+        if isinstance(data, dict):
+            notes = data.get("notes", "")
+            self._selected_changelog_url = data.get("url", "")
+            self.txt_changelog.setMarkdown(notes)
+
+    def _on_history_version_changed(self, idx: int):
+        """Przełącza treść Markdown w oknie historii wydań."""
+        if idx < 0:
+            return
+        data = self.combo_history_version.itemData(idx)
+        if isinstance(data, dict):
+            notes = data.get("notes", "")
+            self._selected_history_url = data.get("url", "")
+            self.txt_history_changelog.setMarkdown(notes)
+
+    def _on_open_history_url_clicked(self):
+        """Otwiera w przeglądarce stronę wybranego wydania z historii."""
+        url = getattr(self, "_selected_history_url", "")
+        if url:
+            QDesktopServices.openUrl(QUrl(url))
+
+    def _on_open_logs_clicked(self):
+        """Otwiera folder logs/ w Eksploratorze Windows."""
+        open_logs_folder()
 
     def _on_update_check_result(self, result: Optional[dict]):
         self.btn_check_updates.setEnabled(True)
@@ -703,12 +984,62 @@ class SettingsDialog(QDialog):
             is_pre = result.get("is_prerelease", False)
             pre_badge = " (Pre-release)" if is_pre else ""
             
-            self.lbl_update_status.setText(f"✅ Znaleziono nowe wydanie: {tag}{pre_badge}")
+            newer_rels = result.get("newer_releases", [])
+            count_newer = len(newer_rels)
+            
+            if count_newer > 1:
+                self.lbl_update_status.setText(f"✅ Znaleziono nowe wydanie: {tag}{pre_badge} (jesteś o {count_newer} wydań do tyłu)")
+            else:
+                self.lbl_update_status.setText(f"✅ Znaleziono nowe wydanie: {tag}{pre_badge}")
             self.lbl_update_status.setStyleSheet("color: #10b981; font-size: 11px; font-weight: bold;")
             
-            self.lbl_new_version_title.setText(f"Wydanie: {title}")
-            self.txt_changelog.setPlainText(result.get("release_notes", ""))
+            self.lbl_new_version_title.setText(f"Wydanie docelowe: {title}")
+
+            # Wypełnienie wyboru wersji (zsumowane vs poszczególne)
+            self.combo_changelog_version.blockSignals(True)
+            self.combo_changelog_version.clear()
+
+            if count_newer > 1:
+                agg_notes = result.get("aggregated_notes", "")
+                self.combo_changelog_version.addItem(
+                    f"📋 Zsumowane zmiany ze wszystkich brakujących wydań ({result.get('current_version', APP_VERSION)} ➔ {tag})",
+                    {"notes": agg_notes, "url": result.get("html_url", "")}
+                )
+
+            for rel in newer_rels:
+                r_tag = rel.get("tag_name", "")
+                r_date = rel.get("published_at", "")[:10]
+                d_str = f" ({r_date})" if r_date else ""
+                latest_mark = " (Najnowsza)" if r_tag == tag else ""
+                self.combo_changelog_version.addItem(
+                    f"Wydanie {r_tag}{latest_mark}{d_str}",
+                    {"notes": rel.get("release_notes", ""), "url": rel.get("html_url", "")}
+                )
+
+            self.combo_changelog_version.blockSignals(False)
+
+            # Ustawienie domyślnego widoku Markdown
+            if self.combo_changelog_version.count() > 0:
+                self.combo_changelog_version.setCurrentIndex(0)
+                init_data = self.combo_changelog_version.itemData(0)
+                if isinstance(init_data, dict):
+                    self.txt_changelog.setMarkdown(init_data.get("notes", ""))
+                    self._selected_changelog_url = init_data.get("url", result.get("html_url", ""))
+            else:
+                self.txt_changelog.setMarkdown(result.get("release_notes", ""))
+                self._selected_changelog_url = result.get("html_url", "")
+
             self.grp_new_version.setVisible(True)
+            self.grp_history.setVisible(False)
+
+            # Przygotowanie pełnej historii w tle z przyciskiem opcjonalnego podglądu
+            all_rels = result.get("all_releases", [])
+            if all_rels:
+                self._populate_history_combo(all_rels)
+                self.btn_toggle_history.setVisible(True)
+                self.btn_toggle_history.setText("📜 Pokaż także historię starszych wydań...")
+            else:
+                self.btn_toggle_history.setVisible(False)
 
             # Sprawdzenie czy paczka aktualizacji jest już pobrana w katalogu tymczasowym
             expected_zip = os.path.join(tempfile.gettempdir(), f"InteligentnyDyktafonAI_{tag}.zip")
@@ -725,8 +1056,17 @@ class SettingsDialog(QDialog):
                 self.btn_download_update.setText("🚀 Pobierz i zainstaluj aktualizację")
         else:
             self.grp_new_version.setVisible(False)
+            self.btn_toggle_history.setVisible(False)
             self.lbl_update_status.setText(f"Posiadasz najnowszą wersję programu (v{APP_VERSION}).")
             self.lbl_update_status.setStyleSheet("color: #10b981; font-size: 11px;")
+
+            # Wyświetlenie pełnej historii wydań, gdy brak nowszej wersji
+            all_rels = (result.get("all_releases", []) if result else [])
+            if all_rels:
+                self._populate_history_combo(all_rels)
+                self.grp_history.setVisible(True)
+            else:
+                self.grp_history.setVisible(False)
 
     def _on_update_check_error(self, err_msg: str):
         self.btn_check_updates.setEnabled(True)
@@ -734,7 +1074,7 @@ class SettingsDialog(QDialog):
         self.lbl_update_status.setStyleSheet("color: #ef4444; font-size: 11px;")
 
     def _on_open_release_url_clicked(self):
-        url = getattr(self, "latest_update_data", {}).get("html_url", "")
+        url = getattr(self, "_selected_changelog_url", "") or getattr(self, "latest_update_data", {}).get("html_url", "")
         if url:
             QDesktopServices.openUrl(QUrl(url))
 
@@ -818,6 +1158,7 @@ class SettingsDialog(QDialog):
         if idx != -1:
             self.combo_beam.setCurrentIndex(idx)
         self.txt_hf_token.setText(st.get("hf_token", ""))
+        self.chk_adaptive_beam.setChecked(bool(st.get("adaptive_beam_size", False)))
 
         # Źródło Audio & VAD
         src_mode = st.get("record_source_mode", RecordSourceMode.HYBRID_DUAL)
@@ -911,12 +1252,14 @@ class SettingsDialog(QDialog):
             self.chk_upload_audio.setChecked(False)
             self.chk_check_prereleases.setChecked(True)
             self.chk_auto_check_startup.setChecked(True)
+            self.chk_adaptive_beam.setChecked(False)
 
     def _save_and_accept(self):
         """Zapisuje wartości do pliku user_settings.json i zamyka dialog."""
         new_settings = {
             "custom_keywords": self.txt_keywords.toPlainText().strip(),
             "whisper_beam_size": int(self.combo_beam.currentData() or 5),
+            "adaptive_beam_size": self.chk_adaptive_beam.isChecked(),
             "hf_token": self.txt_hf_token.text().strip(),
             "record_source_mode": self.combo_default_source_mode.currentData() or RecordSourceMode.HYBRID_DUAL,
             "vad_speech_threshold": round(self.slider_vad.value() / 100.0, 2),

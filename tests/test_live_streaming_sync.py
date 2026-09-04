@@ -1,4 +1,4 @@
-﻿import os
+import os
 import sys
 import tempfile
 import wave
@@ -8,7 +8,7 @@ import numpy as np
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from recorder.audio.capture import StreamingWavWriter, save_wav_file
-from recorder.config import get_cloud_sync_config, SESSION_SPLIT_SILENCE_SEC
+from recorder.config import get_cloud_sync_config, get_session_split_silence_sec, SESSION_SPLIT_SILENCE_SEC
 from recorder.core.cloud_sync import CloudSyncManager
 from recorder.core.rolling_transcriber import RollingBlock, RollingTranscriptionWorker
 
@@ -55,7 +55,7 @@ def test_adaptive_bitrate_calculation():
         config = manager.config
         assert "live_streaming" in config
         assert "session_split_silence_sec" in config
-        assert config["session_split_silence_sec"] == SESSION_SPLIT_SILENCE_SEC
+        assert config["session_split_silence_sec"] == get_session_split_silence_sec()
         print("Test Konfiguracji i Parametrow Live: Sukces!")
     finally:
         if os.path.exists(short_wav):

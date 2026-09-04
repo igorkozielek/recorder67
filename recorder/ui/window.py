@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import uuid
 from datetime import datetime
 from typing import Optional, List, Dict, Any
@@ -34,6 +35,7 @@ from recorder.config import (
     get_record_source_mode,
     get_loopback_device_index,
     get_silence_alert_seconds,
+    get_session_split_silence_sec,
     is_auto_check_updates_startup
 )
 from recorder.audio.devices import (
@@ -307,8 +309,10 @@ class SmartDictaphoneWindow(QMainWindow):
 
         self.last_audio_save_path = None
         self.recorded_seconds = 0
+        self._active_recorded_time = 0.0
+        self._last_active_tick = None
         self.timer = QTimer(self)
-        self.timer.setInterval(1000)
+        self.timer.setInterval(200)
         self.timer.timeout.connect(self._on_timer_tick)
 
         self.live_transcription_worker = None
@@ -323,6 +327,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.last_plain_text = ""
         self.current_meeting_id = None
         self.synced_segment_count = 0
+        self._synced_turn_ids = set()
         self.last_processed_block_idx = 0
         self._active_threads = []
         self._finalize_pending = False       # Guard: blokuje Start gdy trwa finalizacja poprzedniej sesji
@@ -346,6 +351,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.worker.session_split_signal.connect(self._on_session_split_triggered)
         self.worker.silence_alert_signal.connect(self._on_silence_alert)
         self.worker.error_signal.connect(self._handle_audio_error)
+        self.worker.set_session_split_silence_sec(get_session_split_silence_sec())
 
         self._init_ui()
         self._apply_theme()
@@ -1009,6 +1015,7 @@ class SmartDictaphoneWindow(QMainWindow):
             if hasattr(self, "worker"):
                 self.worker.set_auto_pause_sec(float(new_pause))
                 self.worker.set_silence_alert_seconds(get_silence_alert_seconds())
+                self.worker.set_session_split_silence_sec(get_session_split_silence_sec())
 
             # 4. Natychmiastowe odświeżenie widoku podglądu transkrypcji (kolejność / format)
             self._refresh_current_transcript_view()
@@ -1027,7 +1034,11 @@ class SmartDictaphoneWindow(QMainWindow):
             st = load_user_settings()
             inc_pre = bool(st.get("check_prereleases", True))
             self._startup_update_worker = CheckUpdateWorker(include_prereleases=inc_pre)
+            self._active_threads.append(self._startup_update_worker)
             self._startup_update_worker.update_checked_signal.connect(self._on_startup_update_result)
+            self._startup_update_worker.finished.connect(
+                lambda: self._active_threads.remove(self._startup_update_worker) if hasattr(self, "_active_threads") and hasattr(self, "_startup_update_worker") and self._startup_update_worker in self._active_threads else None
+            )
             self._startup_update_worker.start()
         except Exception as e:
             print(f"[UPDATER] Ciche sprawdzenie aktualizacji pominięte: {e}")
@@ -1473,6 +1484,8 @@ class SmartDictaphoneWindow(QMainWindow):
             return
 
         self.recorded_seconds = 0
+        self._active_recorded_time = 0.0
+        self._last_active_tick = None
         self.last_processed_block_idx = 0
         self.lbl_timer.setText("00:00:00")
 
@@ -1490,6 +1503,7 @@ class SmartDictaphoneWindow(QMainWindow):
         self.current_live_txt_path = os.path.join(self.transcriptions_dir, f"transkrypcja_{timestamp}.txt")
         self.current_live_wav_path = os.path.join(self.recordings_dir, f"inteligentne_nagranie_{timestamp}.wav")
         self.synced_segment_count = 0
+        self._synced_turn_ids = set()
         try:
             with open(self.current_live_txt_path, 'w', encoding='utf-8') as f:
                 f.write(f"=== TRANSKRYPCJA NA ŻYWO (Start: {now.strftime('%Y-%m-%d %H:%M:%S')}) ===\n\n")
@@ -1518,6 +1532,18 @@ class SmartDictaphoneWindow(QMainWindow):
             "</span></div>"
         )
 
+        # Zabezpieczenie: zatrzymanie i wyczyszczenie poprzedniego wątku rolling_worker
+        if getattr(self, "rolling_worker", None) is not None:
+            try:
+                self.rolling_worker.blockSignals(True)
+                if self.rolling_worker.isRunning():
+                    self.rolling_worker.stop()
+                    self.rolling_worker.wait(1500)
+                if self.rolling_worker in self._active_threads:
+                    self._active_threads.remove(self.rolling_worker)
+            except Exception:
+                pass
+
         # Uruchomienie silnika asynchronicznego przetwarzania bloków w tle (Rolling Background Transcriber)
         self.rolling_worker = RollingTranscriptionWorker(
             model_size=selected_model,
@@ -1537,6 +1563,7 @@ class SmartDictaphoneWindow(QMainWindow):
 
         threshold_sec = self.slider_silence.value()
         self.worker.set_auto_pause_sec(threshold_sec)
+        self.worker.set_session_split_silence_sec(get_session_split_silence_sec())
         self.worker.start_recording(
             device_index=selected_mic,
             loopback_device_index=selected_loopback,
@@ -1581,14 +1608,21 @@ class SmartDictaphoneWindow(QMainWindow):
         """Odebranie przetworzonego w tle bloku mowy z pełnymi word-level timestampami i synchronizacja na żywo."""
         self.current_turns = all_turns or []
         self.last_plain_text = full_plain
-        self.text_transcript.setHtml(full_html)
-        self._scroll_transcript_view()
-        self._populate_speaker_mapping(self.current_turns)
+        if full_html:
+            self.text_transcript.setHtml(full_html)
+            self._scroll_transcript_view()
+
+        # Optymalizacja: analizę mówców wykonujemy tylko wtedy, gdy włączona jest diaryzacja (Pyannote)
+        if self.check_enable_diarization.isChecked():
+            self._populate_speaker_mapping(self.current_turns)
 
         # Transmisja na żywo nowych segmentów do Supabase / CRM
         if self.cloud_sync.config.get("live_streaming") and self.cloud_sync.config.get("auto_sync") and self.current_meeting_id:
-            new_segments = (all_turns or [])[self.synced_segment_count:]
+            new_segments = [t for t in (all_turns or []) if id(t) not in self._synced_turn_ids]
             if new_segments:
+                for t in new_segments:
+                    self._synced_turn_ids.add(id(t))
+                self.synced_segment_count = len(self._synced_turn_ids)
                 spk_cnt = len(set(t.get("speaker", "Mówca") for t in (all_turns or []) if t.get("speaker")))
                 self.cloud_sync.append_live_segments_async(
                     meeting_id=self.current_meeting_id,
@@ -1597,7 +1631,6 @@ class SmartDictaphoneWindow(QMainWindow):
                     duration_seconds=tot_sec,
                     speaker_count=max(1, spk_cnt)
                 )
-                self.synced_segment_count = len(all_turns)
 
         # Aktualizacja paska postępu
         self.last_processed_block_idx = block_idx
@@ -2373,6 +2406,7 @@ class SmartDictaphoneWindow(QMainWindow):
 
         # 3. Rotacja rejestratora audio (flushez i zamyka stary WAV na dysku!) i transkrypcji w tle
         self.worker.rotate_session_file(self.current_live_wav_path)
+        self._refresh_recordings_list()
         if hasattr(self, "rolling_worker") and self.rolling_worker is not None:
             self.rolling_worker.reset_for_new_session(self.current_live_txt_path, session_start_time=split_now)
 
@@ -2388,10 +2422,14 @@ class SmartDictaphoneWindow(QMainWindow):
             )
 
         self.synced_segment_count = 0
+        self._synced_turn_ids = set()
         self.current_turns = []
         self.last_plain_text = ""
         self.recorded_seconds = 0
+        self._active_recorded_time = 0.0
+        self._last_active_tick = None
         self.lbl_timer.setText("00:00:00")
+        self.text_transcript.setHtml("<div style='color: #94a3b8; font-style: italic; text-align: center; padding: 20px;'>✨ Rozpoczęto nowe spotkanie biurowe (poprzednia sesja została automatycznie zapisana)...</div>")
 
         # 5. Start nowej sesji w Supabase
         if self.cloud_sync.config.get("live_streaming") and self.cloud_sync.config.get("auto_sync"):
@@ -2678,22 +2716,31 @@ class SmartDictaphoneWindow(QMainWindow):
         self.input_token.setEnabled(is_diar)
 
     def _on_timer_tick(self):
-        # Czas nagrania (stoper i pasek) nalicza się TYLKO gdy mowa jest aktywnie nagrywana
+        # Precyzyjny czas nagrania (monotoniczny, bez dryfu i bez przeskakiwania sekund)
         is_active_recording = self.worker.state in [SmartRecordState.RECORDING_SPEECH, SmartRecordState.RECORDING_SILENCE_COUNTDOWN]
-
+        now = time.monotonic()
         if is_active_recording:
-            self.recorded_seconds += 1
+            if getattr(self, "_last_active_tick", None) is not None:
+                dt = now - self._last_active_tick
+                if 0.0 < dt < 2.0:
+                    self._active_recorded_time += dt
+            self._last_active_tick = now
+            self.recorded_seconds = int(self._active_recorded_time)
+
             hrs = self.recorded_seconds // 3600
             mins = (self.recorded_seconds % 3600) // 60
             secs = self.recorded_seconds % 60
-            self.lbl_timer.setText(f"{hrs:02d}:{mins:02d}:{secs:02d}")
+            new_text = f"{hrs:02d}:{mins:02d}:{secs:02d}"
+            if self.lbl_timer.text() != new_text:
+                self.lbl_timer.setText(new_text)
 
             if getattr(self, "rolling_worker", None) is not None:
                 self.rolling_worker.update_session_time(self.recorded_seconds)
                 proc_sec = self.rolling_worker.total_processed_seconds
                 if proc_sec > 0:
-                    pct = int(min(98, max(5, (proc_sec / max(1.0, float(self.recorded_seconds))) * 100)))
-                    p_min, p_sec = int(proc_sec // 60), int(proc_sec % 60)
+                    disp_proc_sec = min(float(self.recorded_seconds), proc_sec)
+                    pct = int(min(98, max(5, (disp_proc_sec / max(1.0, float(self.recorded_seconds))) * 100)))
+                    p_min, p_sec = int(disp_proc_sec // 60), int(disp_proc_sec % 60)
                     t_min, t_sec = int(self.recorded_seconds // 60), int(self.recorded_seconds % 60)
                     self.progress_transcription.setValue(pct)
                     blk_str = f" · blok #{self.last_processed_block_idx}" if self.last_processed_block_idx > 0 else ""
@@ -2710,20 +2757,23 @@ class SmartDictaphoneWindow(QMainWindow):
                         self.progress_transcription.setValue(pct)
                         self.progress_transcription.setFormat(f"⚡ Przetwarzanie pierwszego fragmentu w tle: {t_min:02d}:{t_sec:02d}...")
         elif self.worker.state == SmartRecordState.AUTO_PAUSED:
-            # W stanie Auto-Pauzy stoper stoi w miejscu i pasek nie ucieka do przodu
+            self._last_active_tick = None
             t_min, t_sec = int(self.recorded_seconds // 60), int(self.recorded_seconds % 60)
             proc_sec = getattr(self.rolling_worker, "total_processed_seconds", 0.0) if getattr(self, "rolling_worker", None) else 0.0
             if proc_sec > 0:
-                p_min, p_sec = int(proc_sec // 60), int(proc_sec % 60)
+                disp_proc_sec = min(float(self.recorded_seconds), proc_sec)
+                p_min, p_sec = int(disp_proc_sec // 60), int(disp_proc_sec % 60)
                 blk_str = f" · blok #{self.last_processed_block_idx}" if self.last_processed_block_idx > 0 else ""
                 self.progress_transcription.setFormat(f"⏸️ Auto-Pauza (Cisza): {p_min:02d}:{p_sec:02d} / {t_min:02d}:{t_sec:02d}{blk_str}")
             else:
                 self.progress_transcription.setFormat(f"⏸️ Auto-Pauza (Cisza): {t_min:02d}:{t_sec:02d}")
         elif self.worker.state == SmartRecordState.MANUAL_PAUSED:
+            self._last_active_tick = None
             t_min, t_sec = int(self.recorded_seconds // 60), int(self.recorded_seconds % 60)
             proc_sec = getattr(self.rolling_worker, "total_processed_seconds", 0.0) if getattr(self, "rolling_worker", None) else 0.0
             if proc_sec > 0:
-                p_min, p_sec = int(proc_sec // 60), int(proc_sec % 60)
+                disp_proc_sec = min(float(self.recorded_seconds), proc_sec)
+                p_min, p_sec = int(disp_proc_sec // 60), int(disp_proc_sec % 60)
                 blk_str = f" · blok #{self.last_processed_block_idx}" if self.last_processed_block_idx > 0 else ""
                 self.progress_transcription.setFormat(f"⏸️ Wstrzymano ręcznie: {p_min:02d}:{p_sec:02d} / {t_min:02d}:{t_sec:02d}{blk_str}")
             else:
@@ -3030,17 +3080,19 @@ class SmartDictaphoneWindow(QMainWindow):
     def closeEvent(self, event):
         try:
             self.timer.stop()
-            self.blockSignals(True)
 
-            # 1. Zablokowanie sygnałów i natychmiastowe zatrzymanie transkrypcji w tle
-            if getattr(self, "rolling_worker", None) is not None:
+            # 1. Zatrzymanie wszystkich zarejestrowanych wątków w self._active_threads
+            for th in list(self._active_threads):
                 try:
-                    self.rolling_worker.blockSignals(True)
+                    th.blockSignals(True)
+                    if hasattr(th, "stop"):
+                        th.stop()
+                    if hasattr(th, "quit"):
+                        th.quit()
+                    th.wait(2000)
                 except Exception:
                     pass
-                if self.rolling_worker.isRunning():
-                    self.rolling_worker.stop()
-                    self.rolling_worker.wait(1500)
+            self._active_threads.clear()
 
             # 2. Zablokowanie sygnałów i zatrzymanie wątku audio oraz zapis audio
             if self.worker is not None:
@@ -3052,11 +3104,14 @@ class SmartDictaphoneWindow(QMainWindow):
                     timestamp = getattr(self, "current_live_timestamp", datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
                     save_path = getattr(self, "current_live_wav_path", None) or os.path.join(self.recordings_dir, f"inteligentne_nagranie_{timestamp}.wav")
                     self.worker.stop_recording()
-                    self.worker.wait(1500)
+                    self.worker.wait(3000)
                     try:
                         self.worker.save_wav(save_path)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        import logging
+                        logging.getLogger("recorder").error(f"Błąd zapisu pliku audio WAV podczas zamykania aplikacji ('{save_path}'): {e}")
+                elif self.worker.isRunning():
+                    self.worker.wait(3000)
 
             # 3. Pozostałe wątki pomocnicze
             if getattr(self, "live_transcription_worker", None) is not None:
@@ -3066,7 +3121,7 @@ class SmartDictaphoneWindow(QMainWindow):
                     pass
                 if self.live_transcription_worker.isRunning():
                     self.live_transcription_worker.stop()
-                    self.live_transcription_worker.wait(1000)
+                    self.live_transcription_worker.wait(1500)
 
             if getattr(self, "transcription_thread", None) is not None:
                 try:
@@ -3075,7 +3130,7 @@ class SmartDictaphoneWindow(QMainWindow):
                     pass
                 if self.transcription_thread.isRunning():
                     self.transcription_thread.quit()
-                    self.transcription_thread.wait(1000)
+                    self.transcription_thread.wait(1500)
 
             if getattr(self, "file_processing_worker", None) is not None:
                 try:
@@ -3084,7 +3139,16 @@ class SmartDictaphoneWindow(QMainWindow):
                     pass
                 if self.file_processing_worker.isRunning():
                     self.file_processing_worker.quit()
-                    self.file_processing_worker.wait(1000)
+                    self.file_processing_worker.wait(1500)
+
+            if getattr(self, "_startup_update_worker", None) is not None:
+                try:
+                    self._startup_update_worker.blockSignals(True)
+                    if self._startup_update_worker.isRunning():
+                        self._startup_update_worker.quit()
+                        self._startup_update_worker.wait(1000)
+                except Exception:
+                    pass
 
             if getattr(self, "_active_silence_toast", None) is not None:
                 try:
@@ -3095,6 +3159,7 @@ class SmartDictaphoneWindow(QMainWindow):
             if getattr(self, "tray_icon", None) is not None:
                 try:
                     self.tray_icon.hide()
+                    self.tray_icon.deleteLater()
                 except Exception:
                     pass
 
@@ -3109,6 +3174,5 @@ class SmartDictaphoneWindow(QMainWindow):
 
         except Exception as e:
             print(f"[closeEvent] Błąd zamykania okna: {e}")
-
-        if event:
+        finally:
             event.accept()

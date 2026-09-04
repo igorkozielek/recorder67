@@ -7,14 +7,17 @@ os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
 # Ścieżki główne
 BASE_DIR = Path(__file__).resolve().parent.parent
-RECORDINGS_DIR = os.path.join(os.getcwd(), "recordings")
-TRANSCRIPTIONS_DIR = os.path.join(os.getcwd(), "transcriptions")
+APP_DIR = os.path.dirname(os.path.abspath(sys.executable)) if getattr(sys, "frozen", False) else str(BASE_DIR)
+RECORDINGS_DIR = os.path.join(APP_DIR, "recordings")
+TRANSCRIPTIONS_DIR = os.path.join(APP_DIR, "transcriptions")
+LOGS_DIR = os.path.join(APP_DIR, "logs")
 
 os.makedirs(RECORDINGS_DIR, exist_ok=True)
 os.makedirs(TRANSCRIPTIONS_DIR, exist_ok=True)
+os.makedirs(LOGS_DIR, exist_ok=True)
 
 # Wersja aplikacji i repozytorium GitHub
-APP_VERSION = "0.5.5"
+APP_VERSION = "0.6.0"
 GITHUB_REPO = "igorkozielek/recorder67"
 
 # Parametry audio i VAD
@@ -172,15 +175,27 @@ LIVE_BLOCK_MAX_SEC = float(get_env_variable("LIVE_BLOCK_MAX_SEC", "45.0"))      
 LIVE_BLOCK_SILENCE_CUT_SEC = float(get_env_variable("LIVE_BLOCK_SILENCE_CUT_SEC", "1.0"))  # Min. 1.0s ciszy VAD na naturalnym końcu zdania
 
 import json
+import time
 
-SETTINGS_FILE = os.path.join(os.getcwd(), "user_settings.json")
+if getattr(sys, "frozen", False):
+    SETTINGS_FILE = os.path.join(os.path.dirname(sys.executable), "user_settings.json")
+else:
+    SETTINGS_FILE = os.path.join(str(BASE_DIR), "user_settings.json")
+
+_CACHED_USER_SETTINGS = None
+_CACHED_SETTINGS_TIME = 0.0
 
 
-def load_user_settings() -> dict:
+def load_user_settings(force_reload: bool = False) -> dict:
     """
-    Wczytuje ustawienia użytkownika z user_settings.json i scala je z domyślnymi wartościami.
-    Zapewnia pełną kompatybilność wsteczną przy aktualizacjach (brakujące klucze są uzupełniane domyślnymi).
+    Wczytuje ustawienia użytkownika z user_settings.json z buforowaniem w pamięci RAM.
+    Zapewnia natychmiastowy dostęp bez tysięcy zbędnych odczytów z dysku SSD.
     """
+    global _CACHED_USER_SETTINGS, _CACHED_SETTINGS_TIME
+    now = time.time()
+    if not force_reload and _CACHED_USER_SETTINGS is not None and (now - _CACHED_SETTINGS_TIME < 2.0):
+        return dict(_CACHED_USER_SETTINGS)
+
     defaults = {
         "custom_keywords": get_env_variable("CUSTOM_KEYWORDS", "emanager.pro, EMANAGER.PRO, CRM, AI, Supabase, n8n, Make, webhook, API, LLM, GPT-4, Claude, Gemini, Gemini Vision, Helpdesk, Subiekt GT, Subiekt, faktura proforma, synchronizacja, harmonogram, rejestr zmian, zgłoszenia, zamówienia, matryca uprawnień, QR code"),
         "whisper_beam_size": int(get_env_variable("WHISPER_BEAM_SIZE", "5")),
@@ -208,6 +223,7 @@ def load_user_settings() -> dict:
         "auto_scroll_chronological": get_env_variable("AUTO_SCROLL_CHRONOLOGICAL", "true").lower() in ("1", "true", "yes"),
         "check_prereleases": True,
         "auto_check_updates_startup": True,
+        "adaptive_beam_size": False,
     }
 
     settings_paths = [
@@ -223,25 +239,38 @@ def load_user_settings() -> dict:
                     if isinstance(data, dict):
                         merged = dict(defaults)
                         merged.update(data)
+                        _CACHED_USER_SETTINGS = dict(merged)
+                        _CACHED_SETTINGS_TIME = now
                         return merged
-            except Exception:
-                pass
+            except Exception as e:
+                import logging
+                logging.getLogger("recorder").warning(f"Błąd odczytu pliku ustawień '{p}': {e}")
 
+    _CACHED_USER_SETTINGS = dict(defaults)
+    _CACHED_SETTINGS_TIME = now
     return defaults
 
 
 def save_user_settings(settings: dict) -> bool:
-    """Zapisuje słownik ustawień do user_settings.json."""
+    """Zapisuje słownik ustawień do user_settings.json i odświeża bufor pamięci."""
+    global _CACHED_USER_SETTINGS, _CACHED_SETTINGS_TIME
     try:
-        cur = load_user_settings()
+        cur = load_user_settings(force_reload=True)
         cur.update(settings)
         with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
             json.dump(cur, f, indent=2, ensure_ascii=False)
+        _CACHED_USER_SETTINGS = dict(cur)
+        _CACHED_SETTINGS_TIME = time.time()
         return True
     except Exception as e:
         if sys.stderr:
             print(f"Błąd zapisu user_settings.json: {e}", file=sys.stderr)
         return False
+
+
+def get_timestamp_format() -> str:
+    """Zwraca wybrany format znacznika czasu (offset_only / clock_only / hybrid)."""
+    return str(load_user_settings().get("timestamp_format", "offset_only"))
 
 
 def get_custom_keywords() -> str:
@@ -257,6 +286,12 @@ def get_beam_size() -> int:
         return max(1, min(10, int(st.get("whisper_beam_size", 5))))
     except Exception:
         return 5
+
+
+def is_adaptive_beam_size() -> bool:
+    """Zwraca czy adaptacyjny dobór beam_size (bieg turbo przy zatorach w kolejce) jest włączony."""
+    st = load_user_settings()
+    return bool(st.get("adaptive_beam_size", False))
 
 
 def get_device_name() -> str:

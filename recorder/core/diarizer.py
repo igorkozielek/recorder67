@@ -178,8 +178,9 @@ class DiarizationEngine:
             if os.path.exists(audio_path):
                 s_info = sf.info(audio_path)
                 is_stereo = (s_info.channels == 2)
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger("recorder").warning(f"Błąd odczytu sf.info dla pliku '{audio_path}': {e}")
 
         has_channel_tags = any(w.get("channel") in ("mic", "system") for w in transcript_words)
 
@@ -236,8 +237,9 @@ class DiarizationEngine:
         try:
             if os.path.exists(audio_path):
                 audio_arr, sr = sf.read(audio_path)
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger("recorder").warning(f"Błąd odczytu sf.read dla pliku '{audio_path}': {e}")
 
         for w in transcript_words:
             ch = w.get("channel")
@@ -429,8 +431,9 @@ class DiarizationEngine:
             for turn, _, speaker in diarization.itertracks(yield_label=True):
                 speakers_detected.add(speaker)
                 diar_segments.append((turn.start, turn.end, speaker))
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger("recorder").warning(f"Błąd odczytu segmentów diaryzacji itertracks: {e}")
 
         if not diar_segments:
             print("⚠️ [PYANNOTE] Nie wykryto segmentów mówców. Powrót do transkrypcji ciągłej.")

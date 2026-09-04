@@ -12,7 +12,7 @@ import time
 import uuid
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 import urllib.request
 import urllib.parse
@@ -171,7 +171,7 @@ class CloudSyncManager:
         context_id: Optional[str],
     ) -> Dict[str, Any]:
         """Tworzy znormalizowany, agnostyczny obiekt spotkania."""
-        now_iso = datetime.utcnow().isoformat() + "Z"
+        now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         
         # Zlicz unikalnych mówców
         unique_speakers = set()
@@ -256,7 +256,7 @@ class CloudSyncManager:
             "id": meeting_id,
             "title": title,
             "duration_seconds": 0,
-            "created_at": datetime.utcnow().isoformat() + "Z",
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "status": "recording",
             "context_type": context_type or "general",
             "context_id": context_id,
